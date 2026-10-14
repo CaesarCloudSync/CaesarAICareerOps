@@ -1,0 +1,142 @@
+name: Deploy CaesarAICareerOps to Cloud Run
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+      - staging
+    tags:
+      - 'v*'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID || 'caesar-ops' }}
+  REGION: europe-west2
+  REPOSITORY: caesar-registry
+  SERVICE_NAME: caesar-ai-career-ops
+  ENV_NAME: ${{ startsWith(github.ref, 'refs/tags/v') && (contains(github.ref_name, '-staging') && 'staging' || (contains(github.ref_name, '-dev') && 'dev' || 'prod')) || (github.ref_name == 'main' && 'prod' || github.ref_name) }}
+  RELEASE_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('{0}-{1}', (github.ref_name == 'main' && 'prod' || github.ref_name), github.sha) }}
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  # --- JOB 1: CODE QUALITY & SECURITY SCAN ---
+  quality-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff bandit pytest httpx
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      # --- SECURITY SCAN: SAST (Bandit) ---
+      - name: Security Lint (Bandit)
+        run: bandit -r backend -ll || true
+
+      # --- CODE QUALITY: Ruff Linter & Formatter ---
+      - name: Lint and Format Check (Ruff)
+        run: |
+          ruff check backend/application || true
+
+      # --- FRONTEND BUILD CHECK ---
+      - name: Set up Node.js for Frontend
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build React Frontend
+        run: |
+          cd frontend
+          npm install
+          npm run build
+
+  # --- JOB 2: CONTAINER SECURITY (Trivy) ---
+  container-security:
+    runs-on: ubuntu-latest
+    needs: quality-check
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Local Image for Scanning
+        run: docker build -t local-scan-target:${{ github.sha }} .
+
+      - name: Scan Image (Trivy)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'local-scan-target:${{ github.sha }}'
+          format: 'table'
+          exit-code: '0'
+          ignore-unfixed: true
+
+  # --- JOB 3: DEPLOYMENT TO GOOGLE CLOUD RUN ---
+  deploy:
+    runs-on: ubuntu-latest
+    needs: [quality-check, container-security]
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # Workload Identity Federation Authentication
+      - name: Google Auth
+        uses: 'google-github-actions/auth@v2'
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: 'google-github-actions/setup-gcloud@v2'
+
+      - name: Authorize Docker
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
+
+      - name: Ensure Artifact Registry Repository Exists
+        run: |-
+          gcloud services enable artifactregistry.googleapis.com --project="${{ env.PROJECT_ID }}" || true
+          gcloud artifacts repositories create ${{ env.REPOSITORY }} \
+            --repository-format=docker \
+            --location=${{ env.REGION }} \
+            --project="${{ env.PROJECT_ID }}" \
+            --description="CaesarAICareerOps Docker Repository" || true
+
+      - name: Build and Push Docker Container
+        run: |-
+          IMAGE_TAG="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.SERVICE_NAME }}-${{ env.ENV_NAME }}:${{ github.sha }}"
+          
+          docker build -t "$IMAGE_TAG" .
+          docker push "$IMAGE_TAG"
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            IMAGE_TAG_VERSION="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.SERVICE_NAME }}-${{ env.ENV_NAME }}:${{ github.ref_name }}"
+            docker tag "$IMAGE_TAG" "$IMAGE_TAG_VERSION"
+            docker push "$IMAGE_TAG_VERSION"
+          fi
+
+      - name: Deploy to Cloud Run
+        uses: 'google-github-actions/deploy-cloudrun@v2'
+        with:
+          service: ${{ env.SERVICE_NAME }}-${{ env.ENV_NAME }}
+          region: ${{ env.REGION }}
+          image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.SERVICE_NAME }}-${{ env.ENV_NAME }}:${{ github.sha }}
+          flags: '--allow-unauthenticated --port=8080 --cpu=1 --memory=512Mi --timeout=3600'
+          env_vars: |
+            ENVIRONMENT=${{ env.ENV_NAME }}
+            STORAGE_PROVIDER=supabase
+          secrets: |
+            SUPABASE_URL=caesar-supabase-url:latest
+            SUPABASE_SERVICE_ROLE_KEY=caesar-supabase-service-role-key:latest

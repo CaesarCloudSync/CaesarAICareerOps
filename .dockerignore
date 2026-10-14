@@ -1,0 +1,11 @@
+data/
+*.db
+.git
+.github
+.env*
+node_modules/
+frontend/node_modules/
+backend/career-ops/node_modules/
+__pycache__/
+.pytest_cache/
+.coverage

@@ -1,0 +1,68 @@
+services:
+  # ==========================================================
+  # 🐘 PostgreSQL Database (Main Provider with Persistent Volume)
+  # ==========================================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: caesar-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-caesar}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-caesar_ops_password}
+      POSTGRES_DB: ${POSTGRES_DB:-caesar_ops}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - caesar_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-caesar} -d ${POSTGRES_DB:-caesar_ops}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - caesar-network
+
+  # ==========================================================
+  # 🧠 CaesarAICareerOps Application (FastAPI + React Dashboard)
+  # ==========================================================
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: caesar-app
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8000}:8000"
+    environment:
+      - PORT=8000
+      - HOST=0.0.0.0
+      - ENVIRONMENT=docker
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-caesar}:${POSTGRES_PASSWORD:-caesar_ops_password}@postgres:5432/${POSTGRES_DB:-caesar_ops}
+      - CAREER_OPS_DIR=/app/backend/career-ops
+      - DATA_DIR=/app/data
+    volumes:
+      - caesar_app_data:/app/data
+      - ../backend/career-ops/reports:/app/backend/career-ops/reports
+      - ../backend/career-ops/output:/app/backend/career-ops/output
+      - ../backend/career-ops/data:/app/backend/career-ops/data
+      # Mount host agy CLI and OAuth session so container has full AGY access
+      - ${HOME:-/home/amari}/.local/bin/agy:/usr/local/bin/agy:ro
+      - ${HOME:-/home/amari}/.gemini:/home/appuser/.gemini
+      - ${HOME:-/home/amari}/.config:/home/appuser/.config:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - caesar-network
+
+volumes:
+  caesar_postgres_data:
+    name: caesar_postgres_data
+  caesar_app_data:
+    name: caesar_app_data
+
+networks:
+  caesar-network:
+    name: caesar-network
