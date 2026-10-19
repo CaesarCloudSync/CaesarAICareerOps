@@ -88,6 +88,7 @@ export default function App() {
             applications={applications}
             onStatusChange={handleStatusChange}
             onViewReport={handleViewReport}
+            onRefresh={loadData}
           />
         )}
 

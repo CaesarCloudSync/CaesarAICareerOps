@@ -46,3 +46,32 @@ async def update_application_status(
         "company": payload.company,
         "status": payload.status,
     }
+
+
+@router.delete("/applications/{app_id}")
+async def delete_application(
+    app_id: int,
+    repo: BaseRepository = Depends(get_career_repository),
+):
+    """Delete a single tracked application by ID."""
+    success = await repo.delete_application(app_id)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Application record {app_id} not found.")
+    return {
+        "status": "success",
+        "message": f"Application {app_id} deleted successfully.",
+        "id": app_id,
+    }
+
+
+@router.delete("/applications")
+async def delete_all_applications(
+    repo: BaseRepository = Depends(get_career_repository),
+):
+    """Delete all tracked applications and purge corresponding reports."""
+    deleted_count = await repo.delete_all_applications()
+    return {
+        "status": "success",
+        "deleted_count": deleted_count,
+        "message": f"Successfully deleted {deleted_count} application(s).",
+    }

@@ -36,6 +36,16 @@ class BaseRepository(ABC):
         pass
 
     @abstractmethod
+    async def delete_application(self, app_id: int) -> bool:
+        """Delete a tracked application and its associated report/PDF."""
+        pass
+
+    @abstractmethod
+    async def delete_all_applications(self) -> int:
+        """Delete all tracked applications and their associated reports/PDFs."""
+        pass
+
+    @abstractmethod
     async def get_pipeline(self) -> List[str]:
         """Get list of pending pipeline inbox items."""
         pass

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
-import { Search, ExternalLink, FileText, CheckCircle2 } from 'lucide-react';
+import { Search, ExternalLink, FileText, CheckCircle2, Trash2 } from 'lucide-react';
 
-export default function ApplicationsTable({ applications, onStatusChange, onViewReport }) {
+export default function ApplicationsTable({ applications = [], onStatusChange, onViewReport, onRefresh }) {
   const [search, setSearch] = useState('');
 
   const filtered = applications.filter((app) =>
@@ -19,6 +19,42 @@ export default function ApplicationsTable({ applications, onStatusChange, onView
 
   const statusOptions = ['Evaluated', 'Applied', 'Interviewing', 'Offer', 'Rejected', 'Archived'];
 
+  const handleDeleteApplication = async (id, company, role) => {
+    if (!window.confirm(`Delete application for "${company} - ${role}"? This will also remove its evaluation report.`)) {
+      return;
+    }
+    try {
+      const res = await fetch(`/api/applications/${id}`, {
+        method: 'DELETE',
+      });
+      if (res.ok) {
+        onRefresh?.();
+      } else {
+        alert('Failed to delete application.');
+      }
+    } catch (err) {
+      alert(`Error deleting application: ${err.message}`);
+    }
+  };
+
+  const handleDeleteAllApplications = async () => {
+    if (!window.confirm(`Are you sure you want to delete ALL ${applications.length} applications and their evaluation reports? This action cannot be undone.`)) {
+      return;
+    }
+    try {
+      const res = await fetch('/api/applications', {
+        method: 'DELETE',
+      });
+      if (res.ok) {
+        onRefresh?.();
+      } else {
+        alert('Failed to delete applications.');
+      }
+    } catch (err) {
+      alert(`Error deleting applications: ${err.message}`);
+    }
+  };
+
   return (
     <div className="bg-slate-900/50 border border-slate-800 rounded-xl overflow-hidden backdrop-blur">
       <div className="p-4 border-b border-slate-800/80 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
@@ -26,15 +62,27 @@ export default function ApplicationsTable({ applications, onStatusChange, onView
           <h2 className="text-base font-semibold text-white">Application Pipeline Tracker</h2>
           <p className="text-xs text-slate-400">Track stages, fit scores, and generated reports</p>
         </div>
-        <div className="relative w-full sm:w-64">
-          <Search className="w-4 h-4 text-slate-500 absolute left-3 top-2.5" />
-          <input
-            type="text"
-            placeholder="Search company or role..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-full pl-9 pr-3 py-1.5 bg-slate-950/70 border border-slate-800 rounded-lg text-xs text-slate-200 focus:outline-none focus:border-indigo-500/50"
-          />
+        <div className="flex items-center gap-2 w-full sm:w-auto">
+          {applications.length > 0 && (
+            <button
+              onClick={handleDeleteAllApplications}
+              title="Delete All Applications"
+              className="px-2.5 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/30 text-xs font-medium flex items-center gap-1.5 transition-colors shrink-0"
+            >
+              <Trash2 className="w-3.5 h-3.5 text-red-400" />
+              <span>Clear Tracker</span>
+            </button>
+          )}
+          <div className="relative w-full sm:w-64">
+            <Search className="w-4 h-4 text-slate-500 absolute left-3 top-2.5" />
+            <input
+              type="text"
+              placeholder="Search company or role..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-full pl-9 pr-3 py-1.5 bg-slate-950/70 border border-slate-800 rounded-lg text-xs text-slate-200 focus:outline-none focus:border-indigo-500/50"
+            />
+          </div>
         </div>
       </div>
 
@@ -82,7 +130,7 @@ export default function ApplicationsTable({ applications, onStatusChange, onView
                   </td>
                   <td className="py-3 px-4 font-mono text-slate-400">{app.date_applied || '—'}</td>
                   <td className="py-3 px-4 text-right">
-                    <div className="flex justify-end gap-2">
+                    <div className="flex justify-end items-center gap-1.5">
                       {app.report_path && (
                         <button
                           onClick={() => onViewReport(app.report_path.replace('reports/', ''))}
@@ -102,6 +150,13 @@ export default function ApplicationsTable({ applications, onStatusChange, onView
                           <ExternalLink className="w-3.5 h-3.5" />
                         </a>
                       )}
+                      <button
+                        onClick={() => handleDeleteApplication(app.id, app.company, app.role)}
+                        title="Delete Application"
+                        className="p-1 rounded bg-slate-800 hover:bg-red-500/20 text-slate-400 hover:text-red-400 transition-colors"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   </td>
                 </tr>

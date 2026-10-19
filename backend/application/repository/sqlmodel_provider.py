@@ -135,6 +135,69 @@ class SQLModelRepository(BaseRepository):
             session.commit()
             return True
 
+    async def delete_application(self, app_id: int) -> bool:
+        with Session(engine) as session:
+            app = session.get(Application, app_id)
+            if not app:
+                return False
+
+            # Delete matching report and PDF files if they exist
+            if app.report_path:
+                rep_name = Path(app.report_path).name
+                rep_file = self.career_ops_dir / "reports" / rep_name
+                if rep_file.exists() and rep_file.is_file():
+                    try:
+                        rep_file.unlink()
+                    except Exception:
+                        pass
+
+                pdf_name = rep_name.replace(".md", ".pdf")
+                pdf_file = self.career_ops_dir / "output" / pdf_name
+                if pdf_file.exists() and pdf_file.is_file():
+                    try:
+                        pdf_file.unlink()
+                    except Exception:
+                        pass
+
+            session.delete(app)
+            session.commit()
+            return True
+
+    async def delete_all_applications(self) -> int:
+        with Session(engine) as session:
+            apps = session.exec(select(Application)).all()
+            count = len(apps)
+            for app in apps:
+                if app.report_path:
+                    rep_name = Path(app.report_path).name
+                    rep_file = self.career_ops_dir / "reports" / rep_name
+                    if rep_file.exists() and rep_file.is_file():
+                        try:
+                            rep_file.unlink()
+                        except Exception:
+                            pass
+                    pdf_name = rep_name.replace(".md", ".pdf")
+                    pdf_file = self.career_ops_dir / "output" / pdf_name
+                    if pdf_file.exists() and pdf_file.is_file():
+                        try:
+                            pdf_file.unlink()
+                        except Exception:
+                            pass
+                session.delete(app)
+            session.commit()
+
+        # Clean applications.md tracker table if exists
+        apps_md = self.career_ops_dir / "data" / "applications.md"
+        if apps_md.exists():
+            clean_header = (
+                "# Applications Tracker\n\n"
+                "| # | Date | Company | Via | Role | Score | Status | PDF | Report | Notes |\n"
+                "|---|------|---------|-----|------|-------|--------|-----|--------|-------|\n"
+            )
+            apps_md.write_text(clean_header, encoding="utf-8")
+
+        return count
+
     async def get_pipeline(self) -> List[str]:
         with Session(engine) as session:
             statement = select(PipelineItem).where(PipelineItem.status == "pending").order_by(desc(PipelineItem.id)).limit(200)
