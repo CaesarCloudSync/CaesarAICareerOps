@@ -25,14 +25,14 @@ Analyze the user's natural language search prompt and output ONLY a valid, raw J
 
 {
   "target_count": <integer, number of jobs requested, e.g. 50 or 100>,
-  "company_count": <integer, number of target companies to research. If the user prompt mentions a specific number of companies OR a number of roles (e.g. "Find 100...", "search 30 companies", "25 roles"), extract that number as company_count (capped at 100). If no number is mentioned in the prompt, company_count MUST strictly default to 20>,
+  "company_count": <integer, number of target companies to research. If the user prompt mentions a specific number of companies OR a number of roles (e.g. "Find 100...", "search 30 companies", "400 companies"), extract that number as company_count (capped at 400). If no number is mentioned in the prompt, company_count MUST strictly default to 20>,
   "mode": <"append" | "match", choose "match" if the user wants to maintain, top up, ensure, or keep the queue at a specific total count; choose "append" for all other requests to search for and add roles on top of existing ones. "replace" is completely disabled and must NEVER be used under any circumstances>,
   "industry_sector": <string, e.g. "Healthcare", "FinTech", "CleanTech", "Cybersecurity", "General Tech">,
   "role_domain": <string, e.g. "Backend Software Engineering">,
   "seniority_tier": <string, e.g. "junior-to-mid">,
   "positive_keywords": [<list of positive title strings to match>],
   "negative_keywords": [<list of title strings to exclude, always include "Senior", "Lead", "Staff", "Principal", "Director", "VP", "Manager", "word:Intern", "Internship", "Internships", "Frontend">],
-  "target_companies": [<list of real-world UK tech/industry employers specifically matching the requested industry or sector. The length of this list MUST equal company_count (default 20, or up to the requested number like 50 to 100). E.g. for healthcare: Accurx, Huma, Cera, Peppy, Zoe, Kheiron Medical, Flo Health, BenevolentAI, etc.>],
+  "target_companies": [<list of real-world UK tech/industry employers specifically matching the requested industry or sector. The length of this list MUST equal company_count (default 20, or up to the requested number like 50, 100, or up to 400). E.g. for healthcare: Accurx, Huma, Cera, Peppy, Zoe, Kheiron Medical, Flo Health, BenevolentAI, etc.>],
   "tech_stack": [<list of languages and technologies mentioned>],
   "core_fundamentals": [<list of core domains like "API Development", "Databases", "Microservices">],
   "evaluate_against_cv": <boolean, true if evaluation against CV requested>
