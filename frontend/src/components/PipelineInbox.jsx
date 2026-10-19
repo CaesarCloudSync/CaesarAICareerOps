@@ -120,7 +120,26 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
 
   const handleDiscover = async (useCV = true) => {
     setDiscovering(true);
-    setActionMessage('Scanning registered UK portals tailored to your target roles...');
+    const isNl = Boolean(nlQuery && nlQuery.trim());
+    setActionMessage(
+      isNl
+        ? '🤖 Step 1/4: AGY is analyzing your prompt into structured ATS criteria...'
+        : 'Scanning registered UK portals tailored to your target roles...'
+    );
+
+    // Dynamic progress stages during execution
+    const timer1 = setTimeout(() => {
+      if (isNl) setActionMessage('🏢 Step 2/4: Probing 50+ UK employer ATS boards (Greenhouse, Ashby, Lever)...');
+    }, 10000);
+
+    const timer2 = setTimeout(() => {
+      if (isNl) setActionMessage('⚡ Step 3/4: Scanning live openings in parallel & verifying HTTP liveness...');
+    }, 24000);
+
+    const timer3 = setTimeout(() => {
+      if (isNl) setActionMessage('🎯 Step 4/4: Scoring backend fundamentals against Master CV & populating inbox...');
+    }, 36000);
+
     try {
       const res = await fetch('/api/settings/discover', {
         method: 'POST',
@@ -134,16 +153,19 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
       });
       const data = await res.json();
       if (res.ok) {
-        setActionMessage(`✅ Scan complete! Added fresh UK postings to inbox.`);
+        setActionMessage(`✨ ${data.message || 'Discovery complete! Added fresh UK postings to inbox.'}`);
         onRefresh?.();
       } else {
-        setActionMessage('❌ Discovery failed.');
+        setActionMessage('❌ Discovery failed. Please check server logs.');
       }
     } catch (err) {
       setActionMessage(`❌ Discovery error: ${err.message}`);
     } finally {
+      clearTimeout(timer1);
+      clearTimeout(timer2);
+      clearTimeout(timer3);
       setDiscovering(false);
-      setTimeout(() => setActionMessage(''), 6000);
+      setTimeout(() => setActionMessage(''), 8000);
     }
   };
 

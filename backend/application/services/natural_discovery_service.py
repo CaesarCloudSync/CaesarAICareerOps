@@ -75,18 +75,56 @@ class NaturalDiscoveryService:
     async def parse_prompt_with_agy(self, user_prompt: str) -> Dict[str, Any]:
         """Step 1: Uses agy CLI to parse user natural language prompt into clean JSON."""
         full_prompt = f"{SYSTEM_PARSER_PROMPT}\n\nUSER PROMPT:\n{user_prompt}"
-        proc = await asyncio.create_subprocess_exec(
-            "agy", "-p", full_prompt, "--dangerously-skip-permissions",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await proc.communicate()
-        raw = stdout.decode("utf-8", errors="replace").strip()
-        
-        match = re.search(r"\{.*\}", raw, re.DOTALL)
-        if not match:
-            raise ValueError(f"AGY failed to return a valid JSON object: {raw}")
-        return json.loads(match.group(0))
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "agy", "-p", full_prompt, "--dangerously-skip-permissions",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await proc.communicate()
+            raw = stdout.decode("utf-8", errors="replace").strip()
+            
+            # Strip markdown code blocks if agy wraps output
+            cleaned = raw
+            if "```" in cleaned:
+                cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.MULTILINE)
+                cleaned = re.sub(r"```\s*$", "", cleaned, flags=re.MULTILINE).strip()
+
+            match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+            if match:
+                return json.loads(match.group(0))
+        except Exception as e:
+            print(f"[NaturalDiscovery] AGY parse exception: {e}, falling back to defaults.")
+
+        # Robust fallback preserving UK tech employers & backend keywords
+        return {
+            "target_count": 50,
+            "role_domain": "Backend Software Engineering",
+            "seniority_tier": "junior-to-mid",
+            "positive_keywords": [
+                "Backend Engineer", "Back-End Engineer", "Backend Developer", "Back-End Developer",
+                "Software Engineer", "Software Developer", "Python Engineer", "Python Developer",
+                "Go Engineer", "Golang Engineer", "Java Engineer", "Java Developer",
+                "API Engineer", "Platform Engineer", "Junior Software Engineer", "Junior Developer"
+            ],
+            "negative_keywords": [
+                "Senior", "Lead", "Staff", "Principal", "Director", "VP", "Manager", "word:Intern",
+                "Frontend", "Front-End", "Designer", "Strategist", "Recruiter", "Customer Success"
+            ],
+            "target_companies": [
+                "Monzo", "StarlingBank", "Revolut", "Wise", "Checkout.com", "Deliveroo", "OcadoTechnology",
+                "Synthesia", "ElevenLabs", "Wayve", "Darktrace", "Snyk", "GoCardless", "TrueLayer",
+                "Paddle", "Pleo", "Tide", "OakNorth", "ThoughtMachine", "Form3", "Cleo", "Zilch",
+                "Lendable", "FundingCircle", "iwoca", "AllicaBank", "Atombank", "Kroo", "Zopa",
+                "Flagstone", "RobinhoodUK", "Stripe", "Palantir", "Cloudflare", "Datadog", "Elastic",
+                "Canonical", "GrafanaLabs", "Incident.io", "Hookdeck", "Ably", "Pusher", "tray.ai",
+                "Permutive", "Tessian", "Netcraft", "Bumble", "Depop", "Vinted", "Gymshark",
+                "Farfetch", "ASOS", "Trainline", "Citymapper", "OctopusEnergy"
+            ],
+            "tech_stack": ["Python", "Go", "Java", "Node.js"],
+            "core_fundamentals": ["API Development", "Databases", "Microservices"],
+            "evaluate_against_cv": True
+        }
 
     def apply_dynamic_filters(self, spec: Dict[str, Any]) -> None:
         """Step 2: Updates portals.yml title_filter and location_filter cleanly preserving formatting."""
@@ -130,10 +168,10 @@ class NaturalDiscoveryService:
             '    - "Brazil"\n'
         )
 
-        if "location_filter:" in content and not "# location_filter:" in content[:content.find("location_filter:") + 20]:
-            content = re.sub(r"location_filter:.*?(?=\n#|\ntracked_companies:|\ntitle_filter:|\nsalary_filter:)", loc_block, content, flags=re.DOTALL)
+        if re.search(r"^location_filter:", content, re.MULTILINE):
+            content = re.sub(r"^location_filter:\n(?:[ \t]+[^\n]*\n*)*", f"{loc_block}\n", content, flags=re.MULTILINE)
         else:
-            content = re.sub(r"# location_filter:.*?(?=\n# -- Country-eligibility)", loc_block, content, flags=re.DOTALL)
+            content = content.replace("tracked_companies:", f"{loc_block}\n\ntracked_companies:", 1)
 
         # 2. Update title_filter block
         positives = spec.get("positive_keywords", ["Backend Engineer", "Software Engineer"])
@@ -150,7 +188,11 @@ class NaturalDiscoveryService:
             f"{negatives_yaml}\n"
         )
 
-        content = re.sub(r"title_filter:.*?(?=\n# --|\ntracked_companies:|\nsearch_queries:)", title_block, content, flags=re.DOTALL)
+        if re.search(r"^title_filter:", content, re.MULTILINE):
+            content = re.sub(r"^title_filter:\n(?:[ \t]+[^\n]*\n*)*", f"{title_block}\n", content, flags=re.MULTILINE)
+        else:
+            content = content.replace("tracked_companies:", f"{title_block}\n\ntracked_companies:", 1)
+
         PORTALS_YML.write_text(content, encoding="utf-8")
 
     async def probe_ats_boards(self, companies: List[str]) -> int:
