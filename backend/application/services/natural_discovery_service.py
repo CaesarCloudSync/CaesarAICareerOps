@@ -395,6 +395,9 @@ class NaturalDiscoveryService:
         spec = await self.parse_prompt_with_agy(user_prompt)
         target_count = spec.get("target_count", 50)
         target_companies = spec.get("target_companies", [])
+        mode = spec.get("mode", "replace")
+        if mode not in ("append", "replace", "match"):
+            mode = "replace"
 
         # 2. Apply dynamic filters to portals.yml with pre-flight atomic rollback
         await self.apply_dynamic_filters(spec)
@@ -445,6 +448,29 @@ class NaturalDiscoveryService:
                     "raw_line": line
                 })
 
+        # --- WRITE-AHEAD STAGING PERSISTENCE ---
+        # Persist raw scanned jobs into PostgreSQL immediately before evaluation.
+        # If evaluation is interrupted, cancelled, or drops connection, zero jobs are lost!
+        if parsed_entries:
+            with Session(engine) as session:
+                existing_urls_in_db = set()
+                for item in session.exec(select(PipelineItem)).all():
+                    url_m = re.search(r"https?://[^\s|]+", item.raw_text)
+                    if url_m:
+                        existing_urls_in_db.add(url_m.group(0))
+
+                if mode == "replace":
+                    for old in session.exec(select(PipelineItem)).all():
+                        session.delete(old)
+                    for entry in parsed_entries:
+                        session.add(PipelineItem(raw_text=entry["raw_line"], status="pending"))
+                else:  # append or match
+                    for entry in parsed_entries:
+                        if entry["url"] not in existing_urls_in_db:
+                            session.add(PipelineItem(raw_text=entry["raw_line"], status="pending"))
+                            existing_urls_in_db.add(entry["url"])
+                session.commit()
+
         # Fast parallel liveness check across all candidate URLs
         liveness_results = await asyncio.gather(
             *[self.verify_url_active(entry["url"]) for entry in parsed_entries],
@@ -456,11 +482,6 @@ class NaturalDiscoveryService:
             if is_live is True or not isinstance(is_live, bool):
                 scored = self.score_posting_against_cv(entry, cv_text, spec)
                 raw_candidates.append(scored)
-
-        # Determine execution mode (replace vs append vs match)
-        mode = spec.get("mode", "replace")
-        if mode not in ("append", "replace", "match"):
-            mode = "replace"
 
         # Gather existing URLs & current count from DB
         existing_urls = set()
