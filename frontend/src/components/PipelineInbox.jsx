@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Plus,
   Zap,
@@ -26,6 +26,15 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
   const [verifying, setVerifying] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [actionMessage, setActionMessage] = useState('');
+
+  // Live real-time polling during discovery so UI updates live when write-ahead staging commits
+  useEffect(() => {
+    if (!discovering) return;
+    const interval = setInterval(() => {
+      onRefresh?.();
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [discovering, onRefresh]);
 
   const handleAdd = async (e) => {
     e.preventDefault();

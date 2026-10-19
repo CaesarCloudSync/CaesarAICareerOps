@@ -448,56 +448,58 @@ class NaturalDiscoveryService:
                     "raw_line": line
                 })
 
+        # --- 1. CAPTURE INITIAL STATE BEFORE STAGING ---
+        initial_existing_urls = set()
+        with Session(engine) as session:
+            db_items = session.exec(select(PipelineItem)).all()
+            initial_count = len(db_items)
+            for item in db_items:
+                url_m = re.search(r"https?://[^\s|]+", item.raw_text)
+                if url_m:
+                    initial_existing_urls.add(url_m.group(0))
+
         # --- WRITE-AHEAD STAGING PERSISTENCE ---
-        # Persist raw scanned jobs into PostgreSQL immediately before evaluation.
-        # If evaluation is interrupted, cancelled, or drops connection, zero jobs are lost!
+        # Persist raw scanned jobs into database immediately before evaluation.
+        # If evaluation is interrupted or cancelled, zero jobs are lost!
+        staged_new_urls = set()
         if parsed_entries:
             with Session(engine) as session:
-                existing_urls_in_db = set()
-                for item in session.exec(select(PipelineItem)).all():
-                    url_m = re.search(r"https?://[^\s|]+", item.raw_text)
-                    if url_m:
-                        existing_urls_in_db.add(url_m.group(0))
-
                 if mode == "replace":
                     for old in session.exec(select(PipelineItem)).all():
                         session.delete(old)
                     for entry in parsed_entries:
                         session.add(PipelineItem(raw_text=entry["raw_line"], status="pending"))
+                        staged_new_urls.add(entry["url"])
                 else:  # append or match
                     for entry in parsed_entries:
-                        if entry["url"] not in existing_urls_in_db:
+                        if entry["url"] not in initial_existing_urls:
                             session.add(PipelineItem(raw_text=entry["raw_line"], status="pending"))
-                            existing_urls_in_db.add(entry["url"])
+                            staged_new_urls.add(entry["url"])
                 session.commit()
 
-        # Fast parallel liveness check across all candidate URLs
+        # Candidates to evaluate
+        if mode in ("append", "match"):
+            evaluation_candidates = [e for e in parsed_entries if e["url"] not in initial_existing_urls]
+        else:
+            evaluation_candidates = parsed_entries
+
+        # Fast parallel liveness check across candidate URLs
         liveness_results = await asyncio.gather(
-            *[self.verify_url_active(entry["url"]) for entry in parsed_entries],
+            *[self.verify_url_active(entry["url"]) for entry in evaluation_candidates],
             return_exceptions=True
         )
 
         raw_candidates = []
-        for entry, is_live in zip(parsed_entries, liveness_results):
+        for entry, is_live in zip(evaluation_candidates, liveness_results):
             if is_live is True or not isinstance(is_live, bool):
                 scored = self.score_posting_against_cv(entry, cv_text, spec)
                 raw_candidates.append(scored)
-
-        # Gather existing URLs & current count from DB
-        existing_urls = set()
-        with Session(engine) as session:
-            db_items = session.exec(select(PipelineItem)).all()
-            current_count = len(db_items)
-            for item in db_items:
-                url_m = re.search(r"https?://[^\s|]+", item.raw_text)
-                if url_m:
-                    existing_urls.add(url_m.group(0))
 
         # Calculate needed roles
         if mode == "append":
             needed_target = target_count
         elif mode == "match":
-            needed_target = max(0, target_count - current_count)
+            needed_target = max(0, target_count - initial_count)
         else:  # replace
             needed_target = target_count
 
@@ -507,27 +509,33 @@ class NaturalDiscoveryService:
                 "status": "success",
                 "mode": mode,
                 "spec": spec,
-                "total_companies_probed": 0,
+                "total_companies_probed": len(target_companies),
                 "final_count": 0,
-                "total_in_queue": current_count,
-                "message": f"Autonomous discovery: Queue already matches target ({current_count} / {target_count} roles).",
+                "total_in_queue": initial_count,
+                "message": f"Autonomous discovery: Queue already matches target ({initial_count} / {target_count} roles).",
                 "roles": []
             }
 
-        # Filter out existing URLs if in append or match mode to guarantee brand new, unseen roles
-        if mode in ("append", "match") and existing_urls:
-            raw_candidates = [c for c in raw_candidates if c["url"] not in existing_urls]
-
         # 7. Apply diversity cap & strict backend guardrail
         final_selected = self.filter_and_diversify_roles(raw_candidates, target_count=needed_target, max_per_company=2)
+        selected_urls = {r["url"] for r in final_selected}
 
         # 8. Sync into Database & update pipeline.md
         with Session(engine) as session:
             if mode == "replace":
                 for old in session.exec(select(PipelineItem)).all():
                     session.delete(old)
-            for r in final_selected:
-                session.add(PipelineItem(raw_text=r["raw_line"], status="pending"))
+                for r in final_selected:
+                    session.add(PipelineItem(raw_text=r["raw_line"], status="pending"))
+            else:  # append or match
+                # Remove unselected staged items from this run, keep initial items + final_selected
+                for item in session.exec(select(PipelineItem)).all():
+                    url_m = re.search(r"https?://[^\s|]+", item.raw_text)
+                    if url_m:
+                        item_url = url_m.group(0)
+                        # If it was newly staged in this run but not selected for the top cut, prune it
+                        if item_url in staged_new_urls and item_url not in selected_urls:
+                            session.delete(item)
             session.commit()
             total_count = len(session.exec(select(PipelineItem)).all())
 
