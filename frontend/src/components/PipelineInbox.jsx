@@ -109,15 +109,17 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
   };
 
   const runBatchEvaluation = async (urlsToEval) => {
-    const targetList = Array.from(urlsToEval).filter(Boolean);
-    if (targetList.length === 0) return;
+    const rawList = Array.isArray(urlsToEval) ? urlsToEval : Array.from(urlsToEval || []);
+    const targetList = rawList.map(getUrlFromItem).filter(Boolean);
+    const finalItems = targetList.length > 0 ? targetList : rawList.filter(Boolean);
+    if (finalItems.length === 0) return;
 
     setIsBatchEvaluating(true);
     cancelBatchRef.current = false;
     setBatchProgress({
       current: 1,
-      total: targetList.length,
-      currentTitle: targetList[0],
+      total: finalItems.length,
+      currentTitle: finalItems[0],
       completed: 0,
       failed: 0,
     });
@@ -125,15 +127,15 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
     let completed = 0;
     let failed = 0;
 
-    for (let i = 0; i < targetList.length; i++) {
+    for (let i = 0; i < finalItems.length; i++) {
       if (cancelBatchRef.current) {
-        setActionMessage(`⏸️ Batch evaluation paused (${completed} completed).`);
+        setActionMessage(`⏸️ Evaluation paused (${completed} completed).`);
         break;
       }
-      const targetUrl = targetList[i];
+      const targetUrl = finalItems[i];
       setBatchProgress({
         current: i + 1,
-        total: targetList.length,
+        total: finalItems.length,
         currentTitle: targetUrl,
         completed,
         failed,
@@ -151,7 +153,7 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
           failed++;
         }
       } catch (err) {
-        console.error('Batch eval item failed', err);
+        console.error('Evaluation item failed', err);
         failed++;
       }
       onRefresh?.();
@@ -160,7 +162,16 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
     setIsBatchEvaluating(false);
     setSelectedUrls(new Set());
     onRefresh?.();
-    setActionMessage(`⚡ Batch evaluation complete: ${completed} evaluated successfully, ${failed} failed.`);
+
+    if (finalItems.length === 1) {
+      setActionMessage(
+        completed > 0
+          ? '✅ Evaluation complete! View report in Reports & PDFs tab.'
+          : '❌ Evaluation failed.'
+      );
+    } else {
+      setActionMessage(`⚡ Batch evaluation complete: ${completed} evaluated successfully, ${failed} failed.`);
+    }
     setTimeout(() => setActionMessage(''), 8000);
   };
 
@@ -799,17 +810,21 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
           </div>
         </div>
 
-      {/* Batch Evaluation Active Progress Card */}
+      {/* Batch / Single Evaluation Active Progress Card */}
       {isBatchEvaluating && (
         <div className="p-4 rounded-xl bg-violet-950/50 border border-violet-600/70 text-violet-100 shadow-xl space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <Loader2 className="w-4 h-4 text-violet-400 animate-spin" />
               <span className="text-xs font-semibold text-white">
-                Batch Evaluating Role {batchProgress.current} of {batchProgress.total}
+                {batchProgress.total === 1
+                  ? 'Evaluating Role...'
+                  : `Batch Evaluating Role ${batchProgress.current} of ${batchProgress.total}`}
               </span>
               <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300 border border-violet-500/30">
-                {batchProgress.completed} completed • {batchProgress.failed} failed
+                {batchProgress.total === 1
+                  ? 'In Progress'
+                  : `${batchProgress.completed} completed • ${batchProgress.failed} failed`}
               </span>
             </div>
             <button
@@ -817,7 +832,7 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
               className="px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/30 text-rose-300 text-xs font-medium flex items-center gap-1 transition-colors"
             >
               <X className="w-3.5 h-3.5" />
-              <span>Cancel Batch</span>
+              <span>Cancel</span>
             </button>
           </div>
           <div className="w-full bg-slate-900 rounded-full h-1.5 overflow-hidden">
@@ -937,10 +952,16 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
                       )}
                       <button
                         type="button"
-                        onClick={() => onSendToEvaluator(role.url)}
-                        className="px-2 py-0.5 rounded bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/30 text-indigo-300 text-[11px] font-medium flex items-center gap-1 transition-all"
+                        disabled={isBatchEvaluating}
+                        onClick={() => runBatchEvaluation([role.url])}
+                        className="px-2 py-0.5 rounded bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/30 text-indigo-300 text-[11px] font-medium flex items-center gap-1 transition-all disabled:opacity-40"
+                        title="Evaluate this role in-place"
                       >
-                        <Zap className="w-3 h-3 text-indigo-400" />
+                        {isBatchEvaluating && batchProgress.currentTitle === role.url ? (
+                          <Loader2 className="w-3 h-3 text-indigo-400 animate-spin" />
+                        ) : (
+                          <Zap className="w-3 h-3 text-indigo-400" />
+                        )}
                         <span>Eval</span>
                       </button>
                     </div>
@@ -1063,10 +1084,16 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
                       </a>
                     )}
                     <button
-                      onClick={() => onSendToEvaluator(url || item)}
-                      className="px-2.5 py-1.5 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/30 text-indigo-300 text-xs font-medium flex items-center gap-1 transition-all"
+                      disabled={isBatchEvaluating}
+                      onClick={() => runBatchEvaluation([url || item])}
+                      className="px-2.5 py-1.5 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/30 text-indigo-300 text-xs font-medium flex items-center gap-1 transition-all disabled:opacity-40"
+                      title="Evaluate this role in-place"
                     >
-                      <Zap className="w-3 h-3 text-indigo-400" />
+                      {isBatchEvaluating && (batchProgress.currentTitle === url || batchProgress.currentTitle === item) ? (
+                        <Loader2 className="w-3 h-3 text-indigo-400 animate-spin" />
+                      ) : (
+                        <Zap className="w-3 h-3 text-indigo-400" />
+                      )}
                       <span>Evaluate</span>
                     </button>
                   </div>
