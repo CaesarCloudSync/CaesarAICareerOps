@@ -29,7 +29,7 @@ Analyze the user's natural language search prompt and output ONLY a valid, raw J
   "seniority_tier": <string, e.g. "junior-to-mid">,
   "positive_keywords": [<list of positive title strings to match>],
   "negative_keywords": [<list of title strings to exclude, e.g. "Senior", "Lead", "Staff", "Principal", "Director", "VP", "Manager", "word:Intern", "Frontend">],
-  "target_companies": [<list of EXACTLY 50 to 60 prominent real-world UK/London tech employers, fintechs, and scaleups hiring for these skills to probe via ATS>],
+  "target_companies": [<list of 15 to 25 real-world UK/London tech employers specifically matching the requested industry or sector (e.g. for clean energy: Field, Kaluza, Ohme, Piclo, Zenobe, Octopus Energy, Ripple Energy; for cybersecurity: Snyk, Darktrace, Sophos, Immersive Labs, Tessian) to probe via ATS>],
   "tech_stack": [<list of languages and technologies mentioned>],
   "core_fundamentals": [<list of core domains like "API Development", "Databases", "Microservices">],
   "evaluate_against_cv": <boolean, true if evaluation against CV requested>
@@ -249,8 +249,35 @@ class NaturalDiscoveryService:
         tmp_file.replace(PORTALS_YML)
 
     async def probe_ats_boards(self, companies: List[str]) -> int:
-        """Step 3: Calls untouched discover-ats.mjs with AGY-provided company names."""
-        clean_companies = [c.replace(" ", "") if " " in c and len(c.split()) > 1 else c for c in companies]
+        """Step 3: Calls discover-ats.mjs with --write to automatically expand company boards."""
+        if not companies:
+            return 0
+
+        # Load currently tracked companies in portals.yml to avoid redundant probes
+        existing_names = set()
+        if PORTALS_YML.exists():
+            try:
+                with open(PORTALS_YML, "r", encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                for tc in cfg.get("tracked_companies", []):
+                    if isinstance(tc, dict) and "name" in tc:
+                        existing_names.add(tc["name"].lower().replace(" ", ""))
+            except Exception as e:
+                print(f"[Warning] Error reading portals.yml in probe_ats_boards: {e}")
+
+        # Deduplicate & select only new, untracked companies (up to 12 to prevent HTTP 429 rate limits)
+        to_probe = []
+        for c in companies:
+            norm = c.lower().replace(" ", "")
+            if norm not in existing_names and norm not in [p.lower().replace(" ", "") for p in to_probe]:
+                to_probe.append(c)
+                if len(to_probe) >= 12:
+                    break
+
+        if not to_probe:
+            return 0
+
+        clean_companies = [c.replace(" ", "") if " " in c and len(c.split()) > 1 else c for c in to_probe]
         cmd = ["node", "discover-ats.mjs"] + clean_companies + ["--write"]
         proc = await asyncio.create_subprocess_exec(
             *cmd,
