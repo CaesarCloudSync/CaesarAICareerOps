@@ -156,7 +156,7 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
         setActionMessage(`✨ ${data.message || 'Discovery complete! Added fresh UK postings to inbox.'}`);
         onRefresh?.();
       } else {
-        setActionMessage('❌ Discovery failed. Please check server logs.');
+        setActionMessage(`❌ ${data.message || 'Discovery failed. Please check server logs.'}`);
       }
     } catch (err) {
       setActionMessage(`❌ Discovery error: ${err.message}`);

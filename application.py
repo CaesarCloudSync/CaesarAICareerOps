@@ -16,7 +16,34 @@ if str(BASE_DIR) not in sys.path:
 os.chdir(BASE_DIR)
 
 
+def ensure_frontend_built():
+    """Checks if frontend/src is newer than frontend/dist and triggers a build automatically."""
+    frontend_dir = BASE_DIR / "frontend"
+    dist_index = frontend_dir / "dist" / "index.html"
+    src_dir = frontend_dir / "src"
+
+    needs_build = False
+    if not dist_index.exists():
+        needs_build = True
+    elif src_dir.exists():
+        dist_mtime = dist_index.stat().st_mtime
+        for p in src_dir.rglob("*"):
+            if p.is_file() and p.stat().st_mtime > dist_mtime:
+                needs_build = True
+                break
+
+    if needs_build:
+        print("⚡ Changes detected in frontend/src. Compiling frontend bundle...")
+        import subprocess
+        try:
+            subprocess.run(["npm", "run", "build"], cwd=str(frontend_dir), check=True)
+            print("✓ Frontend compiled cleanly into frontend/dist.")
+        except Exception as e:
+            print(f"⚠️ Frontend auto-build warning: {e}")
+
+
 def main():
+    ensure_frontend_built()
     host = os.getenv("HOST", "0.0.0.0" if os.getenv("ENVIRONMENT") == "docker" or os.getenv("DOCKER") else "127.0.0.1")
     port = int(os.getenv("PORT", "8000"))
     reload = os.getenv("RELOAD", "true").lower() in ("true", "1", "yes")

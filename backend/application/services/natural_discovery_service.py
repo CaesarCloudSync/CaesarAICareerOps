@@ -1,3 +1,4 @@
+import os
 import re
 import json
 import asyncio
@@ -126,8 +127,12 @@ class NaturalDiscoveryService:
             "evaluate_against_cv": True
         }
 
-    def apply_dynamic_filters(self, spec: Dict[str, Any]) -> None:
-        """Step 2: Updates portals.yml title_filter and location_filter cleanly preserving formatting."""
+    async def apply_dynamic_filters(self, spec: Dict[str, Any]) -> None:
+        """
+        Step 2: Updates portals.yml title_filter and location_filter with atomic rollback.
+        Writes to a staging temp file, verifies with validate-portals.mjs, and atomically
+        renames only on 100% successful validation.
+        """
         if not PORTALS_YML.exists():
             return
 
@@ -193,11 +198,29 @@ class NaturalDiscoveryService:
         else:
             content = content.replace("tracked_companies:", f"{title_block}\n\ntracked_companies:", 1)
 
-        PORTALS_YML.write_text(content, encoding="utf-8")
+        # Safeguard 1: Write to staging temp file & pre-flight validate
+        tmp_file = PORTALS_YML.with_suffix(".yml.tmp")
+        tmp_file.write_text(content, encoding="utf-8")
+
+        val_proc = await asyncio.create_subprocess_exec(
+            "node", "validate-portals.mjs",
+            cwd=str(CAREER_OPS_DIR),
+            env={**os.environ, "CAREER_OPS_PORTALS": str(tmp_file)},
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        val_stdout, val_stderr = await val_proc.communicate()
+
+        if val_proc.returncode != 0:
+            tmp_file.unlink(missing_ok=True)
+            err_msg = val_stdout.decode("utf-8", errors="replace").strip()
+            raise ValueError(f"portals.yml pre-flight validation failed. Aborted write to preserve config: {err_msg[:400]}")
+
+        # Validation passed: atomically commit change
+        tmp_file.replace(PORTALS_YML)
 
     async def probe_ats_boards(self, companies: List[str]) -> int:
         """Step 3: Calls untouched discover-ats.mjs with AGY-provided company names."""
-        # Sanitize company names to single token or safe string
         clean_companies = [c.replace(" ", "") if " " in c and len(c.split()) > 1 else c for c in companies]
         cmd = ["node", "discover-ats.mjs"] + clean_companies + ["--write"]
         proc = await asyncio.create_subprocess_exec(
@@ -206,18 +229,23 @@ class NaturalDiscoveryService:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        await proc.communicate()
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            print(f"[Warning] discover-ats.mjs returned non-zero code {proc.returncode}: {stderr.decode('utf-8', errors='replace')[:300]}")
         return proc.returncode
 
     async def run_ats_scan(self) -> int:
-        """Step 4: Executes untouched scan.mjs across registered boards."""
+        """Step 4: Executes untouched scan.mjs across registered boards with fail-fast validation."""
         proc = await asyncio.create_subprocess_exec(
             "node", "scan.mjs",
             cwd=str(CAREER_OPS_DIR),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        await proc.communicate()
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            err_details = stderr.decode("utf-8", errors="replace").strip() or stdout.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(f"scan.mjs failed with exit code {proc.returncode}: {err_details[:500]}")
         return proc.returncode
 
     async def verify_url_active(self, url: str, timeout_sec: float = 3.0) -> bool:
@@ -340,8 +368,8 @@ class NaturalDiscoveryService:
         target_count = spec.get("target_count", 50)
         target_companies = spec.get("target_companies", [])
 
-        # 2. Apply dynamic filters to portals.yml
-        self.apply_dynamic_filters(spec)
+        # 2. Apply dynamic filters to portals.yml with pre-flight atomic rollback
+        await self.apply_dynamic_filters(spec)
 
         # 3. Probe the 50+ ATS boards via discover-ats.mjs --write
         if target_companies:

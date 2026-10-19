@@ -3,6 +3,7 @@ import asyncio
 from pathlib import Path
 from typing import Dict, Any, List
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 import yaml
 from sqlmodel import Session, select
 
@@ -514,14 +515,23 @@ async def discover_jobs(
     enforcing strict UK / London pigeonhole.
     """
     if payload.natural_language_query and payload.natural_language_query.strip():
-        service = NaturalDiscoveryService()
-        result = await service.run_pipeline(payload.natural_language_query.strip())
-        return {
-            "status": "success",
-            "message": f"Autonomous discovery complete: Populated inbox with {result['final_count']} verified roles.",
-            "spec": result["spec"],
-            "roles": result["roles"],
-        }
+        try:
+            service = NaturalDiscoveryService()
+            result = await service.run_pipeline(payload.natural_language_query.strip())
+            return {
+                "status": "success",
+                "message": f"Autonomous discovery complete: Populated inbox with {result['final_count']} verified roles.",
+                "spec": result["spec"],
+                "roles": result["roles"],
+            }
+        except Exception as e:
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "status": "error",
+                    "message": f"Autonomous discovery error: {str(e)}"
+                }
+            )
 
     scan_result = await scanner.run_scan(verify=payload.verify)
 
