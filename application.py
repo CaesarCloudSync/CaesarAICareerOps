@@ -30,7 +30,8 @@ def main():
     print("Press Ctrl+C to stop the server.")
     print("==========================================================")
 
-    uvicorn.run("backend.application.main:app", host=host, port=port, reload=reload)
+    reload_dirs = [str(BASE_DIR / "backend" / "application")] if reload else None
+    uvicorn.run("backend.application.main:app", host=host, port=port, reload=reload, reload_dirs=reload_dirs)
 
 
 if __name__ == "__main__":

@@ -106,6 +106,11 @@ cmd_local() {
     sleep 1
   fi
 
+  if command -v npm &> /dev/null && [ -d "$ROOT_DIR/frontend" ]; then
+    echo -e "📦 Building React frontend (Vite)..."
+    (cd "$ROOT_DIR/frontend" && npm run build)
+  fi
+
   echo -e "🚀 Starting CaesarAICareerOps Co-Pilot in foreground (live logs below)..."
   cd "$ROOT_DIR"
   exec python3 "$ROOT_DIR/application.py"

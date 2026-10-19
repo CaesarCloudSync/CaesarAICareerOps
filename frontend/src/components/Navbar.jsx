@@ -5,11 +5,11 @@ export default function Navbar({ activeTab, setActiveTab, stats, health, onOpenA
   const providerName = health?.provider || (health?.database?.includes('postgres') ? 'PostgreSQL' : 'SQLite') || 'PostgreSQL';
 
   const tabs = [
+    { id: 'pipeline', label: `📥 Pipeline Inbox (${stats.pipeline_inbox_count || 0})` },
     { id: 'tracker', label: '📊 Applications' },
     { id: 'evaluator', label: '⚡ Job Evaluator' },
-    { id: 'pipeline', label: `📥 Pipeline Inbox (${stats.pipeline_inbox_count || 0})` },
     { id: 'reports', label: `📄 Reports & PDFs (${stats.total_reports || 0})` },
-    { id: 'cv', label: '📝 CV & Profile' },
+    { id: 'settings', label: '⚙️ Discovery & Profile Settings' },
   ];
 
   return (

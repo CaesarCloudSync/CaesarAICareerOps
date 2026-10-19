@@ -15,6 +15,7 @@ from backend.application.routers import (
     reports_router,
     pdfs_router,
     auth_router,
+    settings_router,
 )
 
 
@@ -51,6 +52,7 @@ app.include_router(cv_router)
 app.include_router(reports_router)
 app.include_router(pdfs_router)
 app.include_router(auth_router)
+app.include_router(settings_router)
 
 # Mount generated PDF output directory
 career_ops_output = BACKEND_DIR / "career-ops" / "output"
@@ -71,9 +73,21 @@ async def health_check():
     }
 
 
-# Mount compiled React frontend if built
+# Mount compiled React frontend if built (with strict no-cache on index.html to guarantee instant updates)
 frontend_dist = ROOT_DIR / "frontend" / "dist"
 if frontend_dist.exists():
+    @app.get("/")
+    @app.get("/index.html")
+    async def serve_index():
+        return FileResponse(
+            str(frontend_dist / "index.html"),
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
+
     app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="frontend")
 else:
     @app.get("/")

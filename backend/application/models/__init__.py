@@ -25,6 +25,10 @@ from backend.application.models.settings_model import (
     SaveProfileRequest,
     ScanRequest,
     DashboardStats,
+    DiscoverySettings,
+    CandidateProfileData,
+    DiscoverJobsRequest,
+    ExpandCompaniesRequest,
 )
 
 __all__ = [
@@ -46,4 +50,8 @@ __all__ = [
     "SaveProfileRequest",
     "ScanRequest",
     "DashboardStats",
+    "DiscoverySettings",
+    "CandidateProfileData",
+    "DiscoverJobsRequest",
+    "ExpandCompaniesRequest",
 ]

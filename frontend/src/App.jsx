@@ -6,10 +6,11 @@ import JobEvaluator from './components/JobEvaluator';
 import PipelineInbox from './components/PipelineInbox';
 import ReportsViewer from './components/ReportsViewer';
 import CvEditor from './components/CvEditor';
+import DiscoverySettingsView from './components/DiscoverySettingsView';
 import AgyAuthModal from './components/AgyAuthModal';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('tracker');
+  const [activeTab, setActiveTab] = useState('pipeline');
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [stats, setStats] = useState({});
   const [health, setHealth] = useState({ provider: 'PostgreSQL' });
@@ -115,7 +116,7 @@ export default function App() {
           />
         )}
 
-        {activeTab === 'cv' && <CvEditor />}
+        {(activeTab === 'settings' || activeTab === 'cv') && <DiscoverySettingsView />}
       </main>
 
       <AgyAuthModal
