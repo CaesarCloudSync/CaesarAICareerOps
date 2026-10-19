@@ -3,7 +3,7 @@ from typing import List, Dict, Any
 from fastapi import APIRouter, Depends
 from sqlmodel import Session, select
 
-from backend.application.models import PipelineAddRequest, PipelineItem
+from backend.application.models import PipelineAddRequest, PipelineDeleteBatchRequest, PipelineItem
 from backend.application.database import engine
 from backend.application.repository.base import BaseRepository
 from backend.application.dependencies import get_career_repository
@@ -67,3 +67,13 @@ async def add_to_pipeline(
     """Add a job posting URL or snippet to the pipeline inbox."""
     await repo.add_to_pipeline(payload.input_data)
     return {"message": "Item added to pipeline inbox"}
+
+
+@router.post("/delete-batch")
+async def delete_pipeline_items_batch(
+    payload: PipelineDeleteBatchRequest,
+    repo: BaseRepository = Depends(get_career_repository),
+) -> Dict[str, Any]:
+    """Delete selected pipeline items across all occurrences (DB, pipeline.md, scan-history.tsv, applications, reports, PDFs)."""
+    return await repo.delete_pipeline_items(payload.urls)
+

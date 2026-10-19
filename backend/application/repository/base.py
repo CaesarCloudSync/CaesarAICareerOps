@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from backend.application.models import (
     Application,
     ApplicationCreate,
@@ -54,6 +54,12 @@ class BaseRepository(ABC):
     async def add_to_pipeline(self, item_text: str) -> bool:
         """Add a job listing / URL to the pipeline inbox."""
         pass
+
+    @abstractmethod
+    async def delete_pipeline_items(self, target_items: List[str]) -> Dict[str, Any]:
+        """Delete selected pipeline items across all occurrences (DB, pipeline.md, scan-history.tsv, applications, reports, PDFs)."""
+        pass
+
 
     @abstractmethod
     async def get_cv(self) -> str:

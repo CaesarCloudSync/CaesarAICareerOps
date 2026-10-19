@@ -14,3 +14,8 @@ class PipelineItem(SQLModel, table=True):
 
 class PipelineAddRequest(SQLModel):
     input_data: str = Field(..., description="URL or job line to add to the inbox")
+
+
+class PipelineDeleteBatchRequest(SQLModel):
+    urls: list[str] = Field(..., description="List of URLs or raw lines to delete across all occurrences")
+

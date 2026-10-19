@@ -171,5 +171,24 @@ class DiscoveryTracker:
     def get_latest_discovered(self) -> Dict[str, Any]:
         return self._latest_discovered
 
+    def remove_roles(self, urls: set):
+        if self._latest_discovered.get("roles"):
+            clean_targets = {u.rstrip("/") for u in urls if u}
+            filtered_roles = []
+            for r in self._latest_discovered["roles"]:
+                r_url = (r.get("url") or "").rstrip("/")
+                r_base = r_url.split("?")[0] if r_url else ""
+                r_raw = r.get("raw_line") or ""
+                if (
+                    r_url in clean_targets
+                    or r_base in clean_targets
+                    or any(u in r_url or u in r_raw for u in clean_targets if len(u) > 10)
+                ):
+                    continue
+                filtered_roles.append(r)
+            self._latest_discovered["roles"] = filtered_roles
+            self._latest_discovered["count"] = len(filtered_roles)
+
+
 
 discovery_tracker = DiscoveryTracker()

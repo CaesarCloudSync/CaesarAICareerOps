@@ -267,6 +267,84 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
     fetchLatestDiscovered();
   }, []);
 
+  const [deleting, setDeleting] = useState(false);
+
+  const handleDeleteSelected = async () => {
+    if (selectedUrls.size === 0) return;
+    const count = selectedUrls.size;
+    if (
+      !window.confirm(
+        `Are you sure you want to delete ${count} selected role(s) from inbox, TSV scan history, and all occurrences?`
+      )
+    ) {
+      return;
+    }
+
+    setDeleting(true);
+    try {
+      const res = await fetch('/api/pipeline/delete-batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ urls: Array.from(selectedUrls) }),
+      });
+      if (!res.ok) {
+        throw new Error(`Server returned HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      setActionMessage(`🗑️ ${data.message || `Deleted ${count} item(s) from all occurrences.`}`);
+      setSelectedUrls(new Set());
+      await fetchLatestDiscovered();
+      onRefresh?.();
+      setTimeout(() => setActionMessage(''), 6000);
+    } catch (err) {
+      console.error('Failed to delete selected items:', err);
+      setActionMessage(`❌ Failed to delete: ${err.message}`);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const handleDeleteSingle = async (target) => {
+    if (!target) return;
+    const url = getUrlFromItem(target) || target;
+    if (
+      !window.confirm(
+        'Delete this role from inbox, TSV scan history, and all occurrences?'
+      )
+    ) {
+      return;
+    }
+
+    setDeleting(true);
+    try {
+      const res = await fetch('/api/pipeline/delete-batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ urls: [url, target] }),
+      });
+      if (!res.ok) {
+        throw new Error(`Server returned HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      setActionMessage(`🗑️ ${data.message || 'Deleted item from all occurrences.'}`);
+      setSelectedUrls((prev) => {
+        const next = new Set(prev);
+        next.delete(url);
+        next.delete(target);
+        return next;
+      });
+      await fetchLatestDiscovered();
+      onRefresh?.();
+      setTimeout(() => setActionMessage(''), 5000);
+    } catch (err) {
+      console.error('Failed to delete item:', err);
+      setActionMessage(`❌ Failed to delete: ${err.message}`);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+
   // 1. Mount Check: Check server for any running discovery job (survives page refresh!)
   useEffect(() => {
     let isMounted = true;
@@ -1119,6 +1197,15 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
                         )}
                         <span>Eval</span>
                       </button>
+                      <button
+                        type="button"
+                        disabled={deleting || isEvaluating}
+                        onClick={() => handleDeleteSingle(role.url || role.raw_line)}
+                        className="p-1 rounded bg-slate-800 hover:bg-rose-900/40 text-slate-400 hover:text-rose-400 border border-slate-700/60 hover:border-rose-500/30 transition-all disabled:opacity-40"
+                        title="Delete this role from all occurrences including TSV history"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -1153,7 +1240,7 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
             <span className="text-slate-600">|</span>
             <span className="text-slate-400 font-mono text-[11px]">
               {selectedUrls.size > 0 ? (
-                <span className="text-indigo-300 font-semibold">{selectedUrls.size} selected for evaluation</span>
+                <span className="text-indigo-300 font-semibold">{selectedUrls.size} selected</span>
               ) : (
                 <span>{items.length} roles in queue</span>
               )}
@@ -1164,8 +1251,18 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
             <div className="flex items-center gap-2">
               <button
                 type="button"
+                onClick={handleDeleteSelected}
+                disabled={deleting || isEvaluating}
+                className="px-3 py-1.5 rounded-lg bg-rose-950/40 hover:bg-rose-900/60 border border-rose-500/40 hover:border-rose-400 text-rose-300 font-semibold text-xs flex items-center gap-1.5 transition-all hover:scale-[1.02] active:scale-[0.98] disabled:opacity-40"
+                title="Delete selected roles from pipeline, TSV history, applications, and all occurrences"
+              >
+                {deleting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5 text-rose-400" />}
+                <span>Delete Selected ({selectedUrls.size})</span>
+              </button>
+              <button
+                type="button"
                 onClick={() => runBatchEvaluation(selectedUrls)}
-                disabled={isEvaluating}
+                disabled={isEvaluating || deleting}
                 className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white font-semibold text-xs flex items-center gap-1.5 shadow-md shadow-violet-600/30 transition-all hover:scale-[1.02] active:scale-[0.98] disabled:opacity-40"
               >
                 {isEvaluating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5 text-amber-300" />}
@@ -1250,6 +1347,15 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
                         <Zap className="w-3 h-3 text-indigo-400" />
                       )}
                       <span>Evaluate</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={deleting || isEvaluating}
+                      onClick={() => handleDeleteSingle(url || item)}
+                      className="p-1.5 rounded bg-slate-800 hover:bg-rose-900/40 text-slate-400 hover:text-rose-400 border border-slate-700/60 hover:border-rose-500/30 transition-all disabled:opacity-40"
+                      title="Delete this role from all occurrences including TSV history"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
                     </button>
                   </div>
                 </div>

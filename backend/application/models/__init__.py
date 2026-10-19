@@ -12,6 +12,7 @@ from backend.application.models.cv import (
 from backend.application.models.pipeline import (
     PipelineItem,
     PipelineAddRequest,
+    PipelineDeleteBatchRequest,
 )
 from backend.application.models.report import (
     EvaluationReport,
@@ -42,6 +43,7 @@ __all__ = [
     "ResumeSaveRequest",
     "PipelineItem",
     "PipelineAddRequest",
+    "PipelineDeleteBatchRequest",
     "EvaluationReport",
     "JobEvalRequest",
     "JobEvalResponse",

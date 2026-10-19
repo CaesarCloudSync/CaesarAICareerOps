@@ -1,12 +1,13 @@
 import re
 from pathlib import Path
 from datetime import datetime, date, timezone
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from sqlmodel import Session, select, desc, func
 
 from backend.application.settings import settings
 from backend.application.database import engine, init_database
 from backend.application.repository.base import BaseRepository
+from backend.application.services.discovery_tracker import discovery_tracker
 from backend.application.models import (
     Application,
     ApplicationCreate,
@@ -210,6 +211,193 @@ class SQLModelRepository(BaseRepository):
             session.add(item)
             session.commit()
             return True
+
+    async def delete_pipeline_items(self, target_items: List[str]) -> Dict[str, Any]:
+        """
+        Delete selected pipeline items across all occurrences:
+        1. PipelineItem database table
+        2. data/pipeline.md
+        3. data/scan-history.tsv (removes from seen/dedup history completely)
+        4. Application database table (if evaluated)
+        5. data/applications.md tracker table (if tracked)
+        6. reports/*.md evaluation report files
+        7. output/*.pdf generated PDF files
+        8. in-memory discovery_tracker cache
+        """
+        if not target_items:
+            return {
+                "status": "success",
+                "deleted_pipeline": 0,
+                "deleted_tsv": 0,
+                "deleted_apps": 0,
+                "deleted_reports": 0,
+                "message": "No items provided for deletion.",
+            }
+
+        # 1. Normalize targets into a set of clean URLs and tokens
+        clean_urls = set()
+        raw_targets = set()
+        for item in target_items:
+            if not item or not str(item).strip():
+                continue
+            item_str = str(item).strip()
+            raw_targets.add(item_str)
+            url_match = re.search(r"https?://[^\s|]+", item_str)
+            if url_match:
+                u = url_match.group(0).rstrip("/")
+                clean_urls.add(u)
+                base_u = u.split("?")[0].rstrip("/")
+                clean_urls.add(base_u)
+            else:
+                if len(item_str) > 5:
+                    clean_urls.add(item_str)
+
+        # Filter out anything too short to prevent unintended broad matches
+        clean_urls = {u for u in clean_urls if len(u) > 10}
+
+        deleted_pipeline_count = 0
+        deleted_apps_count = 0
+        reports_to_delete = set()
+
+        # 2. Database cleanup: PipelineItem and Application
+        with Session(engine) as session:
+            all_pipeline_items = session.exec(select(PipelineItem)).all()
+            for p_item in all_pipeline_items:
+                p_text = p_item.raw_text.strip()
+                matched = False
+                if any(u in p_text for u in clean_urls):
+                    matched = True
+                elif p_text in raw_targets:
+                    matched = True
+                if matched:
+                    session.delete(p_item)
+                    deleted_pipeline_count += 1
+
+            all_apps = session.exec(select(Application)).all()
+            for app in all_apps:
+                app_matched = False
+                if app.url:
+                    norm_app_url = app.url.rstrip("/")
+                    norm_base_url = norm_app_url.split("?")[0]
+                    if any(u in norm_app_url or u in norm_base_url for u in clean_urls):
+                        app_matched = True
+                if app_matched:
+                    if app.report_path:
+                        reports_to_delete.add(Path(app.report_path).name)
+                    session.delete(app)
+                    deleted_apps_count += 1
+
+            session.commit()
+
+        # 3. Update data/pipeline.md
+        pipeline_md = self.career_ops_dir / "data" / "pipeline.md"
+        if pipeline_md.exists():
+            lines = pipeline_md.read_text(encoding="utf-8", errors="replace").splitlines()
+            new_lines = []
+            for line in lines:
+                line_matched = False
+                for u in clean_urls:
+                    if u in line:
+                        line_matched = True
+                        break
+                if not line_matched and line.strip() in raw_targets:
+                    line_matched = True
+                if not line_matched:
+                    new_lines.append(line)
+            pipeline_md.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
+        # 4. Update data/scan-history.tsv (Removes matching rows so history is purged)
+        deleted_tsv_count = 0
+        scan_tsv = self.career_ops_dir / "data" / "scan-history.tsv"
+        if scan_tsv.exists():
+            tsv_lines = scan_tsv.read_text(encoding="utf-8", errors="replace").splitlines()
+            new_tsv_lines = []
+            for idx, line in enumerate(tsv_lines):
+                if idx == 0:  # preserve header row
+                    new_tsv_lines.append(line)
+                    continue
+                cols = line.split("\t")
+                row_url = cols[0].strip().rstrip("/")
+                row_base_url = row_url.split("?")[0]
+                if (
+                    row_url in clean_urls
+                    or row_base_url in clean_urls
+                    or any(u in row_url for u in clean_urls)
+                ):
+                    deleted_tsv_count += 1
+                    continue
+                new_tsv_lines.append(line)
+            scan_tsv.write_text("\n".join(new_tsv_lines) + "\n", encoding="utf-8")
+
+        # 5. Update data/applications.md
+        apps_md = self.career_ops_dir / "data" / "applications.md"
+        if apps_md.exists():
+            apps_lines = apps_md.read_text(encoding="utf-8", errors="replace").splitlines()
+            new_apps_lines = []
+            for line in apps_lines:
+                if line.startswith("#") or line.startswith("| #") or line.startswith("|---"):
+                    new_apps_lines.append(line)
+                    continue
+                line_matched = False
+                for u in clean_urls:
+                    if u in line:
+                        line_matched = True
+                        break
+                for rep in reports_to_delete:
+                    if rep and rep in line:
+                        line_matched = True
+                        break
+                if not line_matched:
+                    new_apps_lines.append(line)
+            apps_md.write_text("\n".join(new_apps_lines) + "\n", encoding="utf-8")
+
+        # 6. Delete reports and PDFs
+        reports_dir = self.career_ops_dir / "reports"
+        output_dir = self.career_ops_dir / "output"
+        deleted_reports_count = 0
+
+        # Delete known report filenames from Application records
+        for rep_name in reports_to_delete:
+            rep_file = reports_dir / rep_name
+            if rep_file.exists() and rep_file.is_file():
+                try:
+                    rep_file.unlink()
+                    deleted_reports_count += 1
+                except Exception:
+                    pass
+            pdf_file = output_dir / rep_name.replace(".md", ".pdf")
+            if pdf_file.exists() and pdf_file.is_file():
+                try:
+                    pdf_file.unlink()
+                except Exception:
+                    pass
+
+        # Also scan reports_dir to see if any report content references target URLs
+        if reports_dir.exists():
+            for r_file in reports_dir.glob("*.md"):
+                try:
+                    content = r_file.read_text(encoding="utf-8", errors="replace")
+                    if any(u in content for u in clean_urls):
+                        r_file.unlink()
+                        pdf_file = output_dir / r_file.name.replace(".md", ".pdf")
+                        if pdf_file.exists() and pdf_file.is_file():
+                            pdf_file.unlink()
+                        deleted_reports_count += 1
+                except Exception:
+                    pass
+
+        # 7. Update in-memory discovery tracker cache
+        discovery_tracker.remove_roles(clean_urls)
+
+        return {
+            "status": "success",
+            "deleted_pipeline": deleted_pipeline_count,
+            "deleted_tsv": deleted_tsv_count,
+            "deleted_apps": deleted_apps_count,
+            "deleted_reports": deleted_reports_count,
+            "message": f"Deleted {deleted_pipeline_count} inbox role(s), purged {deleted_tsv_count} from TSV history, and cleaned related records.",
+        }
+
 
     async def get_cv(self) -> str:
         with Session(engine) as session:
