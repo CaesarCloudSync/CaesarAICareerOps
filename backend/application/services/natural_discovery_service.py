@@ -107,17 +107,8 @@ class NaturalDiscoveryService:
             match = re.search(r"\{.*\}", cleaned, re.DOTALL)
             if match:
                 parsed = json.loads(match.group(0))
-                # Normalize mode
-                prompt_lower = user_prompt.lower()
-                match_keywords = ["keep at", "maintain", "match", "top up", "top-up", "fill to", "ensure", "make sure it", "have exactly", "reach "]
-                append_keywords = ["more", "add ", "additional", "another", "plus", "expand", "append"]
-
-                parsed_mode = str(parsed.get("mode", "")).lower().strip()
-                if parsed_mode == "match" or any(w in prompt_lower for w in match_keywords):
-                    parsed["mode"] = "match"
-                else:
-                    # Guardrail: replace is completely disabled to protect the inbox
-                    parsed["mode"] = "append"
+                # AI determines mode directly: "match" vs "append"
+                parsed["mode"] = "match" if str(parsed.get("mode", "")).lower().strip() == "match" else "append"
 
                 # AI extracts company_count directly in its JSON; default to 20 if missing or invalid
                 try:
@@ -129,13 +120,7 @@ class NaturalDiscoveryService:
         except Exception as e:
             print(f"[NaturalDiscovery] AGY parse exception: {e}, falling back to defaults.")
 
-        prompt_lower = user_prompt.lower()
-        match_keywords = ["keep at", "maintain", "match", "top up", "top-up", "fill to", "ensure", "make sure it", "have exactly", "reach "]
-
-        if any(w in prompt_lower for w in match_keywords):
-            inferred_mode = "match"
-        else:
-            inferred_mode = "append"
+        inferred_mode = "append"
 
         # Robust fallback preserving UK tech employers & backend keywords
         return {
