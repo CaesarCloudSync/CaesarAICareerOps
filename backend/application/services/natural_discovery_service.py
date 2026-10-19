@@ -30,47 +30,14 @@ Analyze the user's natural language search prompt and output ONLY a valid, raw J
   "industry_sector": <string, e.g. "Healthcare", "FinTech", "CleanTech", "Cybersecurity", "General Tech">,
   "role_domain": <string, e.g. "Backend Software Engineering">,
   "seniority_tier": <string, e.g. "junior-to-mid">,
-  "positive_keywords": [<list of positive title strings to match>],
-  "negative_keywords": [<list of title strings to exclude, always include "Senior", "Lead", "Staff", "Principal", "Director", "VP", "Manager", "word:Intern", "Internship", "Internships", "Frontend">],
+  "positive_keywords": [<list of positive title strings to match. Always include standard UK engineering variations: e.g. "Backend Engineer", "Back-End Engineer", "Backend Developer", "Software Engineer", "Software Developer", "Platform Engineer", "API Engineer", "Systems Engineer", and language-specific titles like "Python Engineer", "Java Developer", "C# Developer", "Graduate Software Engineer", "Associate Software Engineer">],
+  "negative_keywords": [<list of title strings to exclude. Always include seniority exclusions ("Senior", "Lead", "Staff", "Principal", "Director", "VP", "Head of", "Manager"), student exclusions ("word:Intern", "Internship", "Internships"), and non-tech noise ("Recruiter", "Talent Acquisition", "Account Executive", "Sales", "Retail", "Support", "Customer Success", "Nurse", "Doctor", "Driver", "Warehouse", "Legal Counsel")>],
   "target_companies": [<list of real-world UK tech/industry employers specifically matching the requested industry or sector. The length of this list MUST equal company_count (default 20, or up to the requested number like 50, 100, or up to 400). E.g. for healthcare: Accurx, Huma, Cera, Peppy, Zoe, Kheiron Medical, Flo Health, BenevolentAI, etc.>],
   "tech_stack": [<list of languages and technologies mentioned>],
   "core_fundamentals": [<list of core domains like "API Development", "Databases", "Microservices">],
   "evaluate_against_cv": <boolean, true if evaluation against CV requested>
 }
 """
-
-CORE_ROLE_ANCHORS_REGEX = re.compile(
-    r"\b("
-    # Software & Technical Infrastructure
-    r"backend|software|developer|engineer|api|platform|python|golang|go|java|node\.js|node|"
-    r"cloud|devops|sre|reliability|infrastructure|data engineer|data scientist|machine learning|ml|ai|"
-    r"fullstack|full-stack|"
-    # Consulting, Solutions & Advisory
-    r"consultant|consulting|advisory|solutions|transformation|specialist|"
-    # Delivery, Agile & Project Leadership (candidate profile archetypes)
-    r"delivery|project manager|project coordinator|delivery manager|delivery specialist|"
-    r"technical project|program manager|scrum master|agile coach|product delivery"
-    r")\b",
-    re.IGNORECASE,
-)
-
-NOISE_BLACKLIST_REGEX = re.compile(
-    r"\b("
-    r"recruiter|talent acquisition|account executive|sales representative|retail|"
-    r"speaking|bilingual|translation|"
-    r"nurse|doctor|veterinarian|driver|warehouse|cashier|waiter|chef|receptionist|legal counsel|paralegal"
-    r")\b",
-    re.IGNORECASE,
-)
-
-UK_REGEX = re.compile(
-    r"\b(london|greater london|united kingdom|uk|great britain|england|edinburgh|manchester|birmingham|cambridge|oxford|bristol|belfast|glasgow|leeds|sheffield|newcastle|nottingham|liverpool)\b",
-    re.IGNORECASE,
-)
-FOREIGN_REGEX = re.compile(
-    r"\b(china|beijing|shanghai|usa|united states|san francisco|india|poland|germany|france|spain)\b",
-    re.IGNORECASE,
-)
 
 
 class NaturalDiscoveryService:
@@ -88,7 +55,28 @@ class NaturalDiscoveryService:
 
     async def parse_prompt_with_agy(self, user_prompt: str) -> Dict[str, Any]:
         """Step 1: Uses agy CLI to parse user natural language prompt into clean JSON."""
-        full_prompt = f"{SYSTEM_PARSER_PROMPT}\n\nUSER PROMPT:\n{user_prompt}"
+        # Read existing company names from portals.yml so the AI picks ONLY brand new ones
+        existing_companies = []
+        if PORTALS_YML.exists():
+            try:
+                with open(PORTALS_YML, "r", encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                for tc in cfg.get("tracked_companies", []):
+                    if isinstance(tc, dict) and tc.get("name"):
+                        existing_companies.append(tc["name"].strip())
+            except Exception as e:
+                print(f"[Warning] Error reading portals.yml in parse_prompt_with_agy: {e}")
+
+        existing_block = ""
+        if existing_companies:
+            names_list = ", ".join(sorted(set(existing_companies)))
+            existing_block = (
+                f"\n\nCURRENTLY TRACKED COMPANIES IN DATABASE:\n"
+                f"{names_list}\n"
+                f"RULE FOR TARGET COMPANIES: If the user is asking for NEW companies or expanding the catalog, you MUST pick ONLY employers that are NOT in the tracked list above. If the user explicitly asks for specific companies or to scan existing companies, you may include them."
+            )
+
+        full_prompt = f"{SYSTEM_PARSER_PROMPT}{existing_block}\n\nUSER PROMPT:\n{user_prompt}"
         try:
             proc = await asyncio.create_subprocess_exec(
                 "agy", "-p", full_prompt, "--dangerously-skip-permissions",
@@ -432,12 +420,6 @@ class NaturalDiscoveryService:
                 return True
         return await loop.run_in_executor(None, _check)
 
-    def is_uk_geofenced(self, text: str) -> bool:
-        """Strict UK/London validation."""
-        has_uk = bool(UK_REGEX.search(text))
-        has_foreign = bool(FOREIGN_REGEX.search(text))
-        return has_uk and not (has_foreign and not ("united kingdom" in text.lower() or "london" in text.lower()))
-
     def score_posting_against_cv(self, posting: Dict[str, Any], cv_text: str, spec: Dict[str, Any]) -> Dict[str, Any]:
         """Step 6: Evaluates ATS keyword match and calculates match percentage."""
         title_comp = f"{posting['title']} {posting['company']}".lower()
@@ -492,10 +474,6 @@ class NaturalDiscoveryService:
 
         for posting in raw_postings:
             title = posting.get("title", "").strip()
-
-            # Reject if title hits obvious non-professional or recruitment spam noise
-            if NOISE_BLACKLIST_REGEX.search(title):
-                continue
 
             # If a specific industry sector (e.g. Healthcare, CleanTech) is requested,
             # enforce that candidate companies must match the sector's target companies
@@ -654,9 +632,6 @@ class NaturalDiscoveryService:
                 company = parts[1].strip()
                 title = parts[2].strip()
                 loc = parts[3].strip() if len(parts) > 3 else ""
-
-                if not self.is_uk_geofenced(f"{title} {loc}"):
-                    continue
 
                 parsed_entries.append({
                     "company": company,
