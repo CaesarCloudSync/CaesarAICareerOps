@@ -19,6 +19,7 @@ from backend.application.models.report import (
     JobEvalResponse,
     PdfItem,
     GeneratePdfRequest,
+    BatchEvalRequest,
 )
 from backend.application.models.settings_model import (
     Profile,
@@ -46,6 +47,7 @@ __all__ = [
     "JobEvalResponse",
     "PdfItem",
     "GeneratePdfRequest",
+    "BatchEvalRequest",
     "Profile",
     "SaveProfileRequest",
     "ScanRequest",

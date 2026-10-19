@@ -65,11 +65,11 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
     }
   });
 
-  // Multi-select & Batch Evaluation State
+  // Multi-select & Evaluation Job State (Asynchronous with Job IDs & Live Polling)
   const [selectedUrls, setSelectedUrls] = useState(new Set());
-  const [isBatchEvaluating, setIsBatchEvaluating] = useState(false);
-  const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0, currentTitle: '', completed: 0, failed: 0 });
-  const cancelBatchRef = useRef(false);
+  const [activeEvalJobId, setActiveEvalJobId] = useState(null);
+  const [activeEvalJob, setActiveEvalJob] = useState(null);
+  const [isEvaluating, setIsEvaluating] = useState(false);
 
   const getUrlFromItem = (item) => {
     if (!item) return '';
@@ -108,71 +108,135 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
     setSelectedUrls(new Set());
   };
 
+  // 1. Mount Check: Check server for any running evaluation job (survives page refresh!)
+  useEffect(() => {
+    let isMounted = true;
+    const checkActiveEvalJob = async () => {
+      try {
+        const res = await fetch('/api/evaluate/job/active');
+        if (res.ok) {
+          const data = await res.json();
+          if (data.active && data.job && isMounted) {
+            setActiveEvalJob(data.job);
+            setActiveEvalJobId(data.job.job_id);
+            if (data.job.status === 'running') {
+              setIsEvaluating(true);
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Failed to check active evaluation job:', err);
+      }
+    };
+    checkActiveEvalJob();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  // 2. Evaluation Status Polling: Polls live progress every 1000ms
+  useEffect(() => {
+    if (!activeEvalJobId || !isEvaluating) return;
+
+    let isCancelled = false;
+    const pollStatus = async () => {
+      try {
+        const res = await fetch(`/api/evaluate/job/${activeEvalJobId}`);
+        if (!res.ok) {
+          if (res.status === 404) {
+            setIsEvaluating(false);
+          }
+          return;
+        }
+        const data = await res.json();
+        const job = data.job;
+        if (!isCancelled && job) {
+          setActiveEvalJob(job);
+          if (job.status === 'completed') {
+            setIsEvaluating(false);
+            setActionMessage(`⚡ ${job.detail || 'Evaluation completed successfully!'}`);
+            onRefresh?.();
+            setSelectedUrls(new Set());
+            setTimeout(() => {
+              setActiveEvalJob((prev) => (prev?.status === 'completed' ? null : prev));
+            }, 8000);
+          } else if (job.status === 'cancelled') {
+            setIsEvaluating(false);
+            setActionMessage(`⏸️ ${job.detail || 'Evaluation paused.'}`);
+            onRefresh?.();
+            setTimeout(() => {
+              setActiveEvalJob((prev) => (prev?.status === 'cancelled' ? null : prev));
+            }, 6000);
+          } else if (job.status === 'failed') {
+            setIsEvaluating(false);
+            setActionMessage(`❌ Evaluation failed: ${job.error || 'Unknown error'}`);
+            setTimeout(() => {
+              setActiveEvalJob((prev) => (prev?.status === 'failed' ? null : prev));
+            }, 8000);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to poll evaluation job:', err);
+      }
+    };
+
+    pollStatus();
+    const interval = setInterval(pollStatus, 1000);
+    return () => {
+      isCancelled = true;
+      clearInterval(interval);
+    };
+  }, [activeEvalJobId, isEvaluating]);
+
   const runBatchEvaluation = async (urlsToEval) => {
     const rawList = Array.isArray(urlsToEval) ? urlsToEval : Array.from(urlsToEval || []);
     const targetList = rawList.map(getUrlFromItem).filter(Boolean);
     const finalItems = targetList.length > 0 ? targetList : rawList.filter(Boolean);
     if (finalItems.length === 0) return;
 
-    setIsBatchEvaluating(true);
-    cancelBatchRef.current = false;
-    setBatchProgress({
-      current: 1,
-      total: finalItems.length,
-      currentTitle: finalItems[0],
-      completed: 0,
-      failed: 0,
-    });
-
-    let completed = 0;
-    let failed = 0;
-
-    for (let i = 0; i < finalItems.length; i++) {
-      if (cancelBatchRef.current) {
-        setActionMessage(`⏸️ Evaluation paused (${completed} completed).`);
-        break;
-      }
-      const targetUrl = finalItems[i];
-      setBatchProgress({
-        current: i + 1,
-        total: finalItems.length,
-        currentTitle: targetUrl,
-        completed,
-        failed,
+    setIsEvaluating(true);
+    try {
+      const res = await fetch('/api/evaluate/batch-async', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          targets: finalItems,
+          mode: finalItems.length === 1 ? 'single' : 'batch',
+          engine: 'agy',
+        }),
       });
-
-      try {
-        const res = await fetch('/api/evaluate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ jd_input: targetUrl, engine: 'agy' }),
-        });
-        if (res.ok) {
-          completed++;
-        } else {
-          failed++;
-        }
-      } catch (err) {
-        console.error('Evaluation item failed', err);
-        failed++;
+      if (!res.ok) {
+        throw new Error(`Server returned HTTP ${res.status}`);
       }
-      onRefresh?.();
+      const data = await res.json();
+      if (data.job_id) {
+        setActiveEvalJobId(data.job_id);
+        setActiveEvalJob(data.job || {
+          job_id: data.job_id,
+          status: 'running',
+          total: finalItems.length,
+          current_index: 1,
+          current_target: finalItems[0],
+          completed_count: 0,
+          failed_count: 0,
+          elapsed_seconds: 0,
+          detail: `Starting evaluation for ${finalItems.length} role(s)...`,
+        });
+      }
+    } catch (err) {
+      console.error('Failed to launch evaluation job:', err);
+      setIsEvaluating(false);
+      setActionMessage(`❌ Failed to start evaluation: ${err.message}`);
     }
+  };
 
-    setIsBatchEvaluating(false);
-    setSelectedUrls(new Set());
-    onRefresh?.();
-
-    if (finalItems.length === 1) {
-      setActionMessage(
-        completed > 0
-          ? '✅ Evaluation complete! View report in Reports & PDFs tab.'
-          : '❌ Evaluation failed.'
-      );
-    } else {
-      setActionMessage(`⚡ Batch evaluation complete: ${completed} evaluated successfully, ${failed} failed.`);
+  const handleCancelEvalJob = async () => {
+    if (!activeEvalJobId) return;
+    try {
+      await fetch(`/api/evaluate/job/${activeEvalJobId}/cancel`, { method: 'POST' });
+    } catch (err) {
+      console.error('Failed to cancel evaluation job:', err);
     }
-    setTimeout(() => setActionMessage(''), 8000);
   };
 
   const [latestDiscovered, setLatestDiscovered] = useState({
@@ -730,11 +794,11 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
                 const allUrls = items.map(getUrlFromItem).filter(Boolean);
                 runBatchEvaluation(allUrls);
               }}
-              disabled={isBatchEvaluating || items.length === 0}
+              disabled={isEvaluating || items.length === 0}
               className="px-3 py-1.5 rounded-lg bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/30 text-indigo-300 text-xs font-medium flex items-center gap-1.5 transition-all disabled:opacity-40"
-              title="Batch evaluate all pending roles in the queue"
+              title="Batch evaluate all pending roles in the queue asynchronously"
             >
-              {isBatchEvaluating ? <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" /> : <Zap className="w-3.5 h-3.5 text-indigo-400" />}
+              {isEvaluating ? <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" /> : <Zap className="w-3.5 h-3.5 text-indigo-400" />}
               <span>⚡ Evaluate All ({items.length})</span>
             </button>
 
@@ -810,39 +874,90 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
           </div>
         </div>
 
-      {/* Batch / Single Evaluation Active Progress Card */}
-      {isBatchEvaluating && (
-        <div className="p-4 rounded-xl bg-violet-950/50 border border-violet-600/70 text-violet-100 shadow-xl space-y-3">
+      {/* Asynchronous Evaluation Job Active Progress Card */}
+      {activeEvalJob && (
+        <div className={`p-4 rounded-xl border transition-all shadow-xl space-y-3 ${
+          activeEvalJob.status === 'completed'
+            ? 'bg-emerald-950/40 border-emerald-600/70 text-emerald-100 shadow-emerald-950/30'
+            : activeEvalJob.status === 'cancelled'
+            ? 'bg-slate-900 border-slate-700 text-slate-300'
+            : activeEvalJob.status === 'failed'
+            ? 'bg-rose-950/40 border-rose-600/70 text-rose-100'
+            : 'bg-violet-950/50 border-violet-600/70 text-violet-100 shadow-violet-950/40'
+        }`}>
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2">
-              <Loader2 className="w-4 h-4 text-violet-400 animate-spin" />
+              {activeEvalJob.status === 'running' && <Loader2 className="w-4 h-4 text-violet-400 animate-spin" />}
+              {activeEvalJob.status === 'completed' && <CheckCircle2 className="w-4 h-4 text-emerald-400" />}
+              {activeEvalJob.status === 'cancelled' && <AlertCircle className="w-4 h-4 text-amber-400" />}
+              {activeEvalJob.status === 'failed' && <AlertCircle className="w-4 h-4 text-rose-400" />}
+
               <span className="text-xs font-semibold text-white">
-                {batchProgress.total === 1
+                {activeEvalJob.status === 'completed'
+                  ? 'Evaluation Complete'
+                  : activeEvalJob.status === 'cancelled'
+                  ? 'Evaluation Cancelled'
+                  : activeEvalJob.status === 'failed'
+                  ? 'Evaluation Failed'
+                  : activeEvalJob.total === 1
                   ? 'Evaluating Role...'
-                  : `Batch Evaluating Role ${batchProgress.current} of ${batchProgress.total}`}
+                  : `Batch Evaluating Role ${activeEvalJob.current_index || 1} of ${activeEvalJob.total}`}
               </span>
+
               <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300 border border-violet-500/30">
-                {batchProgress.total === 1
-                  ? 'In Progress'
-                  : `${batchProgress.completed} completed • ${batchProgress.failed} failed`}
+                {activeEvalJob.completed_count} completed • {activeEvalJob.failed_count} failed
+              </span>
+
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-slate-900/80 text-slate-400 border border-slate-700/60">
+                Job: {activeEvalJob.job_id}
               </span>
             </div>
-            <button
-              onClick={() => { cancelBatchRef.current = true; }}
-              className="px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/30 text-rose-300 text-xs font-medium flex items-center gap-1 transition-colors"
-            >
-              <X className="w-3.5 h-3.5" />
-              <span>Cancel</span>
-            </button>
+
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1 text-[11px] font-mono text-slate-400">
+                <Clock className="w-3 h-3 text-indigo-400" />
+                <span>{activeEvalJob.elapsed_seconds || 0}s</span>
+              </div>
+              {activeEvalJob.status === 'running' && (
+                <button
+                  onClick={handleCancelEvalJob}
+                  className="px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/30 text-rose-300 text-xs font-medium flex items-center gap-1 transition-colors"
+                >
+                  <X className="w-3.5 h-3.5" />
+                  <span>Cancel</span>
+                </button>
+              )}
+            </div>
           </div>
+
           <div className="w-full bg-slate-900 rounded-full h-1.5 overflow-hidden">
             <div
-              className="bg-gradient-to-r from-violet-500 to-indigo-500 h-1.5 rounded-full transition-all duration-300"
-              style={{ width: `${Math.round((batchProgress.current / batchProgress.total) * 100)}%` }}
+              className={`h-1.5 rounded-full transition-all duration-300 ${
+                activeEvalJob.status === 'completed'
+                  ? 'bg-emerald-400'
+                  : activeEvalJob.status === 'cancelled'
+                  ? 'bg-amber-400'
+                  : activeEvalJob.status === 'failed'
+                  ? 'bg-rose-500'
+                  : 'bg-gradient-to-r from-violet-500 to-indigo-500'
+              }`}
+              style={{
+                width: `${
+                  activeEvalJob.status === 'completed'
+                    ? 100
+                    : Math.round(((activeEvalJob.current_index || 0) / (activeEvalJob.total || 1)) * 100)
+                }%`,
+              }}
             />
           </div>
-          <div className="text-[11px] font-mono text-slate-400 truncate">
-            Target: <span className="text-slate-300">{batchProgress.currentTitle}</span>
+
+          <div className="text-[11px] font-mono text-slate-300 flex items-center justify-between gap-2">
+            <div className="truncate">
+              Target: <span className="text-white font-medium">{activeEvalJob.current_target}</span>
+            </div>
+            <div className="text-slate-400 shrink-0 text-[10px]">
+              {activeEvalJob.detail}
+            </div>
           </div>
         </div>
       )}
@@ -952,12 +1067,12 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
                       )}
                       <button
                         type="button"
-                        disabled={isBatchEvaluating}
+                        disabled={isEvaluating}
                         onClick={() => runBatchEvaluation([role.url])}
                         className="px-2 py-0.5 rounded bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/30 text-indigo-300 text-[11px] font-medium flex items-center gap-1 transition-all disabled:opacity-40"
                         title="Evaluate this role in-place"
                       >
-                        {isBatchEvaluating && batchProgress.currentTitle === role.url ? (
+                        {isEvaluating && activeEvalJob?.current_target?.includes(role.url) ? (
                           <Loader2 className="w-3 h-3 text-indigo-400 animate-spin" />
                         ) : (
                           <Zap className="w-3 h-3 text-indigo-400" />
@@ -1010,10 +1125,10 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
               <button
                 type="button"
                 onClick={() => runBatchEvaluation(selectedUrls)}
-                disabled={isBatchEvaluating}
+                disabled={isEvaluating}
                 className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white font-semibold text-xs flex items-center gap-1.5 shadow-md shadow-violet-600/30 transition-all hover:scale-[1.02] active:scale-[0.98] disabled:opacity-40"
               >
-                {isBatchEvaluating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5 text-amber-300" />}
+                {isEvaluating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5 text-amber-300" />}
                 <span>Evaluate Selected ({selectedUrls.size})</span>
               </button>
             </div>
@@ -1084,12 +1199,12 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
                       </a>
                     )}
                     <button
-                      disabled={isBatchEvaluating}
+                      disabled={isEvaluating}
                       onClick={() => runBatchEvaluation([url || item])}
                       className="px-2.5 py-1.5 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/30 text-indigo-300 text-xs font-medium flex items-center gap-1 transition-all disabled:opacity-40"
                       title="Evaluate this role in-place"
                     >
-                      {isBatchEvaluating && (batchProgress.currentTitle === url || batchProgress.currentTitle === item) ? (
+                      {isEvaluating && (activeEvalJob?.current_target?.includes(displayTitle) || activeEvalJob?.current_target?.includes(url)) ? (
                         <Loader2 className="w-3 h-3 text-indigo-400 animate-spin" />
                       ) : (
                         <Zap className="w-3 h-3 text-indigo-400" />

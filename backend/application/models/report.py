@@ -29,3 +29,9 @@ class PdfItem(SQLModel):
 
 class GeneratePdfRequest(SQLModel):
     report_filename: str
+
+
+class BatchEvalRequest(SQLModel):
+    targets: list[str] = Field(..., description="List of job URLs or JD snippets to evaluate")
+    mode: str = Field(default="batch", description="Evaluation mode: single, selected, or all")
+    engine: str = Field(default="agy", description="Execution engine: agy, claude, codex, gemini-api")
