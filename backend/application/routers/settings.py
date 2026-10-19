@@ -520,7 +520,9 @@ async def discover_jobs(
             result = await service.run_pipeline(payload.natural_language_query.strip())
             return {
                 "status": "success",
-                "message": f"Autonomous discovery complete: Populated inbox with {result['final_count']} verified roles.",
+                "message": result["message"],
+                "mode": result["mode"],
+                "total_in_queue": result.get("total_in_queue", result["final_count"]),
                 "spec": result["spec"],
                 "roles": result["roles"],
             }

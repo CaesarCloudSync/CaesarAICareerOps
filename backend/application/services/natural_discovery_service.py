@@ -23,6 +23,7 @@ Analyze the user's natural language search prompt and output ONLY a valid, raw J
 
 {
   "target_count": <integer, number of jobs requested, e.g. 50>,
+  "mode": <"replace" | "append", choose "append" if user asks to add/append more/additional roles to existing queue; choose "replace" if user requests a new search or to replace the queue>,
   "role_domain": <string, e.g. "Backend Software Engineering">,
   "seniority_tier": <string, e.g. "junior-to-mid">,
   "positive_keywords": [<list of positive title strings to match>],
@@ -93,13 +94,22 @@ class NaturalDiscoveryService:
 
             match = re.search(r"\{.*\}", cleaned, re.DOTALL)
             if match:
-                return json.loads(match.group(0))
+                parsed = json.loads(match.group(0))
+                # Normalize mode
+                if "mode" not in parsed or parsed["mode"] not in ("append", "replace"):
+                    is_append = any(w in user_prompt.lower() for w in ["more", "add", "additional", "another", "plus", "expand", "append"])
+                    parsed["mode"] = "append" if is_append else "replace"
+                else:
+                    parsed["mode"] = parsed["mode"].lower().strip()
+                return parsed
         except Exception as e:
             print(f"[NaturalDiscovery] AGY parse exception: {e}, falling back to defaults.")
 
+        is_append = any(w in user_prompt.lower() for w in ["more", "add", "additional", "another", "plus", "expand", "append"])
         # Robust fallback preserving UK tech employers & backend keywords
         return {
             "target_count": 50,
+            "mode": "append" if is_append else "replace",
             "role_domain": "Backend Software Engineering",
             "seniority_tier": "junior-to-mid",
             "positive_keywords": [
@@ -429,27 +439,54 @@ class NaturalDiscoveryService:
                 scored = self.score_posting_against_cv(entry, cv_text, spec)
                 raw_candidates.append(scored)
 
+        # Determine execution mode (replace vs append)
+        mode = spec.get("mode", "replace")
+        if mode not in ("append", "replace"):
+            mode = "replace"
+
+        # If appending, gather existing URLs from DB to ensure 100% fresh, unseen additions
+        existing_urls = set()
+        with Session(engine) as session:
+            for item in session.exec(select(PipelineItem)).all():
+                url_m = re.search(r"https?://[^\s|]+", item.raw_text)
+                if url_m:
+                    existing_urls.add(url_m.group(0))
+
+        if mode == "append" and existing_urls:
+            raw_candidates = [c for c in raw_candidates if c["url"] not in existing_urls]
+
         # 7. Apply diversity cap & strict backend guardrail
         final_selected = self.filter_and_diversify_roles(raw_candidates, target_count=target_count, max_per_company=2)
 
         # 8. Sync into Database & update pipeline.md
         with Session(engine) as session:
-            # Clear previous pending items
-            for old in session.exec(select(PipelineItem)).all():
-                session.delete(old)
+            if mode == "replace":
+                for old in session.exec(select(PipelineItem)).all():
+                    session.delete(old)
             for r in final_selected:
                 session.add(PipelineItem(raw_text=r["raw_line"], status="pending"))
             session.commit()
+            total_count = len(session.exec(select(PipelineItem)).all())
 
         clean_lines = ["# Career Ops Pipeline Inbox\n\n## Pending\n"]
-        for r in final_selected:
-            clean_lines.append(f"{r['raw_line']}\n")
+        with Session(engine) as session:
+            for item in session.exec(select(PipelineItem)).all():
+                clean_lines.append(f"{item.raw_text}\n")
         PIPELINE_MD.write_text("".join(clean_lines), encoding="utf-8")
+
+        action_msg = (
+            f"Appended {len(final_selected)} new roles (Total in queue: {total_count})."
+            if mode == "append"
+            else f"Populated inbox with {len(final_selected)} verified roles."
+        )
 
         return {
             "status": "success",
+            "mode": mode,
             "spec": spec,
             "total_companies_probed": len(target_companies),
             "final_count": len(final_selected),
+            "total_in_queue": total_count,
+            "message": f"Autonomous discovery complete: {action_msg}",
             "roles": final_selected
         }
