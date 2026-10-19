@@ -299,6 +299,32 @@ class NaturalDiscoveryService:
         start_time = time.time()
         last_line_time = [time.time()]
 
+        def _is_feed_worthy(text: str) -> bool:
+            """Filters out raw CLI noise, maintenance warnings, and websearch dorks from UI feed."""
+            t = text.strip()
+            if not t or t.startswith("::") or "━━━" in t:
+                return False
+            # Suppress developer maintenance notices, Discord links, and CLI command suggestions
+            noise_markers = (
+                "FIX NEEDED",
+                "verify-portals.mjs",
+                "Agent/WebSearch handoff",
+                "Share results and get help",
+                "Run /career-ops pipeline",
+                "dry run — no files will be written",
+                "dry run — run without",
+                "Errors (",
+                "HTTP 429",
+                "live but empty",
+                "Portal Scan —",
+            )
+            if any(m in t for m in noise_markers):
+                return False
+            # Suppress websearch queries and individual error bullets
+            if t.startswith("• ") or t.startswith("✗ "):
+                return False
+            return True
+
         async def _read_stdout():
             while True:
                 line = await proc.stdout.readline()
@@ -309,7 +335,7 @@ class NaturalDiscoveryService:
                     last_line_time[0] = time.time()
                     captured_stdout.append(decoded)
                     print(f"[scan.mjs] {decoded}", flush=True)
-                    if job:
+                    if job and _is_feed_worthy(decoded):
                         job.add_feed_line(decoded)
                         job.update(
                             3,
