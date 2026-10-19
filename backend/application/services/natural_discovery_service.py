@@ -23,7 +23,7 @@ Analyze the user's natural language search prompt and output ONLY a valid, raw J
 
 {
   "target_count": <integer, number of jobs requested, e.g. 50>,
-  "mode": <"replace" | "append", choose "append" if user asks to add/append more/additional roles to existing queue; choose "replace" if user requests a new search or to replace the queue>,
+  "mode": <"replace" | "append" | "match", choose "match" if the user wants to maintain, top up, ensure, or keep the queue at a specific total count (e.g. "keep my queue at 50", "make sure it's 50", "match 50 roles", "top up to 50"); choose "append" if the user asks to add/append more/additional roles on top of existing ones (e.g. "add 20 more", "append 50 roles"); choose "replace" if the user asks for a fresh search or to replace all existing roles (e.g. "find 50 roles", "search for 50", "replace queue with 50")>,
   "role_domain": <string, e.g. "Backend Software Engineering">,
   "seniority_tier": <string, e.g. "junior-to-mid">,
   "positive_keywords": [<list of positive title strings to match>],
@@ -96,20 +96,38 @@ class NaturalDiscoveryService:
             if match:
                 parsed = json.loads(match.group(0))
                 # Normalize mode
-                if "mode" not in parsed or parsed["mode"] not in ("append", "replace"):
-                    is_append = any(w in user_prompt.lower() for w in ["more", "add", "additional", "another", "plus", "expand", "append"])
-                    parsed["mode"] = "append" if is_append else "replace"
+                prompt_lower = user_prompt.lower()
+                match_keywords = ["keep at", "maintain", "match", "top up", "top-up", "fill to", "ensure", "make sure it", "have exactly", "reach "]
+                append_keywords = ["more", "add ", "additional", "another", "plus", "expand", "append"]
+
+                if "mode" not in parsed or parsed["mode"] not in ("append", "replace", "match"):
+                    if any(w in prompt_lower for w in match_keywords):
+                        parsed["mode"] = "match"
+                    elif any(w in prompt_lower for w in append_keywords):
+                        parsed["mode"] = "append"
+                    else:
+                        parsed["mode"] = "replace"
                 else:
                     parsed["mode"] = parsed["mode"].lower().strip()
                 return parsed
         except Exception as e:
             print(f"[NaturalDiscovery] AGY parse exception: {e}, falling back to defaults.")
 
-        is_append = any(w in user_prompt.lower() for w in ["more", "add", "additional", "another", "plus", "expand", "append"])
+        prompt_lower = user_prompt.lower()
+        match_keywords = ["keep at", "maintain", "match", "top up", "top-up", "fill to", "ensure", "make sure it", "have exactly", "reach "]
+        append_keywords = ["more", "add ", "additional", "another", "plus", "expand", "append"]
+
+        if any(w in prompt_lower for w in match_keywords):
+            inferred_mode = "match"
+        elif any(w in prompt_lower for w in append_keywords):
+            inferred_mode = "append"
+        else:
+            inferred_mode = "replace"
+
         # Robust fallback preserving UK tech employers & backend keywords
         return {
             "target_count": 50,
-            "mode": "append" if is_append else "replace",
+            "mode": inferred_mode,
             "role_domain": "Backend Software Engineering",
             "seniority_tier": "junior-to-mid",
             "positive_keywords": [
@@ -439,24 +457,48 @@ class NaturalDiscoveryService:
                 scored = self.score_posting_against_cv(entry, cv_text, spec)
                 raw_candidates.append(scored)
 
-        # Determine execution mode (replace vs append)
+        # Determine execution mode (replace vs append vs match)
         mode = spec.get("mode", "replace")
-        if mode not in ("append", "replace"):
+        if mode not in ("append", "replace", "match"):
             mode = "replace"
 
-        # If appending, gather existing URLs from DB to ensure 100% fresh, unseen additions
+        # Gather existing URLs & current count from DB
         existing_urls = set()
         with Session(engine) as session:
-            for item in session.exec(select(PipelineItem)).all():
+            db_items = session.exec(select(PipelineItem)).all()
+            current_count = len(db_items)
+            for item in db_items:
                 url_m = re.search(r"https?://[^\s|]+", item.raw_text)
                 if url_m:
                     existing_urls.add(url_m.group(0))
 
-        if mode == "append" and existing_urls:
+        # Calculate needed roles
+        if mode == "append":
+            needed_target = target_count
+        elif mode == "match":
+            needed_target = max(0, target_count - current_count)
+        else:  # replace
+            needed_target = target_count
+
+        # If mode is match and queue already matches or exceeds target
+        if mode == "match" and needed_target == 0:
+            return {
+                "status": "success",
+                "mode": mode,
+                "spec": spec,
+                "total_companies_probed": 0,
+                "final_count": 0,
+                "total_in_queue": current_count,
+                "message": f"Autonomous discovery: Queue already matches target ({current_count} / {target_count} roles).",
+                "roles": []
+            }
+
+        # Filter out existing URLs if in append or match mode to guarantee brand new, unseen roles
+        if mode in ("append", "match") and existing_urls:
             raw_candidates = [c for c in raw_candidates if c["url"] not in existing_urls]
 
         # 7. Apply diversity cap & strict backend guardrail
-        final_selected = self.filter_and_diversify_roles(raw_candidates, target_count=target_count, max_per_company=2)
+        final_selected = self.filter_and_diversify_roles(raw_candidates, target_count=needed_target, max_per_company=2)
 
         # 8. Sync into Database & update pipeline.md
         with Session(engine) as session:
@@ -474,11 +516,12 @@ class NaturalDiscoveryService:
                 clean_lines.append(f"{item.raw_text}\n")
         PIPELINE_MD.write_text("".join(clean_lines), encoding="utf-8")
 
-        action_msg = (
-            f"Appended {len(final_selected)} new roles (Total in queue: {total_count})."
-            if mode == "append"
-            else f"Populated inbox with {len(final_selected)} verified roles."
-        )
+        if mode == "append":
+            action_msg = f"Appended {len(final_selected)} new roles to queue (Total: {total_count})."
+        elif mode == "match":
+            action_msg = f"Topped up queue with {len(final_selected)} new roles to match target (Total: {total_count} / {target_count})."
+        else:
+            action_msg = f"Populated inbox with {len(final_selected)} verified roles."
 
         return {
             "status": "success",
