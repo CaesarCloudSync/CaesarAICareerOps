@@ -17,6 +17,29 @@ import {
   AlertCircle,
 } from 'lucide-react';
 
+const STEP_SUBSTEPS = {
+  1: [
+    { id: '1.1', title: '1.1 Prompt Intent Extraction' },
+    { id: '1.2', title: '1.2 ATS Keywords & Exclusions' },
+    { id: '1.3', title: '1.3 Tech Stack & Employer Mapping' },
+  ],
+  2: [
+    { id: '2.1', title: '2.1 UK Geofence Filter Injection' },
+    { id: '2.2', title: '2.2 Pre-Flight Atomic Rollback' },
+    { id: '2.3', title: '2.3 Probing 50+ Live ATS Feeds' },
+  ],
+  3: [
+    { id: '3.1', title: '3.1 Multi-Board Parallel Crawl' },
+    { id: '3.2', title: '3.2 UK Location Verification' },
+    { id: '3.3', title: '3.3 Write-Ahead Staging Queue' },
+  ],
+  4: [
+    { id: '4.1', title: '4.1 Concurrent Liveness Sweep' },
+    { id: '4.2', title: '4.2 CV Fundamentals Match Scoring' },
+    { id: '4.3', title: '4.3 Diversity Cap & Queue Sync' },
+  ],
+};
+
 export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
   const [newInput, setNewInput] = useState('');
   const [adding, setAdding] = useState(false);
@@ -36,6 +59,34 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
       return null;
     }
   });
+
+  const [latestDiscovered, setLatestDiscovered] = useState({
+    roles: [],
+    count: 0,
+    query: '',
+    mode: '',
+    timestamp: null,
+  });
+  const [refreshingDiscovered, setRefreshingDiscovered] = useState(false);
+
+  const fetchLatestDiscovered = async () => {
+    setRefreshingDiscovered(true);
+    try {
+      const res = await fetch('/api/pipeline/latest-discovered');
+      if (res.ok) {
+        const data = await res.json();
+        setLatestDiscovered(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch latest discovered roles', err);
+    } finally {
+      setRefreshingDiscovered(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchLatestDiscovered();
+  }, []);
 
   // 1. Mount Check: Check server for any running discovery job (survives page refresh!)
   useEffect(() => {
@@ -96,6 +147,7 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
             } catch {}
             setActionMessage(`✨ ${job.detail || 'Discovery completed successfully!'}`);
             onRefresh?.();
+            fetchLatestDiscovered();
             setTimeout(() => {
               setActiveJob(null);
             }, 8000);
@@ -503,6 +555,49 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
               );
             })}
           </div>
+
+          {/* Sub-step Segmented Lines */}
+          <div className="mt-3 pt-2.5 border-t border-indigo-900/40 space-y-1.5">
+            <div className="flex items-center justify-between text-[11px] font-mono">
+              <span className="text-slate-400">Granular Sub-Step:</span>
+              <span className="text-indigo-300 font-medium truncate max-w-[70%] text-right">
+                {activeJob.substep ? `[${activeJob.substep}] ` : ''}{activeJob.substep_name || 'In progress...'}
+              </span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              {(STEP_SUBSTEPS[activeJob.step || 1] || []).map((sub) => {
+                const currentSubNum = parseFloat(activeJob.substep || '1.1');
+                const thisSubNum = parseFloat(sub.id);
+                const isDone = activeJob.status === 'completed' || currentSubNum > thisSubNum;
+                const isCurrent = activeJob.status === 'running' && activeJob.substep === sub.id;
+                return (
+                  <div key={sub.id} className="space-y-1">
+                    <div
+                      className={`h-1 rounded-full transition-all duration-300 ${
+                        isDone
+                          ? 'bg-emerald-400'
+                          : isCurrent
+                          ? 'bg-indigo-400 animate-pulse'
+                          : 'bg-slate-800'
+                      }`}
+                    />
+                    <div
+                      className={`text-[10px] truncate flex items-center gap-1.5 ${
+                        isDone
+                          ? 'text-emerald-400 font-medium'
+                          : isCurrent
+                          ? 'text-indigo-300 font-semibold'
+                          : 'text-slate-500'
+                      }`}
+                    >
+                      <span className="font-mono">{isDone ? '✓' : isCurrent ? '◐' : '○'}</span>
+                      <span className="truncate">{sub.title}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         </div>
       )}
 
@@ -510,6 +605,88 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
       {!activeJob && actionMessage && (
         <div className="p-2.5 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-xs text-indigo-300 font-mono flex items-center gap-2">
           <span>{actionMessage}</span>
+        </div>
+      )}
+
+      {/* Recently Added / Discovered Jobs Section */}
+      {latestDiscovered.roles && latestDiscovered.roles.length > 0 && (
+        <div className="bg-slate-950/80 border border-indigo-500/30 rounded-xl p-4 space-y-3 shadow-md">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 pb-2.5 border-b border-slate-800">
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-amber-400" />
+              <h3 className="text-xs font-semibold text-white tracking-wide">
+                Recently Added / Discovered Postings
+              </h3>
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">
+                {latestDiscovered.roles.length} {latestDiscovered.roles.length === 1 ? 'role' : 'roles'}
+              </span>
+              {latestDiscovered.mode && (
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-mono uppercase bg-slate-800 text-slate-300 border border-slate-700">
+                  {latestDiscovered.mode}
+                </span>
+              )}
+            </div>
+
+            <button
+              onClick={fetchLatestDiscovered}
+              disabled={refreshingDiscovered}
+              className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs font-medium flex items-center gap-1.5 transition-all disabled:opacity-50"
+              title="Refresh recently added jobs from the database"
+            >
+              <RotateCcw className={`w-3 h-3 text-slate-400 ${refreshingDiscovered ? 'animate-spin' : ''}`} />
+              <span>Refresh Added Roles</span>
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 max-h-[300px] overflow-y-auto pr-1">
+            {latestDiscovered.roles.map((role, idx) => (
+              <div
+                key={idx}
+                className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-800 hover:border-indigo-500/40 transition-colors flex flex-col justify-between gap-2"
+              >
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 truncate max-w-[140px]">
+                      {role.company}
+                    </span>
+                    {role.match_percentage && (
+                      <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
+                        {role.match_percentage}% match
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-xs font-medium text-slate-200 line-clamp-1">{role.title}</div>
+                  {role.location && (
+                    <div className="text-[10px] text-slate-400 flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                      <span className="truncate">{role.location}</span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex items-center justify-between gap-2 pt-1 border-t border-slate-800/80">
+                  <div className="flex flex-wrap gap-1">
+                    {(role.ats_keywords || []).slice(0, 3).map((kw, kidx) => (
+                      <span key={kidx} className="text-[9px] font-mono px-1 py-0.5 bg-slate-800 text-slate-400 rounded">
+                        {kw}
+                      </span>
+                    ))}
+                  </div>
+                  {role.url && (
+                    <a
+                      href={role.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[11px] text-indigo-400 hover:text-indigo-300 flex items-center gap-1 shrink-0 font-medium"
+                    >
+                      <span>Open</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 

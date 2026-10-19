@@ -12,6 +12,8 @@ class DiscoveryJob:
         self.step = 1
         self.total_steps = 4
         self.step_name = "Parsing ATS Criteria"
+        self.substep = "1.1"
+        self.substep_name = "Prompt Intent & Criteria Extraction"
         self.detail = "AI is analyzing query into structured ATS criteria..."
         self.started_at = datetime.now(timezone.utc).isoformat()
         self.updated_at = self.started_at
@@ -21,16 +23,29 @@ class DiscoveryJob:
         self.result: Optional[Dict[str, Any]] = None
         self.error: Optional[str] = None
 
-    def update(self, step: int, step_name: str, detail: str):
+    def update(
+        self,
+        step: int,
+        step_name: str,
+        detail: str,
+        substep: Optional[str] = None,
+        substep_name: Optional[str] = None,
+    ):
         self.step = step
         self.step_name = step_name
         self.detail = detail
+        if substep is not None:
+            self.substep = substep
+        if substep_name is not None:
+            self.substep_name = substep_name
         self.elapsed_seconds = round(time.time() - self.start_timestamp, 1)
         self.updated_at = datetime.now(timezone.utc).isoformat()
 
     def complete(self, result: Dict[str, Any]):
         self.status = "completed"
         self.step = self.total_steps
+        self.substep = "4.3"
+        self.substep_name = "Queue Synchronized"
         self.step_name = "Discovery Complete"
         self.detail = result.get("message", "Discovery complete!")
         self.elapsed_seconds = round(time.time() - self.start_timestamp, 1)
@@ -58,6 +73,8 @@ class DiscoveryJob:
             "step": self.step,
             "total_steps": self.total_steps,
             "step_name": self.step_name,
+            "substep": self.substep,
+            "substep_name": self.substep_name,
             "detail": self.detail,
             "elapsed_seconds": elapsed,
             "started_at": self.started_at,
@@ -72,6 +89,13 @@ class DiscoveryTracker:
     def __init__(self):
         self._jobs: Dict[str, DiscoveryJob] = {}
         self._active_job_id: Optional[str] = None
+        self._latest_discovered: Dict[str, Any] = {
+            "roles": [],
+            "count": 0,
+            "query": "",
+            "mode": "",
+            "timestamp": None,
+        }
 
     def create_job(self, query: Optional[str] = None) -> DiscoveryJob:
         job_id = f"disc_{uuid.uuid4().hex[:8]}"
@@ -99,6 +123,20 @@ class DiscoveryTracker:
             except Exception:
                 pass
         return job
+
+    def record_discovered_roles(
+        self, roles: list, query: str = "", mode: str = ""
+    ):
+        self._latest_discovered = {
+            "roles": roles,
+            "count": len(roles),
+            "query": query,
+            "mode": mode,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+    def get_latest_discovered(self) -> Dict[str, Any]:
+        return self._latest_discovered
 
 
 discovery_tracker = DiscoveryTracker()

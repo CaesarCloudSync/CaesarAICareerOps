@@ -13,6 +13,7 @@ from sqlmodel import Session, select
 from backend.application.settings import settings
 from backend.application.database import engine
 from backend.application.models import PipelineItem, Resume
+from backend.application.services.discovery_tracker import discovery_tracker
 
 CAREER_OPS_DIR = Path(settings.career_ops_dir)
 PORTALS_YML = CAREER_OPS_DIR / "portals.yml"
@@ -392,7 +393,13 @@ class NaturalDiscoveryService:
     async def run_pipeline(self, user_prompt: str, job: Optional[Any] = None) -> Dict[str, Any]:
         """Executes the complete autonomous end-to-end pipeline with real-time job progress tracking."""
         if job:
-            job.update(1, "Analyzing ATS Criteria", "AI is translating your prompt into structured ATS filter specifications...")
+            job.update(
+                1,
+                "Analyzing ATS Criteria",
+                "Extracting role domain, seniority, and mode from natural language prompt...",
+                substep="1.1",
+                substep_name="Prompt Intent & Criteria Extraction",
+            )
 
         # 1. Parse prompt with AGY
         spec = await self.parse_prompt_with_agy(user_prompt)
@@ -404,23 +411,60 @@ class NaturalDiscoveryService:
 
         if job:
             job.update(
-                2,
-                "Probing ATS Boards & Portals",
-                f"Targeting {target_count} roles (mode: {mode}). Pre-flight validating portals.yml and probing {len(target_companies)} UK employer ATS feeds..."
+                1,
+                "Analyzing ATS Criteria",
+                f"Generated {len(spec.get('positive_keywords', []))} target titles & {len(spec.get('negative_keywords', []))} negative filters.",
+                substep="1.2",
+                substep_name="ATS Keyword & Exclusions Synthesis",
+            )
+            job.update(
+                1,
+                "Analyzing ATS Criteria",
+                f"Mapped {len(target_companies)} UK employers across {spec.get('role_domain', 'Backend')}.",
+                substep="1.3",
+                substep_name="Tech Stack & Employer Mapping",
             )
 
         # 2. Apply dynamic filters to portals.yml with pre-flight atomic rollback
+        if job:
+            job.update(
+                2,
+                "Probing ATS Boards & Portals",
+                "Injecting strict London / UK location geofence block into configuration...",
+                substep="2.1",
+                substep_name="Geofence Filter Injection",
+            )
+
         await self.apply_dynamic_filters(spec)
+
+        if job:
+            job.update(
+                2,
+                "Probing ATS Boards & Portals",
+                "Pre-flight atomic rollback validation via validate-portals.mjs passed.",
+                substep="2.2",
+                substep_name="Pre-Flight Atomic Validation",
+            )
 
         # 3. Probe the 50+ ATS boards via discover-ats.mjs --write
         if target_companies:
+            if job:
+                job.update(
+                    2,
+                    "Probing ATS Boards & Portals",
+                    f"Probing {len(target_companies)} live employer ATS endpoints (Greenhouse/Ashby/Lever)...",
+                    substep="2.3",
+                    substep_name="Probing Live ATS Feeds",
+                )
             await self.probe_ats_boards(target_companies)
 
         if job:
             job.update(
                 3,
                 "Crawling ATS Boards & Staging",
-                "Crawling tracked employer career portals in parallel (Greenhouse, Lever, Ashby, Workable)..."
+                "Executing multi-portal parallel crawler across tracked UK employer boards...",
+                substep="3.1",
+                substep_name="Multi-Board Parallel Crawl",
             )
 
         # 4. Run ATS scan via scan.mjs
@@ -497,8 +541,17 @@ class NaturalDiscoveryService:
         if job:
             job.update(
                 3,
-                "Staging Persistence",
-                f"Crawled live portals. Persisted {len(parsed_entries)} live UK roles into write-ahead staging queue."
+                "Crawling ATS Boards & Staging",
+                f"Cleansed results against UK geofencing: {len(parsed_entries)} candidates verified.",
+                substep="3.2",
+                substep_name="UK Location Verification",
+            )
+            job.update(
+                3,
+                "Crawling ATS Boards & Staging",
+                f"Crawled live portals. Persisted {len(parsed_entries)} live UK roles into write-ahead staging queue.",
+                substep="3.3",
+                substep_name="Write-Ahead Staging Persistence",
             )
 
         # Candidates to evaluate
@@ -511,7 +564,9 @@ class NaturalDiscoveryService:
             job.update(
                 4,
                 "Scoring & Diversity Curation",
-                f"Verifying live HTTP response & scoring ATS fundamentals across {len(evaluation_candidates)} roles against profile..."
+                f"Zero-browser concurrent HTTP liveness sweep across {len(evaluation_candidates)} candidate URLs...",
+                substep="4.1",
+                substep_name="Concurrent Liveness Sweep",
             )
 
         # Fast parallel liveness check across candidate URLs
@@ -519,6 +574,15 @@ class NaturalDiscoveryService:
             *[self.verify_url_active(entry["url"]) for entry in evaluation_candidates],
             return_exceptions=True
         )
+
+        if job:
+            job.update(
+                4,
+                "Scoring & Diversity Curation",
+                f"Scoring ATS keyword alignment and core fundamentals against candidate profile...",
+                substep="4.2",
+                substep_name="CV Fundamentals & Match Scoring",
+            )
 
         raw_candidates = []
         for entry, is_live in zip(evaluation_candidates, liveness_results):
@@ -546,9 +610,19 @@ class NaturalDiscoveryService:
                 "message": f"Autonomous discovery: Queue already matches target ({initial_count} / {target_count} roles).",
                 "roles": []
             }
+            discovery_tracker.record_discovered_roles(roles=[], query=user_prompt, mode=mode)
             if job:
                 job.complete(match_res)
             return match_res
+
+        if job:
+            job.update(
+                4,
+                "Scoring & Diversity Curation",
+                f"Applying diversity caps (max 2/company) and synchronizing final queue...",
+                substep="4.3",
+                substep_name="Diversity Cap & Queue Sync",
+            )
 
         # 7. Apply diversity cap & strict backend guardrail
         final_selected = self.filter_and_diversify_roles(raw_candidates, target_count=needed_target, max_per_company=2)
@@ -596,6 +670,7 @@ class NaturalDiscoveryService:
             "message": f"Autonomous discovery complete: {action_msg}",
             "roles": final_selected
         }
+        discovery_tracker.record_discovered_roles(roles=final_selected, query=user_prompt, mode=mode)
         if job:
             job.complete(final_res)
         return final_res
