@@ -1,13 +1,65 @@
-import React, { useState } from 'react';
-import { FileText, Download, Play, CheckCircle2, ShieldCheck, RefreshCw } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { FileText, Download, Play, CheckCircle2, ShieldCheck, RefreshCw, Trash2 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 
-export default function ReportsViewer({ reports, pdfs, onRefresh }) {
+export default function ReportsViewer({ reports = [], pdfs = [], onRefresh }) {
   const [selectedReport, setSelectedReport] = useState(reports[0] || null);
   const [generatingPdf, setGeneratingPdf] = useState(false);
   const [pdfStatus, setPdfStatus] = useState('');
   const [scanning, setScanning] = useState(false);
   const [scanStatus, setScanStatus] = useState('');
+  const [deleting, setDeleting] = useState(false);
+
+  useEffect(() => {
+    if (selectedReport && !reports.some((r) => r.filename === selectedReport.filename)) {
+      setSelectedReport(reports[0] || null);
+    } else if (!selectedReport && reports.length > 0) {
+      setSelectedReport(reports[0]);
+    }
+  }, [reports]);
+
+  const handleDeleteReport = async (filename) => {
+    if (!window.confirm(`Delete evaluation report "${filename}"?`)) {
+      return;
+    }
+    setDeleting(true);
+    try {
+      const res = await fetch(`/api/reports/${encodeURIComponent(filename)}`, {
+        method: 'DELETE',
+      });
+      if (res.ok) {
+        onRefresh?.();
+      } else {
+        alert('Failed to delete report.');
+      }
+    } catch (err) {
+      alert(`Error deleting report: ${err.message}`);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const handleDeleteAllReports = async () => {
+    if (!window.confirm(`Are you sure you want to delete ALL ${reports.length} evaluation reports and generated PDFs? This action cannot be undone.`)) {
+      return;
+    }
+    setDeleting(true);
+    try {
+      const res = await fetch('/api/reports', {
+        method: 'DELETE',
+      });
+      if (res.ok) {
+        setSelectedReport(null);
+        onRefresh?.();
+      } else {
+        alert('Failed to delete all reports.');
+      }
+    } catch (err) {
+      alert(`Error deleting reports: ${err.message}`);
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   const handleGeneratePdf = async (filename) => {
     setGeneratingPdf(true);
@@ -92,9 +144,21 @@ export default function ReportsViewer({ reports, pdfs, onRefresh }) {
               <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400 font-mono">
                 Evaluation Reports ({reports.length})
               </h3>
-              <button onClick={onRefresh} className="text-slate-400 hover:text-slate-200">
-                <RefreshCw className="w-3.5 h-3.5" />
-              </button>
+              <div className="flex items-center gap-1.5">
+                {reports.length > 0 && (
+                  <button
+                    onClick={handleDeleteAllReports}
+                    disabled={deleting}
+                    title="Delete All Evaluation Reports"
+                    className="p-1 rounded text-slate-400 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
+                <button onClick={onRefresh} title="Refresh" className="text-slate-400 hover:text-slate-200">
+                  <RefreshCw className="w-3.5 h-3.5" />
+                </button>
+              </div>
             </div>
 
             <div className="space-y-2 max-h-72 overflow-y-auto">
@@ -102,18 +166,30 @@ export default function ReportsViewer({ reports, pdfs, onRefresh }) {
                 <div className="text-xs text-slate-500">No reports generated yet</div>
               ) : (
                 reports.map((r) => (
-                  <button
+                  <div
                     key={r.filename}
                     onClick={() => setSelectedReport(r)}
-                    className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors flex items-center justify-between ${
+                    className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors flex items-center justify-between cursor-pointer group ${
                       selectedReport?.filename === r.filename
                         ? 'bg-indigo-600/20 border-indigo-500/40 text-indigo-200'
                         : 'bg-slate-950/60 border-slate-800/80 text-slate-300 hover:border-slate-700'
                     }`}
                   >
-                    <span className="font-mono truncate">{r.filename}</span>
-                    <FileText className="w-3.5 h-3.5 shrink-0 ml-2 text-indigo-400" />
-                  </button>
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      <FileText className="w-3.5 h-3.5 shrink-0 text-indigo-400" />
+                      <span className="font-mono truncate">{r.filename}</span>
+                    </div>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteReport(r.filename);
+                      }}
+                      title="Delete Report"
+                      className="opacity-0 group-hover:opacity-100 p-1 text-slate-500 hover:text-red-400 transition-opacity ml-2 shrink-0"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 ))
               )}
             </div>
@@ -158,14 +234,24 @@ export default function ReportsViewer({ reports, pdfs, onRefresh }) {
                   <h2 className="text-base font-semibold text-white">{selectedReport.title}</h2>
                   <span className="text-xs font-mono text-slate-500">{selectedReport.filename}</span>
                 </div>
-                <button
-                  onClick={() => handleGeneratePdf(selectedReport.filename)}
-                  disabled={generatingPdf}
-                  className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium flex items-center gap-1.5"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>{generatingPdf ? 'Rendering PDF...' : 'Generate Tailored PDF'}</span>
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handleDeleteReport(selectedReport.filename)}
+                    disabled={deleting}
+                    className="px-2.5 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/30 text-xs font-medium flex items-center gap-1.5 transition-colors"
+                  >
+                    <Trash2 className="w-3.5 h-3.5 text-red-400" />
+                    <span>Delete Evaluation</span>
+                  </button>
+                  <button
+                    onClick={() => handleGeneratePdf(selectedReport.filename)}
+                    disabled={generatingPdf}
+                    className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium flex items-center gap-1.5 transition-colors"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>{generatingPdf ? 'Rendering PDF...' : 'Generate Tailored PDF'}</span>
+                  </button>
+                </div>
               </div>
 
               {pdfStatus && (

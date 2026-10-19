@@ -10,6 +10,7 @@ from sqlmodel import Session, select
 from backend.application.settings import settings
 from backend.application.database import engine
 from backend.application.models import (
+    Application,
     DiscoverySettings,
     CandidateProfileData,
     DiscoverJobsRequest,
@@ -20,6 +21,7 @@ from backend.application.models import (
 from backend.application.services.scanner_service import ScannerService
 from backend.application.services.natural_discovery_service import NaturalDiscoveryService
 from backend.application.services.discovery_tracker import discovery_tracker, DiscoveryJob
+from backend.application.services.evaluation_tracker import evaluation_tracker
 from backend.application.dependencies import get_scanner_service
 
 router = APIRouter(prefix="/api/settings", tags=["Settings & Discovery"])
@@ -405,13 +407,19 @@ async def verify_inbox_liveness():
 
 @router.post("/reset-pipeline")
 async def reset_pipeline_inbox():
-    """Clear all items in the pipeline inbox so you can start fresh."""
+    """Clear all items in the pipeline inbox and all evaluations so you can start fresh."""
     deleted_count = 0
     with Session(engine) as session:
         items = session.exec(select(PipelineItem)).all()
         deleted_count = len(items)
         for item in items:
             session.delete(item)
+
+        # Also purge evaluated application records from database
+        apps = session.exec(select(Application)).all()
+        for app in apps:
+            if app.status == "Evaluated" or (app.report_path and "reports/" in app.report_path):
+                session.delete(app)
         session.commit()
 
     if PIPELINE_MD.exists():
@@ -421,10 +429,48 @@ async def reset_pipeline_inbox():
         header = "url\tfirst_seen\tportal\ttitle\tcompany\tstatus\tlocation\tfingerprint\tposted_at\ttrust_score\ttrust_flags\tnormalized_company\trequisition_id\tlanguage\n"
         SCAN_HISTORY_TSV.write_text(header, encoding="utf-8")
 
+    # Purge generated evaluation reports
+    reports_dir = CAREER_OPS_DIR / "reports"
+    reports_deleted = 0
+    if reports_dir.exists():
+        for file in reports_dir.glob("*.md"):
+            if file.is_file():
+                try:
+                    file.unlink()
+                    reports_deleted += 1
+                except Exception:
+                    pass
+
+    # Purge generated PDFs
+    output_dir = CAREER_OPS_DIR / "output"
+    if output_dir.exists():
+        for file in output_dir.glob("*.pdf"):
+            if file.is_file():
+                try:
+                    file.unlink()
+                except Exception:
+                    pass
+
+    # Clean applications.md tracker table if exists
+    apps_md = CAREER_OPS_DIR / "data" / "applications.md"
+    if apps_md.exists():
+        clean_header = (
+            "# Applications Tracker\n\n"
+            "| # | Date | Company | Via | Role | Score | Status | PDF | Report | Notes |\n"
+            "|---|------|---------|-----|------|-------|--------|-----|--------|-------|\n"
+        )
+        apps_md.write_text(clean_header, encoding="utf-8")
+
+    # Reset any active evaluation jobs
+    active_eval = evaluation_tracker.get_active_job()
+    if active_eval and active_eval.status == "running":
+        evaluation_tracker.cancel_job(active_eval.job_id)
+
     return {
         "status": "success",
         "deleted_count": deleted_count,
-        "message": f"Pipeline inbox reset. Cleared {deleted_count} items and purged scan history.",
+        "reports_deleted": reports_deleted,
+        "message": f"Pipeline inbox and evaluations reset. Cleared {deleted_count} inbox items and removed {reports_deleted} evaluation reports.",
     }
 
 

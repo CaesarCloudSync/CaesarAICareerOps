@@ -76,6 +76,16 @@ class BaseRepository(ABC):
         pass
 
     @abstractmethod
+    async def delete_report(self, filename: str) -> bool:
+        """Delete an evaluation markdown report and associated PDF/application."""
+        pass
+
+    @abstractmethod
+    async def delete_all_reports(self) -> int:
+        """Delete all evaluation markdown reports and associated PDFs/applications."""
+        pass
+
+    @abstractmethod
     async def get_pdfs(self) -> List[PdfItem]:
         """Get all generated PDF resumes."""
         pass

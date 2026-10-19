@@ -438,7 +438,7 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
   };
 
   const handleResetPipeline = async () => {
-    if (!window.confirm('Are you sure you want to reset the pipeline inbox? This will clear all pending items.')) {
+    if (!window.confirm('Are you sure you want to reset the pipeline inbox? This will clear all pending items, purge scan history, and remove all generated evaluations.')) {
       return;
     }
     setResetting(true);

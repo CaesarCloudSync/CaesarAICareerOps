@@ -223,6 +223,66 @@ class SQLModelRepository(BaseRepository):
         report_path = reports_dir / filename
         report_path.write_text(content, encoding="utf-8")
 
+    async def delete_report(self, filename: str) -> bool:
+        reports_dir = self.career_ops_dir / "reports"
+        target_file = reports_dir / filename
+        deleted = False
+        if target_file.exists() and target_file.is_file():
+            target_file.unlink()
+            deleted = True
+
+        # Remove corresponding PDF if it exists
+        pdf_name = filename.replace(".md", ".pdf")
+        pdf_file = self.career_ops_dir / "output" / pdf_name
+        if pdf_file.exists() and pdf_file.is_file():
+            pdf_file.unlink()
+
+        # Remove corresponding Application record from database
+        with Session(engine) as session:
+            apps = session.exec(
+                select(Application).where(Application.report_path.contains(filename))
+            ).all()
+            for app in apps:
+                session.delete(app)
+            session.commit()
+
+        return deleted
+
+    async def delete_all_reports(self) -> int:
+        reports_dir = self.career_ops_dir / "reports"
+        count = 0
+        if reports_dir.exists():
+            for file in reports_dir.glob("*.md"):
+                if file.is_file():
+                    file.unlink()
+                    count += 1
+
+        output_dir = self.career_ops_dir / "output"
+        if output_dir.exists():
+            for file in output_dir.glob("*.pdf"):
+                if file.is_file():
+                    file.unlink()
+
+        # Remove evaluated applications from database
+        with Session(engine) as session:
+            apps = session.exec(select(Application)).all()
+            for app in apps:
+                if app.status == "Evaluated" or (app.report_path and "reports/" in app.report_path):
+                    session.delete(app)
+            session.commit()
+
+        # Clean applications.md tracker table if exists
+        apps_md = self.career_ops_dir / "data" / "applications.md"
+        if apps_md.exists():
+            clean_header = (
+                "# Applications Tracker\n\n"
+                "| # | Date | Company | Via | Role | Score | Status | PDF | Report | Notes |\n"
+                "|---|------|---------|-----|------|-------|--------|-----|--------|-------|\n"
+            )
+            apps_md.write_text(clean_header, encoding="utf-8")
+
+        return count
+
     async def get_pdfs(self) -> List[PdfItem]:
         output_dir = self.career_ops_dir / "output"
         pdfs = []
