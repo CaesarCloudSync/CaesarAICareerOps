@@ -24,13 +24,15 @@ SYSTEM_PARSER_PROMPT = """You are an expert ATS Job Pipeline Architect for Caree
 Analyze the user's natural language search prompt and output ONLY a valid, raw JSON object (no markdown, no backticks, no explanations) matching this exact schema:
 
 {
-  "target_count": <integer, number of jobs requested, e.g. 50>,
-  "mode": <"append" | "match", choose "match" if the user wants to maintain, top up, ensure, or keep the queue at a specific total count (e.g. "keep my queue at 50", "make sure it's 50", "match 50 roles", "top up to 50"); choose "append" for all other requests to search for and add roles on top of existing ones. "replace" is completely disabled and must NEVER be used under any circumstances.>,
+  "target_count": <integer, number of jobs requested, e.g. 50 or 100>,
+  "company_count": <integer, number of target companies to research. If the user prompt mentions a specific number of companies OR a number of roles (e.g. "Find 100...", "search 30 companies", "25 roles"), extract that number as company_count (capped at 100). If no number is mentioned in the prompt, company_count MUST strictly default to 20>,
+  "mode": <"append" | "match", choose "match" if the user wants to maintain, top up, ensure, or keep the queue at a specific total count; choose "append" for all other requests to search for and add roles on top of existing ones. "replace" is completely disabled and must NEVER be used under any circumstances>,
+  "industry_sector": <string, e.g. "Healthcare", "FinTech", "CleanTech", "Cybersecurity", "General Tech">,
   "role_domain": <string, e.g. "Backend Software Engineering">,
   "seniority_tier": <string, e.g. "junior-to-mid">,
   "positive_keywords": [<list of positive title strings to match>],
-  "negative_keywords": [<list of title strings to exclude, e.g. "Senior", "Lead", "Staff", "Principal", "Director", "VP", "Manager", "word:Intern", "Frontend">],
-  "target_companies": [<list of 15 to 25 real-world UK/London tech employers specifically matching the requested industry or sector (e.g. for clean energy: Field, Kaluza, Ohme, Piclo, Zenobe, Octopus Energy, Ripple Energy; for cybersecurity: Snyk, Darktrace, Sophos, Immersive Labs, Tessian) to probe via ATS>],
+  "negative_keywords": [<list of title strings to exclude, always include "Senior", "Lead", "Staff", "Principal", "Director", "VP", "Manager", "word:Intern", "Internship", "Internships", "Frontend">],
+  "target_companies": [<list of real-world UK tech/industry employers specifically matching the requested industry or sector. The length of this list MUST equal company_count (default 20, or up to the requested number like 50 to 100). E.g. for healthcare: Accurx, Huma, Cera, Peppy, Zoe, Kheiron Medical, Flo Health, BenevolentAI, etc.>],
   "tech_stack": [<list of languages and technologies mentioned>],
   "core_fundamentals": [<list of core domains like "API Development", "Databases", "Microservices">],
   "evaluate_against_cv": <boolean, true if evaluation against CV requested>
@@ -116,6 +118,13 @@ class NaturalDiscoveryService:
                 else:
                     # Guardrail: replace is completely disabled to protect the inbox
                     parsed["mode"] = "append"
+
+                # AI extracts company_count directly in its JSON; default to 20 if missing or invalid
+                try:
+                    parsed["company_count"] = int(parsed.get("company_count") or 20)
+                except (ValueError, TypeError):
+                    parsed["company_count"] = 20
+
                 return parsed
         except Exception as e:
             print(f"[NaturalDiscovery] AGY parse exception: {e}, falling back to defaults.")
@@ -131,6 +140,7 @@ class NaturalDiscoveryService:
         # Robust fallback preserving UK tech employers & backend keywords
         return {
             "target_count": 50,
+            "company_count": 20,
             "mode": inferred_mode,
             "role_domain": "Backend Software Engineering",
             "seniority_tier": "junior-to-mid",
@@ -268,30 +278,35 @@ class NaturalDiscoveryService:
             except Exception as e:
                 print(f"[Warning] Error reading portals.yml in probe_ats_boards: {e}")
 
-        # Deduplicate & select only new, untracked companies (up to 12 to prevent HTTP 429 rate limits)
+        # Deduplicate & select only new, untracked companies
         to_probe = []
         for c in companies:
             norm = c.lower().replace(" ", "")
             if norm not in existing_names and norm not in [p.lower().replace(" ", "") for p in to_probe]:
                 to_probe.append(c)
-                if len(to_probe) >= 12:
-                    break
 
         if not to_probe:
             return 0
 
-        clean_companies = [c.replace(" ", "") if " " in c and len(c.split()) > 1 else c for c in to_probe]
-        cmd = ["node", "discover-ats.mjs"] + clean_companies + ["--write"]
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            cwd=str(CAREER_OPS_DIR),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            print(f"[Warning] discover-ats.mjs returned non-zero code {proc.returncode}: {stderr.decode('utf-8', errors='replace')[:300]}")
-        return proc.returncode
+        # Probe in batches of up to 25 companies to keep CLI args clean and stream writes
+        batch_size = 25
+        total_exit_code = 0
+        for i in range(0, len(to_probe), batch_size):
+            batch = to_probe[i : i + batch_size]
+            clean_companies = [c.replace(" ", "") if " " in c and len(c.split()) > 1 else c for c in batch]
+            cmd = ["node", "discover-ats.mjs"] + clean_companies + ["--write"]
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=str(CAREER_OPS_DIR),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                print(f"[Warning] discover-ats.mjs returned code {proc.returncode}: {stderr.decode('utf-8', errors='replace')[:300]}")
+                total_exit_code = proc.returncode
+
+        return total_exit_code
 
     async def run_ats_scan(self, job: Optional[Any] = None) -> int:
         """Step 4: Executes untouched scan.mjs across registered boards streaming stdout live."""
@@ -509,6 +524,20 @@ class NaturalDiscoveryService:
             if NOISE_BLACKLIST_REGEX.search(title):
                 continue
 
+            # Unconditionally reject student/internship titles unless explicitly requested in positive keywords
+            if re.search(r"\b(intern|internship|internships|co-op)\b", title, re.IGNORECASE):
+                if not any("intern" in p.lower() for p in positive_keywords):
+                    continue
+
+            # If a specific industry sector (e.g. Healthcare, CleanTech) is requested,
+            # enforce that candidate companies must match the sector's target companies
+            industry = (spec.get("industry_sector") or "").strip().lower()
+            target_companies = [c.strip().lower() for c in spec.get("target_companies", []) if c.strip()]
+            if industry and industry not in ("general", "general tech", "all", "tech") and target_companies:
+                comp_lower = posting.get("company", "").strip().lower()
+                if not any(tc in comp_lower or comp_lower in tc for tc in target_companies):
+                    continue
+
             # Reject if title hits any requested negative/senior keywords
             hit_negative = False
             for neg in negative_keywords:
@@ -518,7 +547,9 @@ class NaturalDiscoveryService:
                 # If negative keyword is explicitly part of a requested positive keyword (e.g. "Project Manager"), don't reject
                 if any(clean_neg.lower() in p.lower() for p in positive_keywords):
                     continue
-                if re.search(rf"\b{re.escape(clean_neg)}\b", title, re.IGNORECASE):
+                # If clean_neg is "intern", also catch "internship", "internships"
+                pattern = rf"\b{re.escape(clean_neg)}(?:ship|ships|s)?\b" if clean_neg.lower() == "intern" else rf"\b{re.escape(clean_neg)}\b"
+                if re.search(pattern, title, re.IGNORECASE):
                     hit_negative = True
                     break
             if hit_negative:
