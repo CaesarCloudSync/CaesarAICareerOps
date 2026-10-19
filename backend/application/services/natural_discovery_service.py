@@ -37,24 +37,32 @@ Analyze the user's natural language search prompt and output ONLY a valid, raw J
 }
 """
 
-BACKEND_ANCHOR_REGEX = re.compile(
-    r"\b(backend|software engineer|software developer|api engineer|platform engineer|python developer|python engineer|go engineer|golang|java developer|java engineer|node\.js|node developer)\b",
-    re.IGNORECASE
+CORE_ROLE_ANCHORS_REGEX = re.compile(
+    r"\b("
+    # Software & Technical Infrastructure
+    r"backend|software|developer|engineer|api|platform|python|golang|go|java|node\.js|node|"
+    r"cloud|devops|sre|reliability|infrastructure|data engineer|data scientist|machine learning|ml|ai|"
+    r"fullstack|full-stack|"
+    # Consulting, Solutions & Advisory
+    r"consultant|consulting|advisory|solutions|transformation|specialist|"
+    # Delivery, Agile & Project Leadership (candidate profile archetypes)
+    r"delivery|project manager|project coordinator|delivery manager|delivery specialist|"
+    r"technical project|program manager|scrum master|agile coach|product delivery"
+    r")\b",
+    re.IGNORECASE,
 )
 
-IRRELEVANT_BLACKLIST_REGEX = re.compile(
+NOISE_BLACKLIST_REGEX = re.compile(
     r"\b("
-    r"strategist|designer|sales|marketing|gtm|recruiter|talent|customer success|enablement|"
-    r"account executive|product manager|product owner|scrum master|support|legal|advisory|"
+    r"recruiter|talent acquisition|account executive|sales representative|retail|"
     r"speaking|bilingual|translation|"
-    r"senior|sr|lead|staff|principal|director|head of|vp|architect|manager|"
-    r"frontend|front-end|ios|android|mobile|ui|ux"
+    r"nurse|doctor|veterinarian|driver|warehouse|cashier|waiter|chef|receptionist|legal counsel|paralegal"
     r")\b",
-    re.IGNORECASE
+    re.IGNORECASE,
 )
 
 UK_REGEX = re.compile(
-    r"\b(london|greater london|united kingdom|uk|great britain|england|edinburgh|manchester|birmingham|cambridge|oxford|bristol)\b",
+    r"\b(london|greater london|united kingdom|uk|great britain|england|edinburgh|manchester|birmingham|cambridge|oxford|bristol|belfast|glasgow|leeds|sheffield|newcastle|nottingham|liverpool)\b",
     re.IGNORECASE,
 )
 FOREIGN_REGEX = re.compile(
@@ -436,17 +444,27 @@ class NaturalDiscoveryService:
         score = 68.0  # Base score for valid UK geofence & junior-mid level
         matched_ats_keywords = []
 
-        # Check core fundamentals requested (API, Database, Microservice)
-        for fund in ["api", "microservice", "database", "sql", "rest", "postgres", "redis", "kafka"]:
-            if fund in title_comp or fund in cv_text.lower():
-                matched_ats_keywords.append(fund.upper())
+        # Check core fundamentals requested (from spec or engineering/delivery defaults)
+        fundamentals = spec.get("core_fundamentals", []) or [
+            "api", "microservice", "database", "sql", "rest", "postgres", "redis", "kafka"
+        ]
+        for fund in fundamentals:
+            if isinstance(fund, str) and (fund.lower() in title_comp or fund.lower() in cv_text.lower()):
+                matched_ats_keywords.append(fund)
                 score += 3.2
 
-        # Check tech stack (Python, Go, Node, Java)
-        for lang in ["python", "go", "golang", "java", "node"]:
-            if lang in title_comp:
-                matched_ats_keywords.append(lang.capitalize())
-                score += 5.5
+        # Check tech stack from spec
+        tech_stack = spec.get("tech_stack", []) or ["python", "go", "golang", "java", "node"]
+        for tech in tech_stack:
+            if isinstance(tech, str) and tech.lower() in title_comp:
+                matched_ats_keywords.append(tech)
+                score += 4.5
+
+        # Also match positive keywords in title
+        for kw in spec.get("positive_keywords", []):
+            if isinstance(kw, str) and kw.lower() in title_comp:
+                matched_ats_keywords.append(kw)
+                score += 5.0
 
         final_score = min(98.0, round(score, 1))
         posting["match_percentage"] = final_score
@@ -456,26 +474,71 @@ class NaturalDiscoveryService:
     def filter_and_diversify_roles(
         self,
         raw_postings: List[Dict[str, Any]],
+        spec: Optional[Dict[str, Any]] = None,
         target_count: int = 50,
         max_per_company: int = 2
     ) -> List[Dict[str, Any]]:
         """
         Combats company monopolization and irrelevant role leakage:
-        1. Eliminates non-backend, translation, and non-engineering titles.
-        2. Enforces a per-company cap so no single employer dominates the inbox.
-        3. Guarantees broad market coverage across distinct UK employers.
+        1. Eliminates non-matching titles, noise roles, and negative keyword violations.
+        2. Supports dynamic prompt targets (software, delivery, consulting, advisory).
+        3. Enforces a per-company cap so no single employer dominates the inbox.
+        4. Guarantees broad market coverage across distinct UK employers.
         """
         clean_candidates = []
+        spec = spec or {}
+        positive_keywords = [k.strip() for k in spec.get("positive_keywords", []) if k.strip()]
+        negative_keywords = [k.strip() for k in spec.get("negative_keywords", []) if k.strip()]
+
+        # Fallback default negative keywords if none supplied by prompt
+        if not negative_keywords:
+            negative_keywords = ["Senior", "Lead", "Staff", "Principal", "Director", "VP", "Managing", "Head of", "word:Intern"]
+
+        # Extract meaningful individual positive tokens (>=4 chars) from positive keywords for partial matching
+        pos_tokens = set()
+        for kw in positive_keywords:
+            for word in re.findall(r"[A-Za-z0-9]+", kw.lower()):
+                if len(word) >= 4 and word not in ("with", "from", "into", "that", "this"):
+                    pos_tokens.add(word)
 
         for posting in raw_postings:
             title = posting["title"].strip()
+            title_lower = title.lower()
 
-            # Reject if title hits any irrelevant or senior keyword
-            if IRRELEVANT_BLACKLIST_REGEX.search(title):
+            # Reject if title hits obvious non-professional or recruitment spam noise
+            if NOISE_BLACKLIST_REGEX.search(title):
                 continue
 
-            # Require a genuine backend technical anchor
-            if not BACKEND_ANCHOR_REGEX.search(title):
+            # Reject if title hits any requested negative/senior keywords
+            hit_negative = False
+            for neg in negative_keywords:
+                clean_neg = re.sub(r"^(?:word|stem):", "", neg, flags=re.IGNORECASE).strip()
+                if not clean_neg:
+                    continue
+                # If negative keyword is explicitly part of a requested positive keyword (e.g. "Project Manager"), don't reject
+                if any(clean_neg.lower() in p.lower() for p in positive_keywords):
+                    continue
+                if re.search(rf"\b{re.escape(clean_neg)}\b", title, re.IGNORECASE):
+                    hit_negative = True
+                    break
+            if hit_negative:
+                continue
+
+            # Require a genuine role anchor: either matching prompt's positive keywords/tokens or core role anchors
+            has_positive_match = False
+            if positive_keywords:
+                # 1. Exact phrase or substring match with any positive keyword
+                if any(p.lower() in title_lower or title_lower in p.lower() for p in positive_keywords):
+                    has_positive_match = True
+                # 2. Token overlap with positive keywords
+                elif any(tok in title_lower for tok in pos_tokens):
+                    has_positive_match = True
+
+            # 3. Fallback or complementary match with core technical, consulting, or delivery anchors
+            if not has_positive_match and CORE_ROLE_ANCHORS_REGEX.search(title):
+                has_positive_match = True
+
+            if not has_positive_match:
                 continue
 
             clean_candidates.append(posting)
@@ -746,8 +809,8 @@ class NaturalDiscoveryService:
                 substep_name="Diversity Cap & Queue Sync",
             )
 
-        # 7. Apply diversity cap & strict backend guardrail
-        final_selected = self.filter_and_diversify_roles(raw_candidates, target_count=needed_target, max_per_company=2)
+        # 7. Apply diversity cap & dynamic role matching guardrails
+        final_selected = self.filter_and_diversify_roles(raw_candidates, spec=spec, target_count=needed_target, max_per_company=2)
         selected_urls = {r["url"] for r in final_selected}
 
         # 8. Sync into Database & update pipeline.md (strictly non-destructive: existing inbox items are always preserved)
