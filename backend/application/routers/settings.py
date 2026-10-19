@@ -19,6 +19,7 @@ from backend.application.models import (
 )
 from backend.application.services.scanner_service import ScannerService
 from backend.application.services.natural_discovery_service import NaturalDiscoveryService
+from backend.application.services.discovery_tracker import discovery_tracker, DiscoveryJob
 from backend.application.dependencies import get_scanner_service
 
 router = APIRouter(prefix="/api/settings", tags=["Settings & Discovery"])
@@ -505,60 +506,94 @@ async def expand_companies_and_scan(
     }
 
 
+async def _execute_discovery_job(job: DiscoveryJob, payload: DiscoverJobsRequest):
+    try:
+        if payload.natural_language_query and payload.natural_language_query.strip():
+            service = NaturalDiscoveryService()
+            await service.run_pipeline(payload.natural_language_query.strip(), job=job)
+        else:
+            job.update(1, "Starting ATS Scanner", "Scanning registered UK employer boards...")
+            scanner = get_scanner_service()
+            scan_result = await scanner.run_scan(verify=payload.verify)
+            job.update(2, "Cleansing Foreign Postings", "Enforcing strict UK geofencing filters...")
+            await purge_foreign_and_chinese_postings()
+            job.update(3, "Syncing Pipeline Items", "Syncing verified postings into inbox database...")
+            added_count = 0
+            with Session(engine) as session:
+                existing_texts = set(session.exec(select(PipelineItem.raw_text)).all())
+                if PIPELINE_MD.exists():
+                    for line in PIPELINE_MD.read_text(encoding="utf-8").splitlines():
+                        cl = line.strip()
+                        if (
+                            cl
+                            and not cl.startswith("#")
+                            and not cl.lower().startswith("paste job")
+                            and cl not in existing_texts
+                            and is_valid_uk_job(cl)
+                        ):
+                            session.add(PipelineItem(raw_text=cl, status="pending"))
+                            existing_texts.add(cl)
+                            added_count += 1
+                    session.commit()
+            job.complete({
+                "status": "success",
+                "message": f"Targeted UK discovery completed. Added {added_count} live postings.",
+                "details": scan_result.get("stdout", "")[:500],
+            })
+    except Exception as e:
+        job.fail(str(e))
+
+
+@router.get("/discover/active")
+async def get_active_discovery_job():
+    """Returns currently running or recently completed discovery job for refresh resilience."""
+    active_job = discovery_tracker.get_active_job()
+    if active_job:
+        return {"active": True, "job": active_job.to_dict()}
+    return {"active": False, "job": None}
+
+
+@router.get("/discover/status/{job_id}")
+async def get_discovery_job_status(job_id: str):
+    """Poll live progress, step name, and elapsed seconds for a specific discovery job."""
+    job = discovery_tracker.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Discovery job not found")
+    return {"status": "success", "job": job.to_dict()}
+
+
 @router.post("/discover")
 async def discover_jobs(
     payload: DiscoverJobsRequest,
-    scanner: ScannerService = Depends(get_scanner_service),
+    sync: bool = False,
 ):
     """
     Run targeted job discovery using user's CV or natural language query,
     enforcing strict UK / London pigeonhole.
+    Runs asynchronously with persistent job tracking by default.
     """
-    if payload.natural_language_query and payload.natural_language_query.strip():
-        try:
-            service = NaturalDiscoveryService()
-            result = await service.run_pipeline(payload.natural_language_query.strip())
-            return {
-                "status": "success",
-                "message": result["message"],
-                "mode": result["mode"],
-                "total_in_queue": result.get("total_in_queue", result["final_count"]),
-                "spec": result["spec"],
-                "roles": result["roles"],
-            }
-        except Exception as e:
+    job = discovery_tracker.create_job(query=payload.natural_language_query)
+
+    if sync:
+        await _execute_discovery_job(job, payload)
+        if job.status == "failed":
             return JSONResponse(
                 status_code=500,
-                content={
-                    "status": "error",
-                    "message": f"Autonomous discovery error: {str(e)}"
-                }
+                content={"status": "error", "message": job.error, "job": job.to_dict()}
             )
+        return {
+            "status": "success",
+            "message": job.detail,
+            "job": job.to_dict(),
+            **(job.result or {})
+        }
 
-    scan_result = await scanner.run_scan(verify=payload.verify)
-
-    # Post-process: ensure any raw text added to pipeline is strictly cleansed to UK only
-    await purge_foreign_and_chinese_postings()
-
-    # Sync any new items from data/pipeline.md into database
-    with Session(engine) as session:
-        existing_texts = set(session.exec(select(PipelineItem.raw_text)).all())
-        if PIPELINE_MD.exists():
-            for line in PIPELINE_MD.read_text(encoding="utf-8").splitlines():
-                cl = line.strip()
-                if (
-                    cl
-                    and not cl.startswith("#")
-                    and not cl.lower().startswith("paste job")
-                    and cl not in existing_texts
-                    and is_valid_uk_job(cl)
-                ):
-                    session.add(PipelineItem(raw_text=cl, status="pending"))
-                    existing_texts.add(cl)
-            session.commit()
+    # Run in background task decoupled from HTTP connection
+    asyncio.create_task(_execute_discovery_job(job, payload))
 
     return {
-        "status": "success",
-        "message": "Targeted UK discovery completed.",
-        "details": scan_result.get("stdout", "")[:500],
+        "status": "started",
+        "job_id": job.job_id,
+        "message": "Autonomous discovery started in background.",
+        "job": job.to_dict()
     }

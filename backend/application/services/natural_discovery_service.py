@@ -389,8 +389,11 @@ class NaturalDiscoveryService:
 
         return selected_roles
 
-    async def run_pipeline(self, user_prompt: str) -> Dict[str, Any]:
-        """Executes the complete autonomous end-to-end pipeline."""
+    async def run_pipeline(self, user_prompt: str, job: Optional[Any] = None) -> Dict[str, Any]:
+        """Executes the complete autonomous end-to-end pipeline with real-time job progress tracking."""
+        if job:
+            job.update(1, "Analyzing ATS Criteria", "AI is translating your prompt into structured ATS filter specifications...")
+
         # 1. Parse prompt with AGY
         spec = await self.parse_prompt_with_agy(user_prompt)
         target_count = spec.get("target_count", 50)
@@ -399,12 +402,26 @@ class NaturalDiscoveryService:
         if mode not in ("append", "replace", "match"):
             mode = "replace"
 
+        if job:
+            job.update(
+                2,
+                "Probing ATS Boards & Portals",
+                f"Targeting {target_count} roles (mode: {mode}). Pre-flight validating portals.yml and probing {len(target_companies)} UK employer ATS feeds..."
+            )
+
         # 2. Apply dynamic filters to portals.yml with pre-flight atomic rollback
         await self.apply_dynamic_filters(spec)
 
         # 3. Probe the 50+ ATS boards via discover-ats.mjs --write
         if target_companies:
             await self.probe_ats_boards(target_companies)
+
+        if job:
+            job.update(
+                3,
+                "Crawling ATS Boards & Staging",
+                "Crawling tracked employer career portals in parallel (Greenhouse, Lever, Ashby, Workable)..."
+            )
 
         # 4. Run ATS scan via scan.mjs
         await self.run_ats_scan()
@@ -477,11 +494,25 @@ class NaturalDiscoveryService:
                             staged_new_urls.add(entry["url"])
                 session.commit()
 
+        if job:
+            job.update(
+                3,
+                "Staging Persistence",
+                f"Crawled live portals. Persisted {len(parsed_entries)} live UK roles into write-ahead staging queue."
+            )
+
         # Candidates to evaluate
         if mode in ("append", "match"):
             evaluation_candidates = [e for e in parsed_entries if e["url"] not in initial_existing_urls]
         else:
             evaluation_candidates = parsed_entries
+
+        if job:
+            job.update(
+                4,
+                "Scoring & Diversity Curation",
+                f"Verifying live HTTP response & scoring ATS fundamentals across {len(evaluation_candidates)} roles against profile..."
+            )
 
         # Fast parallel liveness check across candidate URLs
         liveness_results = await asyncio.gather(
@@ -505,7 +536,7 @@ class NaturalDiscoveryService:
 
         # If mode is match and queue already matches or exceeds target
         if mode == "match" and needed_target == 0:
-            return {
+            match_res = {
                 "status": "success",
                 "mode": mode,
                 "spec": spec,
@@ -515,6 +546,9 @@ class NaturalDiscoveryService:
                 "message": f"Autonomous discovery: Queue already matches target ({initial_count} / {target_count} roles).",
                 "roles": []
             }
+            if job:
+                job.complete(match_res)
+            return match_res
 
         # 7. Apply diversity cap & strict backend guardrail
         final_selected = self.filter_and_diversify_roles(raw_candidates, target_count=needed_target, max_per_company=2)
@@ -552,7 +586,7 @@ class NaturalDiscoveryService:
         else:
             action_msg = f"Populated inbox with {len(final_selected)} verified roles."
 
-        return {
+        final_res = {
             "status": "success",
             "mode": mode,
             "spec": spec,
@@ -562,3 +596,6 @@ class NaturalDiscoveryService:
             "message": f"Autonomous discovery complete: {action_msg}",
             "roles": final_selected
         }
+        if job:
+            job.complete(final_res)
+        return final_res

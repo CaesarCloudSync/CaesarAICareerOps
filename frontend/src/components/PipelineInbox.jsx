@@ -13,6 +13,8 @@ import {
   Activity,
   Building2,
   CheckCircle2,
+  Clock,
+  AlertCircle,
 } from 'lucide-react';
 
 export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
@@ -26,15 +28,98 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
   const [verifying, setVerifying] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [actionMessage, setActionMessage] = useState('');
+  const [activeJob, setActiveJob] = useState(null);
+  const [activeJobId, setActiveJobId] = useState(() => {
+    try {
+      return localStorage.getItem('active_discovery_job_id') || null;
+    } catch {
+      return null;
+    }
+  });
 
-  // Live real-time polling during discovery so UI updates live when write-ahead staging commits
+  // 1. Mount Check: Check server for any running discovery job (survives page refresh!)
   useEffect(() => {
-    if (!discovering) return;
-    const interval = setInterval(() => {
-      onRefresh?.();
-    }, 3000);
-    return () => clearInterval(interval);
-  }, [discovering, onRefresh]);
+    let isMounted = true;
+    const checkActiveJob = async () => {
+      try {
+        const res = await fetch('/api/settings/discover/active');
+        if (res.ok) {
+          const data = await res.json();
+          if (data.active && data.job && isMounted) {
+            setActiveJob(data.job);
+            setActiveJobId(data.job.job_id);
+            try {
+              localStorage.setItem('active_discovery_job_id', data.job.job_id);
+            } catch {}
+            if (data.job.status === 'running') {
+              setDiscovering(true);
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Failed to check active discovery job:', err);
+      }
+    };
+    checkActiveJob();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  // 2. Real Status Polling: Polls live step, detail & elapsed time every 1000ms
+  useEffect(() => {
+    if (!activeJobId || !discovering) return;
+
+    let timer = null;
+    let isCancelled = false;
+
+    const pollStatus = async () => {
+      try {
+        const res = await fetch(`/api/settings/discover/status/${activeJobId}`);
+        if (!res.ok) {
+          if (res.status === 404) {
+            setDiscovering(false);
+            try {
+              localStorage.removeItem('active_discovery_job_id');
+            } catch {}
+          }
+          return;
+        }
+        const data = await res.json();
+        const job = data.job;
+        if (!isCancelled && job) {
+          setActiveJob(job);
+          if (job.status === 'completed') {
+            setDiscovering(false);
+            try {
+              localStorage.removeItem('active_discovery_job_id');
+            } catch {}
+            setActionMessage(`✨ ${job.detail || 'Discovery completed successfully!'}`);
+            onRefresh?.();
+            setTimeout(() => {
+              setActiveJob(null);
+            }, 8000);
+          } else if (job.status === 'failed') {
+            setDiscovering(false);
+            try {
+              localStorage.removeItem('active_discovery_job_id');
+            } catch {}
+            setActionMessage(`❌ ${job.error || job.detail || 'Discovery failed.'}`);
+          }
+        }
+      } catch (err) {
+        console.error('Error polling discovery status:', err);
+      }
+    };
+
+    pollStatus();
+    timer = setInterval(pollStatus, 1000);
+
+    return () => {
+      isCancelled = true;
+      if (timer) clearInterval(timer);
+    };
+  }, [activeJobId, discovering, onRefresh]);
 
   const handleAdd = async (e) => {
     e.preventDefault();
@@ -129,26 +214,7 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
 
   const handleDiscover = async (useCV = true) => {
     setDiscovering(true);
-    const isNl = Boolean(nlQuery && nlQuery.trim());
-    setActionMessage(
-      isNl
-        ? '🤖 Step 1/4: AGY is analyzing your prompt into structured ATS criteria...'
-        : 'Scanning registered UK portals tailored to your target roles...'
-    );
-
-    // Dynamic progress stages during execution
-    const timer1 = setTimeout(() => {
-      if (isNl) setActionMessage('🏢 Step 2/4: Probing 50+ UK employer ATS boards (Greenhouse, Ashby, Lever)...');
-    }, 10000);
-
-    const timer2 = setTimeout(() => {
-      if (isNl) setActionMessage('⚡ Step 3/4: Scanning live openings in parallel & verifying HTTP liveness...');
-    }, 24000);
-
-    const timer3 = setTimeout(() => {
-      if (isNl) setActionMessage('🎯 Step 4/4: Scoring backend fundamentals against Master CV & populating inbox...');
-    }, 36000);
-
+    setActionMessage('');
     try {
       const res = await fetch('/api/settings/discover', {
         method: 'POST',
@@ -161,20 +227,21 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
         }),
       });
       const data = await res.json();
-      if (res.ok) {
-        setActionMessage(`✨ ${data.message || 'Discovery complete! Added fresh UK postings to inbox.'}`);
-        onRefresh?.();
+      if (res.ok && data.job_id) {
+        setActiveJobId(data.job_id);
+        try {
+          localStorage.setItem('active_discovery_job_id', data.job_id);
+        } catch {}
+        if (data.job) {
+          setActiveJob(data.job);
+        }
       } else {
-        setActionMessage(`❌ ${data.message || 'Discovery failed. Please check server logs.'}`);
+        setDiscovering(false);
+        setActionMessage(`❌ ${data.message || 'Failed to start discovery'}`);
       }
     } catch (err) {
-      setActionMessage(`❌ Discovery error: ${err.message}`);
-    } finally {
-      clearTimeout(timer1);
-      clearTimeout(timer2);
-      clearTimeout(timer3);
       setDiscovering(false);
-      setTimeout(() => setActionMessage(''), 8000);
+      setActionMessage(`❌ Discovery error: ${err.message}`);
     }
   };
 
@@ -359,7 +426,88 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
         </div>
       </div>
 
-      {actionMessage && (
+      {/* Real-time Discovery Progress Card */}
+      {activeJob && (
+        <div className={`p-4 rounded-xl border transition-all ${
+          activeJob.status === 'failed'
+            ? 'bg-rose-950/30 border-rose-800/60 text-rose-200'
+            : activeJob.status === 'completed'
+            ? 'bg-emerald-950/30 border-emerald-800/60 text-emerald-200'
+            : 'bg-indigo-950/40 border-indigo-700/60 text-indigo-100 shadow-lg shadow-indigo-950/50'
+        }`}>
+          {/* Header row: Step pill, Title, and Elapsed Stopwatch */}
+          <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-indigo-900/50">
+            <div className="flex items-center gap-2">
+              <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-mono font-semibold tracking-wide border flex items-center gap-1.5 ${
+                activeJob.status === 'completed'
+                  ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300'
+                  : activeJob.status === 'failed'
+                  ? 'bg-rose-500/20 border-rose-500/40 text-rose-300'
+                  : 'bg-indigo-500/20 border-indigo-400/40 text-indigo-300'
+              }`}>
+                {activeJob.status === 'running' && <Loader2 className="w-3 h-3 animate-spin text-indigo-300" />}
+                {activeJob.status === 'completed' && <CheckCircle2 className="w-3 h-3 text-emerald-400" />}
+                {activeJob.status === 'failed' && <AlertCircle className="w-3 h-3 text-rose-400" />}
+                <span>
+                  {activeJob.status === 'completed'
+                    ? 'Completed'
+                    : activeJob.status === 'failed'
+                    ? 'Failed'
+                    : `Step ${activeJob.step || 1} of ${activeJob.total_steps || 4}`}
+                </span>
+              </span>
+              <span className="text-xs font-semibold text-white tracking-wide">
+                {activeJob.step_name || 'Autonomous Discovery'}
+              </span>
+            </div>
+
+            {/* Live Stopwatch */}
+            <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-slate-900/80 border border-slate-800 text-[11px] font-mono text-slate-300">
+              <Clock className="w-3 h-3 text-indigo-400" />
+              <span>Elapsed: {activeJob.elapsed_seconds || 0}s</span>
+            </div>
+          </div>
+
+          {/* Sub-step detail text */}
+          <div className="pt-2.5 pb-2 text-xs font-mono text-slate-300 flex items-center gap-2">
+            <span className="truncate">{activeJob.detail || 'Processing...'}</span>
+          </div>
+
+          {/* 4-Step Visual Progress Track */}
+          <div className="grid grid-cols-4 gap-1.5 pt-2">
+            {[
+              { step: 1, name: '1. AI Criteria' },
+              { step: 2, name: '2. Portals Probe' },
+              { step: 3, name: '3. ATS Crawl & Stage' },
+              { step: 4, name: '4. CV Scoring' },
+            ].map((st) => {
+              const isDone = activeJob.status === 'completed' || activeJob.step > st.step;
+              const isCurrent = activeJob.status === 'running' && activeJob.step === st.step;
+              return (
+                <div key={st.step} className="space-y-1">
+                  <div
+                    className={`h-1.5 rounded-full transition-all duration-300 ${
+                      isDone
+                        ? 'bg-emerald-400'
+                        : isCurrent
+                        ? 'bg-indigo-500 animate-pulse'
+                        : 'bg-slate-800'
+                    }`}
+                  />
+                  <div className={`text-[10px] truncate ${
+                    isDone ? 'text-emerald-400 font-medium' : isCurrent ? 'text-indigo-300 font-semibold' : 'text-slate-600'
+                  }`}>
+                    {st.name}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Fallback simple banner for non-discovery actions (purge, verify, reset) */}
+      {!activeJob && actionMessage && (
         <div className="p-2.5 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-xs text-indigo-300 font-mono flex items-center gap-2">
           <span>{actionMessage}</span>
         </div>
