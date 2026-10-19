@@ -570,6 +570,20 @@ async def get_discovery_job_status(job_id: str):
     return {"status": "success", "job": job.to_dict()}
 
 
+@router.post("/discover/cancel/{job_id}")
+async def cancel_discovery_job(job_id: str):
+    """Gracefully cancel a running discovery job."""
+    job = discovery_tracker.cancel_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Discovery job '{job_id}' not found.")
+    return {
+        "status": "success",
+        "job_id": job.job_id,
+        "message": "Discovery job cancelled.",
+        "job": job.to_dict(),
+    }
+
+
 @router.post("/discover")
 async def discover_jobs(
     payload: DiscoverJobsRequest,

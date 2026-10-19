@@ -22,7 +22,22 @@ class DiscoveryJob:
         self.elapsed_seconds: float = 0.0
         self.result: Optional[Dict[str, Any]] = None
         self.error: Optional[str] = None
+        self.cancelled: bool = False
+        self._process = None
         self.live_feed: list = []
+
+    def cancel(self):
+        self.cancelled = True
+        self.status = "cancelled"
+        self.step_name = "Discovery Cancelled"
+        self.detail = "Discovery stopped by user."
+        self.elapsed_seconds = round(time.time() - self.start_timestamp, 1)
+        self.completed_at = datetime.now(timezone.utc).isoformat()
+        if self._process:
+            try:
+                self._process.terminate()
+            except Exception:
+                pass
 
     def add_feed_line(self, line: str):
         if line and line.strip():
@@ -119,14 +134,20 @@ class DiscoveryTracker:
     def get_job(self, job_id: str) -> Optional[DiscoveryJob]:
         return self._jobs.get(job_id)
 
+    def cancel_job(self, job_id: str) -> Optional[DiscoveryJob]:
+        job = self._jobs.get(job_id)
+        if job and job.status == "running":
+            job.cancel()
+        return job
+
     def get_active_job(self) -> Optional[DiscoveryJob]:
         if not self._active_job_id:
             return None
         job = self._jobs.get(self._active_job_id)
         if not job:
             return None
-        # Keep completed or failed job accessible as active for 60 seconds so user can see completion
-        if job.status in ("completed", "failed") and job.completed_at:
+        # Keep completed, failed, or cancelled job accessible as active for 60 seconds
+        if job.status in ("completed", "failed", "cancelled") and job.completed_at:
             try:
                 completed_time = datetime.fromisoformat(job.completed_at).timestamp()
                 if time.time() - completed_time > 60:

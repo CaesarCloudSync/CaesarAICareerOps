@@ -293,6 +293,8 @@ class NaturalDiscoveryService:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
+        if job:
+            job._process = proc
 
         captured_stdout = []
         captured_stderr = []
@@ -327,6 +329,12 @@ class NaturalDiscoveryService:
 
         async def _read_stdout():
             while True:
+                if job and getattr(job, "cancelled", False):
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+                    break
                 line = await proc.stdout.readline()
                 if not line:
                     break
@@ -590,6 +598,8 @@ class NaturalDiscoveryService:
 
         # 4. Run ATS scan via scan.mjs (streaming stdout live)
         await self.run_ats_scan(job=job)
+        if job and getattr(job, "cancelled", False):
+            return {"status": "cancelled", "message": "Discovery cancelled by user."}
 
         # 5. Load candidate Master CV for ATS scoring
         cv_text = ""

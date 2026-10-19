@@ -330,6 +330,16 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
             setTimeout(() => {
               setActiveJob(null);
             }, 8000);
+          } else if (job.status === 'cancelled') {
+            setDiscovering(false);
+            try {
+              localStorage.removeItem('active_discovery_job_id');
+            } catch {}
+            setActionMessage(`⏸️ ${job.detail || 'Discovery cancelled.'}`);
+            onRefresh?.();
+            setTimeout(() => {
+              setActiveJob((prev) => (prev?.status === 'cancelled' ? null : prev));
+            }, 6000);
           } else if (job.status === 'failed') {
             setDiscovering(false);
             try {
@@ -351,6 +361,15 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
       if (timer) clearInterval(timer);
     };
   }, [activeJobId, discovering, onRefresh]);
+
+  const handleCancelDiscovery = async () => {
+    if (!activeJobId) return;
+    try {
+      await fetch(`/api/settings/discover/cancel/${activeJobId}`, { method: 'POST' });
+    } catch (err) {
+      console.error('Failed to cancel discovery job:', err);
+    }
+  };
 
   const handleAdd = async (e) => {
     e.preventDefault();
@@ -606,6 +625,8 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
               ? 'bg-rose-950/30 border-rose-800/60 text-rose-200'
               : activeJob.status === 'completed'
               ? 'bg-emerald-950/30 border-emerald-800/60 text-emerald-200'
+              : activeJob.status === 'cancelled'
+              ? 'bg-slate-900 border-slate-700 text-slate-300'
               : 'bg-indigo-950/40 border-indigo-700/60 text-indigo-100 shadow-lg shadow-indigo-950/50'
           }`}>
             {/* Header row: Step pill, Title, and Elapsed Stopwatch */}
@@ -616,16 +637,21 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
                     ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300'
                     : activeJob.status === 'failed'
                     ? 'bg-rose-500/20 border-rose-500/40 text-rose-300'
+                    : activeJob.status === 'cancelled'
+                    ? 'bg-amber-500/20 border-amber-500/40 text-amber-300'
                     : 'bg-indigo-500/20 border-indigo-400/40 text-indigo-300'
                 }`}>
                   {activeJob.status === 'running' && <Loader2 className="w-3 h-3 animate-spin text-indigo-300" />}
                   {activeJob.status === 'completed' && <CheckCircle2 className="w-3 h-3 text-emerald-400" />}
                   {activeJob.status === 'failed' && <AlertCircle className="w-3 h-3 text-rose-400" />}
+                  {activeJob.status === 'cancelled' && <AlertCircle className="w-3 h-3 text-amber-400" />}
                   <span>
                     {activeJob.status === 'completed'
                       ? 'Completed'
                       : activeJob.status === 'failed'
                       ? 'Failed'
+                      : activeJob.status === 'cancelled'
+                      ? 'Cancelled'
                       : `Step ${activeJob.step || 1} of ${activeJob.total_steps || 4}`}
                   </span>
                 </span>
@@ -634,10 +660,22 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
                 </span>
               </div>
 
-              {/* Live Stopwatch */}
-              <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-slate-900/80 border border-slate-800 text-[11px] font-mono text-slate-300">
-                <Clock className="w-3 h-3 text-indigo-400" />
-                <span>Elapsed: {activeJob.elapsed_seconds || 0}s</span>
+              {/* Live Stopwatch & Cancel Button */}
+              <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-slate-900/80 border border-slate-800 text-[11px] font-mono text-slate-300">
+                  <Clock className="w-3 h-3 text-indigo-400" />
+                  <span>Elapsed: {activeJob.elapsed_seconds || 0}s</span>
+                </div>
+                {activeJob.status === 'running' && (
+                  <button
+                    type="button"
+                    onClick={handleCancelDiscovery}
+                    className="px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/30 text-rose-300 text-xs font-medium flex items-center gap-1 transition-colors"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                    <span>Cancel Discovery</span>
+                  </button>
+                )}
               </div>
             </div>
 
