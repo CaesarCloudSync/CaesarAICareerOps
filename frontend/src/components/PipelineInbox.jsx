@@ -687,24 +687,24 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
               <span className="text-[10px] text-slate-500 font-medium">Quick Suggestions:</span>
               {[
                 {
-                  label: "100 Jobs / 400 Companies (All Industries)",
-                  prompt: "Find 100 new jobs from 400 new companies for Junior and Mid Level Backend Engineer in any and all industries (Python, Java, C#) London",
+                  label: "100 Jobs / 200 Companies",
+                  prompt: "Find 100 new jobs from 200 new companies for Junior and Mid Level Backend Engineer in any and all industries (Python, Java, C#) London",
                 },
                 {
-                  label: "50 FinTech & Banking",
-                  prompt: "Find 50 new jobs from 150 companies for Junior and Mid Level Backend Engineer in FinTech and Banking (Python, Java, Go) London",
+                  label: "100 Jobs / 500 Companies",
+                  prompt: "Find 100 new jobs from 500 new companies for Junior and Mid Level Backend Engineer in any and all industries (Python, Java, C#) London",
                 },
                 {
-                  label: "50 AI & DevTools Scaleups",
-                  prompt: "Find 50 new jobs from 150 companies for Backend Engineer in AI and Developer Tooling Scaleups (Python, Java, C#) London",
+                  label: "100 Jobs / 1,000 Companies",
+                  prompt: "Find 100 new jobs from 1000 new companies for Junior and Mid Level Backend Engineer in any and all industries (Python, Java, C#) London",
                 },
                 {
-                  label: "50 HealthTech & BioTech",
-                  prompt: "Find 50 new jobs from 150 companies for Junior and Mid Level Backend Engineer in HealthTech and BioTech (Python, Java) London",
+                  label: "100 Jobs / 1,500 Companies",
+                  prompt: "Find 100 new jobs from 1500 new companies for Junior and Mid Level Backend Engineer in any and all industries (Python, Java, C#) London",
                 },
                 {
-                  label: "20 Fast Discovery",
-                  prompt: "Find 20 Backend Engineer (Python, Java, C#) London",
+                  label: "100 Jobs / 2,000 Companies",
+                  prompt: "Find 100 new jobs from 2000 new companies for Junior and Mid Level Backend Engineer in any and all industries (Python, Java, C#) London",
                 },
               ].map((sug, sidx) => (
                 <button
