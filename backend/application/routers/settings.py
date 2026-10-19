@@ -513,38 +513,41 @@ async def expand_companies_and_scan(
 
 async def _execute_discovery_job(job: DiscoveryJob, payload: DiscoverJobsRequest):
     try:
-        if payload.natural_language_query and payload.natural_language_query.strip():
-            service = NaturalDiscoveryService()
-            await service.run_pipeline(payload.natural_language_query.strip(), job=job)
-        else:
-            job.update(1, "Starting ATS Scanner", "Scanning registered UK employer boards...")
-            scanner = get_scanner_service()
-            scan_result = await scanner.run_scan(verify=payload.verify)
-            job.update(2, "Cleansing Foreign Postings", "Enforcing strict UK geofencing filters...")
-            await purge_foreign_and_chinese_postings()
-            job.update(3, "Syncing Pipeline Items", "Syncing verified postings into inbox database...")
-            added_count = 0
-            with Session(engine) as session:
-                existing_texts = set(session.exec(select(PipelineItem.raw_text)).all())
-                if PIPELINE_MD.exists():
-                    for line in PIPELINE_MD.read_text(encoding="utf-8").splitlines():
-                        cl = line.strip()
-                        if (
-                            cl
-                            and not cl.startswith("#")
-                            and not cl.lower().startswith("paste job")
-                            and cl not in existing_texts
-                            and is_valid_uk_job(cl)
-                        ):
-                            session.add(PipelineItem(raw_text=cl, status="pending"))
-                            existing_texts.add(cl)
-                            added_count += 1
-                    session.commit()
-            job.complete({
-                "status": "success",
-                "message": f"Targeted UK discovery completed. Added {added_count} live postings.",
-                "details": scan_result.get("stdout", "")[:500],
-            })
+        query = (payload.natural_language_query or "").strip()
+        if not query:
+            # Construct broad query using Target Role Titles & Candidate Archetypes (pigeonholes)
+            target_roles = []
+            archetypes = []
+            if PORTALS_YML.exists():
+                try:
+                    with open(PORTALS_YML, "r", encoding="utf-8") as f:
+                        cfg = yaml.safe_load(f) or {}
+                    target_roles = (cfg.get("title_filter") or {}).get("positive") or []
+                except Exception:
+                    pass
+
+            profile_path = CAREER_OPS_DIR / "config" / "profile.yml"
+            if profile_path.exists():
+                try:
+                    with open(profile_path, "r", encoding="utf-8") as f:
+                        prof = yaml.safe_load(f) or {}
+                    p_roles = prof.get("target_roles") or {}
+                    if isinstance(p_roles, dict):
+                        primary = p_roles.get("primary") or []
+                        target_roles.extend([r for r in primary if r not in target_roles])
+                        arch_list = p_roles.get("archetypes") or []
+                        for a in arch_list:
+                            if isinstance(a, dict) and a.get("name"):
+                                archetypes.append(a.get("name"))
+                except Exception:
+                    pass
+
+            roles_str = ", ".join(target_roles[:12]) if target_roles else "Software Engineer, Backend Engineer, Platform Engineer, API Engineer"
+            arch_str = f" Target archetypes and pigeonholes: {', '.join(archetypes[:6])}." if archetypes else ""
+            query = f"Find 50 live roles in London and UK matching candidate CV and target role titles: {roles_str}.{arch_str} Strictly UK only."
+
+        service = NaturalDiscoveryService()
+        await service.run_pipeline(query, job=job)
     except Exception as e:
         job.fail(str(e))
 

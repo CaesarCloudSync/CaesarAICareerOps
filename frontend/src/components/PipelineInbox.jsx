@@ -510,7 +510,7 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
       {/* STANDALONE CONTAINER 1: AI NATURAL LANGUAGE SEARCH & DISCOVERY */}
       {/* ──────────────────────────────────────────────────────────── */}
       <div className="bg-slate-900/60 border border-indigo-500/40 rounded-xl p-5 backdrop-blur space-y-4 shadow-xl shadow-indigo-950/20">
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 pb-3 border-b border-slate-800">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 pb-3 border-b border-slate-800">
           <div className="flex items-center gap-2.5">
             <div className="p-1.5 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-indigo-400">
               <Sparkles className="w-5 h-5 text-amber-400" />
@@ -529,6 +529,18 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
               </p>
             </div>
           </div>
+
+          {/* Clean smaller button above the prompt */}
+          <button
+            type="button"
+            onClick={() => handleDiscover(true)}
+            disabled={discovering}
+            className="px-3 py-1.5 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/40 hover:border-indigo-400 text-indigo-200 text-xs font-medium flex items-center gap-1.5 transition-all shadow-sm hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 shrink-0"
+            title="Scan 331+ UK portals using Target Role Titles & Archetypes from your candidate profile"
+          >
+            {discovering ? <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" /> : <Sparkles className="w-3.5 h-3.5 text-amber-300" />}
+            <span>✨ Broad UK Scan (CV & Target Roles)</span>
+          </button>
         </div>
 
         <div className="space-y-2.5">
@@ -800,16 +812,6 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
             >
               {isEvaluating ? <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" /> : <Zap className="w-3.5 h-3.5 text-indigo-400" />}
               <span>⚡ Evaluate All ({items.length})</span>
-            </button>
-
-            {/* Discover Jobs button */}
-            <button
-              onClick={() => handleDiscover(true)}
-              disabled={discovering}
-              className="px-4 py-2 rounded-lg bg-gradient-to-r from-indigo-600 via-indigo-500 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white text-xs font-semibold flex items-center gap-2 transition-all shadow-md shadow-indigo-500/25 hover:shadow-indigo-500/40 hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50"
-            >
-              {discovering ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4 text-amber-300" />}
-              <span>✨ Discover Jobs (UK Scan)</span>
             </button>
           </div>
         </div>
