@@ -293,7 +293,7 @@ class NaturalDiscoveryService:
         total_exit_code = 0
         for i in range(0, len(to_probe), batch_size):
             batch = to_probe[i : i + batch_size]
-            clean_companies = [c.replace(" ", "") if " " in c and len(c.split()) > 1 else c for c in batch]
+            clean_companies = [c.strip() for c in batch if c.strip()]
             cmd = ["node", "discover-ats.mjs"] + clean_companies + ["--write"]
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -502,75 +502,22 @@ class NaturalDiscoveryService:
         """
         clean_candidates = []
         spec = spec or {}
-        positive_keywords = [k.strip() for k in spec.get("positive_keywords", []) if k.strip()]
-        negative_keywords = [k.strip() for k in spec.get("negative_keywords", []) if k.strip()]
-
-        # Fallback default negative keywords if none supplied by prompt
-        if not negative_keywords:
-            negative_keywords = ["Senior", "Lead", "Staff", "Principal", "Director", "VP", "Managing", "Head of", "word:Intern"]
-
-        # Extract meaningful individual positive tokens (>=4 chars) from positive keywords for partial matching
-        pos_tokens = set()
-        for kw in positive_keywords:
-            for word in re.findall(r"[A-Za-z0-9]+", kw.lower()):
-                if len(word) >= 4 and word not in ("with", "from", "into", "that", "this"):
-                    pos_tokens.add(word)
+        industry = (spec.get("industry_sector") or "").strip().lower()
+        target_companies = [c.strip().lower() for c in spec.get("target_companies", []) if c.strip()]
 
         for posting in raw_postings:
-            title = posting["title"].strip()
-            title_lower = title.lower()
+            title = posting.get("title", "").strip()
 
             # Reject if title hits obvious non-professional or recruitment spam noise
             if NOISE_BLACKLIST_REGEX.search(title):
                 continue
 
-            # Unconditionally reject student/internship titles unless explicitly requested in positive keywords
-            if re.search(r"\b(intern|internship|internships|co-op)\b", title, re.IGNORECASE):
-                if not any("intern" in p.lower() for p in positive_keywords):
-                    continue
-
             # If a specific industry sector (e.g. Healthcare, CleanTech) is requested,
             # enforce that candidate companies must match the sector's target companies
-            industry = (spec.get("industry_sector") or "").strip().lower()
-            target_companies = [c.strip().lower() for c in spec.get("target_companies", []) if c.strip()]
             if industry and industry not in ("general", "general tech", "all", "tech") and target_companies:
                 comp_lower = posting.get("company", "").strip().lower()
                 if not any(tc in comp_lower or comp_lower in tc for tc in target_companies):
                     continue
-
-            # Reject if title hits any requested negative/senior keywords
-            hit_negative = False
-            for neg in negative_keywords:
-                clean_neg = re.sub(r"^(?:word|stem):", "", neg, flags=re.IGNORECASE).strip()
-                if not clean_neg:
-                    continue
-                # If negative keyword is explicitly part of a requested positive keyword (e.g. "Project Manager"), don't reject
-                if any(clean_neg.lower() in p.lower() for p in positive_keywords):
-                    continue
-                # If clean_neg is "intern", also catch "internship", "internships"
-                pattern = rf"\b{re.escape(clean_neg)}(?:ship|ships|s)?\b" if clean_neg.lower() == "intern" else rf"\b{re.escape(clean_neg)}\b"
-                if re.search(pattern, title, re.IGNORECASE):
-                    hit_negative = True
-                    break
-            if hit_negative:
-                continue
-
-            # Require a genuine role anchor: either matching prompt's positive keywords/tokens or core role anchors
-            has_positive_match = False
-            if positive_keywords:
-                # 1. Exact phrase or substring match with any positive keyword
-                if any(p.lower() in title_lower or title_lower in p.lower() for p in positive_keywords):
-                    has_positive_match = True
-                # 2. Token overlap with positive keywords
-                elif any(tok in title_lower for tok in pos_tokens):
-                    has_positive_match = True
-
-            # 3. Fallback or complementary match with core technical, consulting, or delivery anchors
-            if not has_positive_match and CORE_ROLE_ANCHORS_REGEX.search(title):
-                has_positive_match = True
-
-            if not has_positive_match:
-                continue
 
             clean_candidates.append(posting)
 
