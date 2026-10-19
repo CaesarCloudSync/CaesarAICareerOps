@@ -28,6 +28,7 @@ CAREER_OPS_DIR = Path(settings.career_ops_dir)
 PORTALS_YML = CAREER_OPS_DIR / "portals.yml"
 PROFILE_YML = CAREER_OPS_DIR / "config" / "profile.yml"
 PIPELINE_MD = CAREER_OPS_DIR / "data" / "pipeline.md"
+SCAN_HISTORY_TSV = CAREER_OPS_DIR / "data" / "scan-history.tsv"
 
 CJK_OR_FOREIGN_REGEX = re.compile(
     r"[\u4e00-\u9fa5]|[\u3040-\u30ff]|[\uac00-\ud7af]|mokahr|bytedance|deepseek|tencent|meituan",
@@ -416,10 +417,14 @@ async def reset_pipeline_inbox():
     if PIPELINE_MD.exists():
         PIPELINE_MD.write_text("# Career Ops Pipeline Inbox\n\n", encoding="utf-8")
 
+    if SCAN_HISTORY_TSV.exists():
+        header = "url\tfirst_seen\tportal\ttitle\tcompany\tstatus\tlocation\tfingerprint\tposted_at\ttrust_score\ttrust_flags\tnormalized_company\trequisition_id\tlanguage\n"
+        SCAN_HISTORY_TSV.write_text(header, encoding="utf-8")
+
     return {
         "status": "success",
         "deleted_count": deleted_count,
-        "message": f"Pipeline inbox reset. Cleared {deleted_count} items.",
+        "message": f"Pipeline inbox reset. Cleared {deleted_count} items and purged scan history.",
     }
 
 
