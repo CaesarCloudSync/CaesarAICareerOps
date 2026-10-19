@@ -119,6 +119,22 @@ class SQLModelRepository(BaseRepository):
             session.add(app)
             session.commit()
             session.refresh(app)
+
+            # Sync immediately with data/applications.md tracker table if exists
+            apps_md = self.career_ops_dir / "data" / "applications.md"
+            if apps_md.exists():
+                content = apps_md.read_text(encoding="utf-8", errors="replace")
+                rep_path = app_data.report_path or ""
+                rep_name = Path(rep_path).name if rep_path else ""
+                if not (rep_name and rep_name in content):
+                    rep_link = f"[Report]({rep_path})" if rep_path else ""
+                    pdf_name = rep_name.replace(".md", ".pdf") if rep_name else ""
+                    pdf_link = f"[PDF](output/{pdf_name})" if pdf_name else ""
+                    row = f"| {num_str} | {today_str} | {app_data.company} | direct | {app_data.role} | {app_data.score:.1f}/5.0 | {app_data.status} | {pdf_link} | {rep_link} | {app_data.notes or ''} |\n"
+                    if not content.endswith("\n"):
+                        content += "\n"
+                    apps_md.write_text(content + row, encoding="utf-8")
+
             return app
 
     async def update_application_status(self, company: str, role: str, new_status: str) -> bool:
@@ -397,6 +413,37 @@ class SQLModelRepository(BaseRepository):
             "deleted_reports": deleted_reports_count,
             "message": f"Deleted {deleted_pipeline_count} inbox role(s), purged {deleted_tsv_count} from TSV history, and cleaned related records.",
         }
+
+    async def mark_pipeline_item_evaluated(self, url_or_target: str) -> bool:
+        """Mark a pipeline item as evaluated in SQLite and update pipeline.md."""
+        clean_target = url_or_target.strip()
+        url_match = re.search(r"https?://[^\s|]+", clean_target)
+        target_url = url_match.group(0).rstrip("/") if url_match else clean_target
+
+        updated = False
+        with Session(engine) as session:
+            items = session.exec(select(PipelineItem).where(PipelineItem.status == "pending")).all()
+            for it in items:
+                if (target_url and target_url in it.raw_text) or it.raw_text.strip() == clean_target:
+                    it.status = "evaluated"
+                    session.add(it)
+                    updated = True
+            session.commit()
+
+        # Update data/pipeline.md (change - [ ] to - [x] for this item)
+        pipeline_md = self.career_ops_dir / "data" / "pipeline.md"
+        if pipeline_md.exists():
+            lines = pipeline_md.read_text(encoding="utf-8", errors="replace").splitlines()
+            new_lines = []
+            for line in lines:
+                if target_url and target_url in line and line.strip().startswith("- [ ]"):
+                    new_lines.append(line.replace("- [ ]", "- [x]", 1))
+                else:
+                    new_lines.append(line)
+            pipeline_md.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
+        return updated
+
 
 
     async def get_cv(self) -> str:

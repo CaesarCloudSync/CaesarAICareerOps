@@ -202,7 +202,7 @@ class CareerOpsEvaluatorService:
             # Save report
             await self.repo.save_report(filename, output_text)
 
-            # Create tracker entry
+            # Create tracker entry immediately
             await self.repo.create_application(ApplicationCreate(
                 company=company,
                 role=role,
@@ -213,6 +213,12 @@ class CareerOpsEvaluatorService:
                 report_path=f"reports/{filename}",
                 notes="Auto-evaluated via CaesarAICareerOps"
             ))
+
+            # Mark item in pipeline inbox as evaluated immediately
+            try:
+                await self.repo.mark_pipeline_item_evaluated(jd_input)
+            except Exception:
+                pass
 
             return filename
         except Exception:

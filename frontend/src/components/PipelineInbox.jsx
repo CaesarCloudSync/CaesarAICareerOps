@@ -135,6 +135,8 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
   }, []);
 
   // 2. Evaluation Status Polling: Polls live progress every 1000ms
+  const lastCompletedCountRef = useRef(0);
+
   useEffect(() => {
     if (!activeEvalJobId || !isEvaluating) return;
 
@@ -152,6 +154,30 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
         const job = data.job;
         if (!isCancelled && job) {
           setActiveEvalJob(job);
+
+          // Real-time incremental synchronization: Whenever an individual evaluation completes,
+          // refresh tracker/reports immediately and remove finished item from selection.
+          if (job.completed_count > (lastCompletedCountRef.current || 0)) {
+            lastCompletedCountRef.current = job.completed_count;
+            onRefresh?.();
+            fetchLatestDiscovered();
+            if (job.results && job.results.length > 0) {
+              const finishedTargets = new Set();
+              job.results.forEach((r) => {
+                if (r.target) {
+                  finishedTargets.add(r.target);
+                  const u = getUrlFromItem(r.target);
+                  if (u) finishedTargets.add(u);
+                }
+              });
+              setSelectedUrls((prev) => {
+                const next = new Set(prev);
+                finishedTargets.forEach((t) => next.delete(t));
+                return next;
+              });
+            }
+          }
+
           if (job.status === 'completed') {
             setIsEvaluating(false);
             setActionMessage(`⚡ ${job.detail || 'Evaluation completed successfully!'}`);
@@ -189,6 +215,7 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
   }, [activeEvalJobId, isEvaluating]);
 
   const runBatchEvaluation = async (urlsToEval) => {
+    lastCompletedCountRef.current = 0;
     const rawList = Array.isArray(urlsToEval) ? urlsToEval : Array.from(urlsToEval || []);
     const targetList = rawList.map(getUrlFromItem).filter(Boolean);
     const finalItems = targetList.length > 0 ? targetList : rawList.filter(Boolean);

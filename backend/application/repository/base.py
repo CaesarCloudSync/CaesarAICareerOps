@@ -60,6 +60,12 @@ class BaseRepository(ABC):
         """Delete selected pipeline items across all occurrences (DB, pipeline.md, scan-history.tsv, applications, reports, PDFs)."""
         pass
 
+    @abstractmethod
+    async def mark_pipeline_item_evaluated(self, url_or_target: str) -> bool:
+        """Mark a pipeline item as evaluated in SQLite and update pipeline.md."""
+        pass
+
+
 
     @abstractmethod
     async def get_cv(self) -> str:
