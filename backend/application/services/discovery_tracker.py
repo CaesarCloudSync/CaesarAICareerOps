@@ -22,6 +22,17 @@ class DiscoveryJob:
         self.elapsed_seconds: float = 0.0
         self.result: Optional[Dict[str, Any]] = None
         self.error: Optional[str] = None
+        self.live_feed: list = []
+
+    def add_feed_line(self, line: str):
+        if line and line.strip():
+            cleaned = line.strip()
+            self.live_feed.append(cleaned)
+            if len(self.live_feed) > 25:
+                self.live_feed.pop(0)
+            self.detail = cleaned
+            self.elapsed_seconds = round(time.time() - self.start_timestamp, 1)
+            self.updated_at = datetime.now(timezone.utc).isoformat()
 
     def update(
         self,
@@ -76,6 +87,7 @@ class DiscoveryJob:
             "substep": self.substep,
             "substep_name": self.substep_name,
             "detail": self.detail,
+            "live_feed": self.live_feed[-12:],
             "elapsed_seconds": elapsed,
             "started_at": self.started_at,
             "updated_at": self.updated_at,

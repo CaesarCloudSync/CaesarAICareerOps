@@ -598,6 +598,29 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
               })}
             </div>
           </div>
+
+          {/* Live Activity Feed for Step 3.1 Parallel Crawl */}
+          {activeJob.substep === '3.1' && activeJob.live_feed && activeJob.live_feed.length > 0 && (
+            <div className="mt-3 p-2.5 rounded-lg bg-slate-950/90 border border-slate-800 space-y-1.5 font-mono text-[10px]">
+              <div className="flex items-center gap-1.5 text-indigo-400 font-semibold pb-1 border-b border-slate-800/80">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+                <span>Live ATS Crawl Activity (stdout stream):</span>
+              </div>
+              <div className="space-y-0.5 max-h-24 overflow-y-auto pr-1">
+                {activeJob.live_feed.slice(-5).map((line, lidx) => {
+                  const isLatest = lidx === activeJob.live_feed.slice(-5).length - 1;
+                  return (
+                    <div key={lidx} className="truncate flex items-center gap-1.5">
+                      <span className="text-slate-600 shrink-0">›</span>
+                      <span className={`truncate ${isLatest ? 'text-indigo-200 font-medium' : 'text-slate-400'}`}>
+                        {line}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
       )}
 

@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import time
 import asyncio
 import urllib.request
 import urllib.error
@@ -24,7 +25,7 @@ Analyze the user's natural language search prompt and output ONLY a valid, raw J
 
 {
   "target_count": <integer, number of jobs requested, e.g. 50>,
-  "mode": <"replace" | "append" | "match", choose "match" if the user wants to maintain, top up, ensure, or keep the queue at a specific total count (e.g. "keep my queue at 50", "make sure it's 50", "match 50 roles", "top up to 50"); choose "append" if the user asks to add/append more/additional roles on top of existing ones (e.g. "add 20 more", "append 50 roles"); choose "replace" if the user asks for a fresh search or to replace all existing roles (e.g. "find 50 roles", "search for 50", "replace queue with 50")>,
+  "mode": <"append" | "match", choose "match" if the user wants to maintain, top up, ensure, or keep the queue at a specific total count (e.g. "keep my queue at 50", "make sure it's 50", "match 50 roles", "top up to 50"); choose "append" for all other requests to search for and add roles on top of existing ones. "replace" is completely disabled and must NEVER be used under any circumstances.>,
   "role_domain": <string, e.g. "Backend Software Engineering">,
   "seniority_tier": <string, e.g. "junior-to-mid">,
   "positive_keywords": [<list of positive title strings to match>],
@@ -101,29 +102,23 @@ class NaturalDiscoveryService:
                 match_keywords = ["keep at", "maintain", "match", "top up", "top-up", "fill to", "ensure", "make sure it", "have exactly", "reach "]
                 append_keywords = ["more", "add ", "additional", "another", "plus", "expand", "append"]
 
-                if "mode" not in parsed or parsed["mode"] not in ("append", "replace", "match"):
-                    if any(w in prompt_lower for w in match_keywords):
-                        parsed["mode"] = "match"
-                    elif any(w in prompt_lower for w in append_keywords):
-                        parsed["mode"] = "append"
-                    else:
-                        parsed["mode"] = "replace"
+                parsed_mode = str(parsed.get("mode", "")).lower().strip()
+                if parsed_mode == "match" or any(w in prompt_lower for w in match_keywords):
+                    parsed["mode"] = "match"
                 else:
-                    parsed["mode"] = parsed["mode"].lower().strip()
+                    # Guardrail: replace is completely disabled to protect the inbox
+                    parsed["mode"] = "append"
                 return parsed
         except Exception as e:
             print(f"[NaturalDiscovery] AGY parse exception: {e}, falling back to defaults.")
 
         prompt_lower = user_prompt.lower()
         match_keywords = ["keep at", "maintain", "match", "top up", "top-up", "fill to", "ensure", "make sure it", "have exactly", "reach "]
-        append_keywords = ["more", "add ", "additional", "another", "plus", "expand", "append"]
 
         if any(w in prompt_lower for w in match_keywords):
             inferred_mode = "match"
-        elif any(w in prompt_lower for w in append_keywords):
-            inferred_mode = "append"
         else:
-            inferred_mode = "replace"
+            inferred_mode = "append"
 
         # Robust fallback preserving UK tech employers & backend keywords
         return {
@@ -290,19 +285,92 @@ class NaturalDiscoveryService:
             print(f"[Warning] discover-ats.mjs returned non-zero code {proc.returncode}: {stderr.decode('utf-8', errors='replace')[:300]}")
         return proc.returncode
 
-    async def run_ats_scan(self) -> int:
-        """Step 4: Executes untouched scan.mjs across registered boards with fail-fast validation."""
+    async def run_ats_scan(self, job: Optional[Any] = None) -> int:
+        """Step 4: Executes untouched scan.mjs across registered boards streaming stdout live."""
         proc = await asyncio.create_subprocess_exec(
             "node", "scan.mjs",
             cwd=str(CAREER_OPS_DIR),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        stdout, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            err_details = stderr.decode("utf-8", errors="replace").strip() or stdout.decode("utf-8", errors="replace").strip()
-            raise RuntimeError(f"scan.mjs failed with exit code {proc.returncode}: {err_details[:500]}")
-        return proc.returncode
+
+        captured_stdout = []
+        captured_stderr = []
+        start_time = time.time()
+        last_line_time = [time.time()]
+
+        async def _read_stdout():
+            while True:
+                line = await proc.stdout.readline()
+                if not line:
+                    break
+                decoded = line.decode("utf-8", errors="replace").strip()
+                if decoded:
+                    last_line_time[0] = time.time()
+                    captured_stdout.append(decoded)
+                    print(f"[scan.mjs] {decoded}", flush=True)
+                    if job:
+                        job.add_feed_line(decoded)
+                        job.update(
+                            3,
+                            "Crawling ATS Boards & Staging",
+                            decoded,
+                            substep="3.1",
+                            substep_name="Multi-Board Parallel Crawl",
+                        )
+
+        async def _read_stderr():
+            while True:
+                line = await proc.stderr.readline()
+                if not line:
+                    break
+                decoded = line.decode("utf-8", errors="replace").strip()
+                if decoded:
+                    captured_stderr.append(decoded)
+
+        async def _heartbeat():
+            phases = [
+                "Querying ATS provider APIs in parallel...",
+                "Waiting on concurrent board responses...",
+                "Filtering UK geofence & title matches...",
+                "Scanning company endpoints...",
+            ]
+            tick_idx = 0
+            while True:
+                await asyncio.sleep(3.0)
+                now = time.time()
+                # If no output line from scan.mjs in the last 2.8s, pulse an active heartbeat
+                if now - last_line_time[0] >= 2.8:
+                    elapsed = int(now - start_time)
+                    phase = phases[tick_idx % len(phases)]
+                    tick_idx += 1
+                    msg = f"⏳ [Active Crawl] {phase} ({elapsed}s elapsed)"
+                    if job:
+                        job.add_feed_line(msg)
+                        job.update(
+                            3,
+                            "Crawling ATS Boards & Staging",
+                            msg,
+                            substep="3.1",
+                            substep_name="Multi-Board Parallel Crawl",
+                        )
+
+        heartbeat_task = asyncio.create_task(_heartbeat())
+        try:
+            await asyncio.gather(_read_stdout(), _read_stderr())
+        finally:
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
+
+        ret = await proc.wait()
+
+        if ret != 0:
+            err_details = "\n".join(captured_stderr) or "\n".join(captured_stdout)
+            raise RuntimeError(f"scan.mjs failed with exit code {ret}: {err_details[:500]}")
+        return ret
 
     async def verify_url_active(self, url: str, timeout_sec: float = 3.0) -> bool:
         """Step 5: Zero-browser HTTP status check (discards 404/410/expired)."""
@@ -432,9 +500,9 @@ class NaturalDiscoveryService:
         spec = await self.parse_prompt_with_agy(user_prompt)
         target_count = spec.get("target_count", 50)
         target_companies = spec.get("target_companies", [])
-        mode = spec.get("mode", "replace")
-        if mode not in ("append", "replace", "match"):
-            mode = "replace"
+        # Guardrail: "replace" is permanently disabled to protect existing inbox items
+        raw_mode = spec.get("mode", "append")
+        mode = "match" if raw_mode == "match" else "append"
 
         if job:
             job.update(
@@ -494,8 +562,8 @@ class NaturalDiscoveryService:
                 substep_name="Multi-Board Parallel Crawl",
             )
 
-        # 4. Run ATS scan via scan.mjs
-        await self.run_ats_scan()
+        # 4. Run ATS scan via scan.mjs (streaming stdout live)
+        await self.run_ats_scan(job=job)
 
         # 5. Load candidate Master CV for ATS scoring
         cv_text = ""
@@ -552,17 +620,10 @@ class NaturalDiscoveryService:
         staged_new_urls = set()
         if parsed_entries:
             with Session(engine) as session:
-                if mode == "replace":
-                    for old in session.exec(select(PipelineItem)).all():
-                        session.delete(old)
-                    for entry in parsed_entries:
+                for entry in parsed_entries:
+                    if entry["url"] not in initial_existing_urls:
                         session.add(PipelineItem(raw_text=entry["raw_line"], status="pending"))
                         staged_new_urls.add(entry["url"])
-                else:  # append or match
-                    for entry in parsed_entries:
-                        if entry["url"] not in initial_existing_urls:
-                            session.add(PipelineItem(raw_text=entry["raw_line"], status="pending"))
-                            staged_new_urls.add(entry["url"])
                 session.commit()
 
         if job:
@@ -618,11 +679,9 @@ class NaturalDiscoveryService:
                 raw_candidates.append(scored)
 
         # Calculate needed roles
-        if mode == "append":
-            needed_target = target_count
-        elif mode == "match":
+        if mode == "match":
             needed_target = max(0, target_count - initial_count)
-        else:  # replace
+        else:  # append
             needed_target = target_count
 
         # If mode is match and queue already matches or exceeds target
@@ -655,22 +714,16 @@ class NaturalDiscoveryService:
         final_selected = self.filter_and_diversify_roles(raw_candidates, target_count=needed_target, max_per_company=2)
         selected_urls = {r["url"] for r in final_selected}
 
-        # 8. Sync into Database & update pipeline.md
+        # 8. Sync into Database & update pipeline.md (strictly non-destructive: existing inbox items are always preserved)
         with Session(engine) as session:
-            if mode == "replace":
-                for old in session.exec(select(PipelineItem)).all():
-                    session.delete(old)
-                for r in final_selected:
-                    session.add(PipelineItem(raw_text=r["raw_line"], status="pending"))
-            else:  # append or match
-                # Remove unselected staged items from this run, keep initial items + final_selected
-                for item in session.exec(select(PipelineItem)).all():
-                    url_m = re.search(r"https?://[^\s|]+", item.raw_text)
-                    if url_m:
-                        item_url = url_m.group(0)
-                        # If it was newly staged in this run but not selected for the top cut, prune it
-                        if item_url in staged_new_urls and item_url not in selected_urls:
-                            session.delete(item)
+            # Remove unselected staged items from this run, keep initial items + final_selected
+            for item in session.exec(select(PipelineItem)).all():
+                url_m = re.search(r"https?://[^\s|]+", item.raw_text)
+                if url_m:
+                    item_url = url_m.group(0)
+                    # If it was newly staged in this run but not selected for the top cut, prune it
+                    if item_url in staged_new_urls and item_url not in selected_urls:
+                        session.delete(item)
             session.commit()
             total_count = len(session.exec(select(PipelineItem)).all())
 
@@ -680,12 +733,10 @@ class NaturalDiscoveryService:
                 clean_lines.append(f"{item.raw_text}\n")
         PIPELINE_MD.write_text("".join(clean_lines), encoding="utf-8")
 
-        if mode == "append":
-            action_msg = f"Appended {len(final_selected)} new roles to queue (Total: {total_count})."
-        elif mode == "match":
+        if mode == "match":
             action_msg = f"Topped up queue with {len(final_selected)} new roles to match target (Total: {total_count} / {target_count})."
         else:
-            action_msg = f"Populated inbox with {len(final_selected)} verified roles."
+            action_msg = f"Appended {len(final_selected)} new roles to queue (Total: {total_count})."
 
         final_res = {
             "status": "success",
