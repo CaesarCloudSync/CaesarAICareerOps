@@ -686,17 +686,35 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
             <div className="flex flex-wrap items-center gap-1.5">
               <span className="text-[10px] text-slate-500 font-medium">Quick Suggestions:</span>
               {[
-                "20 Backend Engineer (Python, Java, C#) London",
-                "AI & Developer Tooling Scaleups in London",
-                "Forward Deployed & Solutions Engineers London",
+                {
+                  label: "100 Jobs / 400 Companies (All Industries)",
+                  prompt: "Find 100 new jobs from 400 new companies for Junior and Mid Level Backend Engineer in any and all industries (Python, Java, C#) London",
+                },
+                {
+                  label: "50 FinTech & Banking",
+                  prompt: "Find 50 new jobs from 150 companies for Junior and Mid Level Backend Engineer in FinTech and Banking (Python, Java, Go) London",
+                },
+                {
+                  label: "50 AI & DevTools Scaleups",
+                  prompt: "Find 50 new jobs from 150 companies for Backend Engineer in AI and Developer Tooling Scaleups (Python, Java, C#) London",
+                },
+                {
+                  label: "50 HealthTech & BioTech",
+                  prompt: "Find 50 new jobs from 150 companies for Junior and Mid Level Backend Engineer in HealthTech and BioTech (Python, Java) London",
+                },
+                {
+                  label: "20 Fast Discovery",
+                  prompt: "Find 20 Backend Engineer (Python, Java, C#) London",
+                },
               ].map((sug, sidx) => (
                 <button
                   key={sidx}
                   type="button"
-                  onClick={() => setNlQuery(`Find ${sug}`)}
+                  onClick={() => setNlQuery(sug.prompt)}
+                  title={sug.prompt}
                   className="text-[10px] px-2.5 py-1 rounded-md bg-slate-900/90 hover:bg-slate-800 text-indigo-300 border border-indigo-900/50 hover:border-indigo-500/40 transition-colors"
                 >
-                  + {sug}
+                  + {sug.label}
                 </button>
               ))}
             </div>
