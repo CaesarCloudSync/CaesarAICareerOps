@@ -47,12 +47,14 @@ export default function App() {
     loadData();
     const interval = setInterval(async () => {
       try {
-        const [statsRes, pipeRes] = await Promise.all([
+        const [statsRes, pipeRes, appsRes] = await Promise.all([
           fetch('/api/stats'),
           fetch('/api/pipeline'),
+          fetch('/api/applications'),
         ]);
         if (statsRes.ok) setStats(await statsRes.json());
         if (pipeRes.ok) setPipelineItems(await pipeRes.json());
+        if (appsRes.ok) setApplications(await appsRes.json());
       } catch (err) {
         // silent background poll
       }
