@@ -34,3 +34,7 @@ coverage.xml
 .DS_Store
 .idea/
 .vscode/
+
+# Temporary Evaluation Files
+.current_eval_prompt.txt
+**/.current_eval_prompt.txt
