@@ -63,13 +63,6 @@ async def resolve_live(payload: ResolveLiveRequest):
     )
 
 
-@router.post("/resolve-live-async")
-async def resolve_live_async(payload: ResolveLiveRequest):
-    """
-    Asynchronous Live DOM Form Generation:
-    Receives scraped form fields from browser, creates a real job_id in AutofillBatchTracker,
-    spawns background agy reasoning task, and sets status to 'Application Generated' when complete.
-    """
 from urllib.parse import urlparse
 
 

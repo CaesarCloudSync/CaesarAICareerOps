@@ -407,15 +407,16 @@
       }
 
       const data = await res.json();
+      const jobId = data?.job_id || 'active';
       showToast({
         pct: 100,
         title: '<span>✅</span> Queued in Background!',
-        msg: `Job #${data.job_id} running in background`,
+        msg: `Job #${jobId} running in background`,
         sub: 'Status: "Application in progress". You can freely navigate away anytime!',
         autoDismissMs: 6500,
       });
 
-      return { success: true, job_id: data.job_id };
+      return { success: true, job_id: jobId };
     } catch (err) {
       console.error('Failed to queue autofill:', err);
       showToast({
