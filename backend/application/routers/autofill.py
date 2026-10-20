@@ -60,3 +60,48 @@ async def apply_from_pipeline(
         raw_line=payload.raw_line or "",
         repo=repo,
     )
+
+
+@router.get("/cv.pdf")
+async def get_cv_pdf():
+    """Returns the candidate's Master or tailored CV PDF for automatic form attachment."""
+    from fastapi.responses import FileResponse
+    import yaml
+    from backend.application.settings import BACKEND_DIR
+
+    # Extract candidate name from profile.yml
+    profile_path = BACKEND_DIR / "career-ops" / "config" / "profile.yml"
+    cand_name = "Candidate"
+    if profile_path.exists():
+        try:
+            p_data = yaml.safe_load(profile_path.read_text(encoding="utf-8")) or {}
+            c_name = p_data.get("candidate", {}).get("full_name") or ""
+            if c_name:
+                cand_name = c_name.strip().replace(" ", "_")
+        except Exception:
+            pass
+
+    cv_filename = f"{cand_name}_CV.pdf"
+
+    output_dir = BACKEND_DIR / "career-ops" / "output"
+    master_pdf = output_dir / "master_cv.pdf"
+    if master_pdf.exists():
+        return FileResponse(
+            master_pdf,
+            media_type="application/pdf",
+            filename=cv_filename,
+            headers={"Access-Control-Allow-Origin": "*"}
+        )
+
+    # Search for any PDF in output/
+    pdfs = list(output_dir.glob("*.pdf")) + list((output_dir / "archive_legacy").glob("*.pdf"))
+    if pdfs:
+        return FileResponse(
+            pdfs[0],
+            media_type="application/pdf",
+            filename=cv_filename,
+            headers={"Access-Control-Allow-Origin": "*"}
+        )
+
+    raise HTTPException(status_code=404, detail="No CV PDF file found in output directory.")
+

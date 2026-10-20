@@ -104,32 +104,54 @@ export default function AutofillModal({
 
   let count = 0;
   const p = data.profile || {};
+
+  // 1. Fill standard contact fields
   document.querySelectorAll('input, textarea').forEach(inp => {
     const name = (inp.name || '').toLowerCase();
     const id = (inp.id || '').toLowerCase();
     const placeholder = (inp.placeholder || '').toLowerCase();
     const aria = (inp.getAttribute('aria-label') || '').toLowerCase();
-    const labelText = (inp.closest('label')?.innerText || inp.parentElement?.innerText || '').toLowerCase();
+    const parentBlock = inp.closest('div, label, fieldset') || inp.parentElement;
+    const labelText = (parentBlock?.innerText || '').toLowerCase();
     const sig = name + ' ' + id + ' ' + placeholder + ' ' + aria + ' ' + labelText;
 
-    if (sig.match(/first.*name|given.*name/) && p.firstName) { fill(inp, p.firstName); count++; }
-    else if (sig.match(/last.*name|family.*name|surname/) && p.lastName) { fill(inp, p.lastName); count++; }
-    else if (sig.match(/\\bfull.*name\\b|\\bname\\b/) && p.fullName) { fill(inp, p.fullName); count++; }
-    else if (sig.match(/\\bemail\\b/) && p.email) { fill(inp, p.email); count++; }
-    else if (sig.match(/\\bphone\\b|\\bmobile\\b|\\bcell\\b/) && p.phone) { fill(inp, p.phone); count++; }
-    else if (sig.match(/linkedin/) && p.linkedin) { fill(inp, p.linkedin); count++; }
-    else if (sig.match(/github/) && p.github) { fill(inp, p.github); count++; }
-    else if (sig.match(/portfolio|website/) && p.portfolio) { fill(inp, p.portfolio); count++; }
-    else if (sig.match(/location|city|country|residing/) && p.location) { fill(inp, p.location); count++; }
+    if (sig.match(/first.*name|given.*name/) && p.firstName && !inp.value) { fill(inp, p.firstName); count++; }
+    else if (sig.match(/last.*name|family.*name|surname/) && p.lastName && !inp.value) { fill(inp, p.lastName); count++; }
+    else if (sig.match(/\\bfull.*name\\b|\\bname\\b/) && p.fullName && !inp.value && !sig.match(/first|last/)) { fill(inp, p.fullName); count++; }
+    else if (sig.match(/\\bemail\\b/) && p.email && !inp.value) { fill(inp, p.email); count++; }
+    else if (sig.match(/\\bphone\\b|\\bmobile\\b|\\bcell\\b/) && p.phone && !inp.value) { fill(inp, p.phone); count++; }
+    else if (sig.match(/linkedin/) && p.linkedin && !inp.value) { fill(inp, p.linkedin); count++; }
+    else if (sig.match(/github/) && p.github && !inp.value) { fill(inp, p.github); count++; }
+    else if (sig.match(/portfolio|website/) && p.portfolio && !inp.value) { fill(inp, p.portfolio); count++; }
+    else if (sig.match(/location|city|country|residing/) && !inp.value) { fill(inp, p.location || 'United Kingdom'); count++; }
   });
 
+  // 2. Auto-select "How did you hear" options
+  document.querySelectorAll('label, div, fieldset').forEach(container => {
+    const t = (container.innerText || '').toLowerCase();
+    if (t.includes('how did you hear')) {
+      const clickables = container.querySelectorAll('button, input[type="radio"], input[type="checkbox"], span, div');
+      for (const btn of clickables) {
+        const bt = (btn.innerText || btn.getAttribute('value') || '').toLowerCase();
+        if (bt.includes('linkedin') || bt.includes('job board') || bt.includes("user")) {
+          btn.click?.();
+          count++;
+          break;
+        }
+      }
+    }
+  });
+
+  // 3. Fill tailored essay answers (matching questions and keywords)
   (data.answers || []).forEach(ans => {
     const qLower = (ans.question || '').toLowerCase();
     const matchers = (ans.field_matcher || []).map(m => m.toLowerCase());
     document.querySelectorAll('textarea, input[type="text"]').forEach(inp => {
-      const labelText = (inp.closest('label')?.innerText || inp.parentElement?.innerText || inp.getAttribute('aria-label') || '').toLowerCase();
-      const matchesQ = qLower && labelText.includes(qLower.slice(0, 30));
-      const matchesKw = matchers.length > 0 && matchers.some(m => labelText.includes(m));
+      if (inp.value && inp.value.length > 20) return;
+      const block = inp.closest('div[class*="field"], div[class*="question"], div[data-testid], fieldset') || inp.parentElement?.parentElement || inp.parentElement;
+      const blockText = (block?.innerText || inp.getAttribute('aria-label') || '').toLowerCase();
+      const matchesQ = qLower && (blockText.includes(qLower.slice(0, 25)) || qLower.slice(0, 25).includes(blockText.slice(0, 25)));
+      const matchesKw = matchers.length > 0 && matchers.some(m => blockText.includes(m));
       if ((matchesQ || matchesKw) && ans.answer) {
         fill(inp, ans.answer);
         count++;
@@ -137,9 +159,29 @@ export default function AutofillModal({
     });
   });
 
+  // 4. Auto-attach CV PDF via local Caesar AI endpoint
+  const fileInp = document.querySelector('input[type="file"]');
+  if (fileInp && !fileInp.files?.length) {
+    fetch('http://localhost:8000/api/autofill/cv.pdf')
+      .then(res => res.ok ? res.blob() : null)
+      .then(blob => {
+        if (blob) {
+          const candName = (p.firstName && p.lastName ? (p.firstName + '_' + p.lastName) : (p.fullName || 'Candidate')).trim().replace(/\s+/g, '_');
+          const cvFilename = candName + '_CV.pdf';
+          const cvFile = new File([blob], cvFilename, { type: 'application/pdf' });
+          const dt = new DataTransfer();
+          dt.items.add(cvFile);
+          fileInp.files = dt.files;
+          fileInp.dispatchEvent(new Event('input', { bubbles: true }));
+          fileInp.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+      }).catch(function(){});
+  }
+
+  // Floating confirmation banner
   const banner = document.createElement('div');
   banner.style.cssText = 'position:fixed;top:20px;right:20px;z-index:999999;background:#0f172a;color:#fff;padding:12px 18px;border-radius:12px;font-family:system-ui,sans-serif;font-size:13px;box-shadow:0 10px 25px rgba(0,0,0,0.5);border:1px solid #10b981;display:flex;align-items:center;gap:10px;';
-  banner.innerHTML = '<span style="font-size:18px">✨</span> <strong>Caesar AI:</strong> Auto-filled ' + count + ' fields! Review and attach your CV.';
+  banner.innerHTML = '<span style="font-size:18px">✨</span> <strong>CaesarAI:</strong> Auto-filled form & attached CV! Review answers before submitting.';
   document.body.appendChild(banner);
   setTimeout(() => banner.remove(), 6000);
 })();`;
@@ -355,15 +397,15 @@ export default function AutofillModal({
                 <div className="pt-2">
                   <a
                     href={buildAutofillScript()}
-                    className="inline-flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-bold rounded-xl shadow-lg shadow-indigo-600/30 cursor-grab active:cursor-grabbing text-xs transition-transform hover:scale-[1.02]"
-                    title="Click and drag this button to your Bookmarks Bar"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      alert('Drag this button directly into your browser Bookmarks Bar!');
-                    }}
+                    className="inline-flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-bold rounded-xl shadow-lg shadow-indigo-600/30 cursor-grab active:cursor-grabbing text-sm transition-transform hover:scale-[1.02]"
+                    title="Drag this button to your browser Bookmarks Bar"
                   >
-                    <span>⚡ Drag to Bookmarks Bar: Caesar Autofill</span>
+                    <Sparkles className="w-4 h-4 text-amber-300" />
+                    <span>CaesarAI Autofill</span>
                   </a>
+                  <p className="text-[11px] text-slate-400 mt-2">
+                    👆 <strong>Drag the button above</strong> directly onto your browser's Bookmarks Bar. It will save as <strong>"CaesarAI Autofill"</strong>.
+                  </p>
                 </div>
               </div>
 
