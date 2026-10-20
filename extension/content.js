@@ -73,6 +73,9 @@
       } else {
         el.value = strVal;
       }
+      if (el._valueTracker) {
+        el._valueTracker.setValue(strVal);
+      }
     } catch (e) {
       el.value = strVal;
     }
@@ -189,7 +192,18 @@
     fields,
   };
 
-  updateToast(65, '🤖 agy: Resolving dropdowns & drafting custom answers...', 'Reasoning with Candidate Profile & CV...');
+  updateToast(65, '🤖 agy: Resolving dropdowns & drafting custom answers... (0s)', 'Reasoning with Candidate Profile & CV...');
+
+  const startTs = Date.now();
+  const timerInterval = setInterval(() => {
+    const elapsed = Math.round((Date.now() - startTs) / 1000);
+    const dynamicPct = Math.min(94, 65 + Math.round(elapsed * 0.7));
+    updateToast(
+      dynamicPct,
+      `🤖 agy: Reasoning & drafting custom answers... (${elapsed}s)`,
+      'Grounding custom essay questions and profile in your CV...'
+    );
+  }, 1000);
 
   try {
     const res = await fetch('http://localhost:8000/api/autofill/resolve-live', {
@@ -197,6 +211,8 @@
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(reqBody),
     });
+
+    clearInterval(timerInterval);
 
     if (!res.ok) {
       throw new Error(`HTTP ${res.status}: ${res.statusText}`);
@@ -206,46 +222,62 @@
     let count = 0;
     const actions = data.actions || [];
 
-    // Execute actions determined solely by agy
+    // Execute actions determined solely by agy with per-action safety
     actions.forEach((act) => {
-      let el = null;
-      if (act.id) el = document.getElementById(act.id);
-      if (!el && act.selector) {
-        try { el = document.querySelector(act.selector); } catch (e) {}
-      }
-      if (!el) return;
+      try {
+        let el = null;
+        if (act.id) el = document.getElementById(act.id);
+        if (!el && act.selector) {
+          try { el = document.querySelector(act.selector); } catch (e) {}
+        }
+        if (!el && act.name) {
+          try { el = document.querySelector(`[name="${CSS.escape(act.name)}"]`); } catch (e) {}
+        }
+        if (!el) return;
 
-      if (act.type === 'select') {
-        const targetVal = (act.value || '').trim().toLowerCase();
-        for (let i = 0; i < el.options.length; i++) {
-          const opt = el.options[i];
-          const optText = (opt.text || '').trim().toLowerCase();
-          const optVal = (opt.value || '').trim().toLowerCase();
-          if (optText === targetVal || optVal === targetVal) {
-            el.selectedIndex = i;
-            el.value = opt.value;
-            el.dispatchEvent(new Event('input', { bubbles: true }));
+        if (act.type === 'select') {
+          if (!el.options) {
+            setFieldValue(el, act.value);
+            count++;
+            return;
+          }
+          const targetVal = (act.value || '').trim().toLowerCase();
+          for (let i = 0; i < el.options.length; i++) {
+            const opt = el.options[i];
+            const optText = (opt.text || '').trim().toLowerCase();
+            const optVal = (opt.value || '').trim().toLowerCase();
+            if (optText === targetVal || optVal === targetVal) {
+              el.selectedIndex = i;
+              el.value = opt.value;
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+              count++;
+              break;
+            }
+          }
+        } else if (act.type === 'radio') {
+          if (!el.checked) {
+            el.click();
             el.dispatchEvent(new Event('change', { bubbles: true }));
             count++;
-            break;
           }
-        }
-      } else if (act.type === 'radio') {
-        if (!el.checked) {
-          el.click();
-          el.dispatchEvent(new Event('change', { bubbles: true }));
+        } else {
+          // fill text or textarea
+          setFieldValue(el, act.value);
           count++;
         }
-      } else {
-        // fill text or textarea
-        setFieldValue(el, act.value);
-        count++;
+      } catch (actErr) {
+        console.warn('CaesarAI action execution warning:', act, actErr);
       }
     });
 
-    // Attach CV PDF
-    const cvAttached = attachCvPdf(data.cvBase64, data.cvFilename);
-    if (cvAttached) count++;
+    // Attach CV PDF safely
+    try {
+      const cvAttached = attachCvPdf(data.cvBase64, data.cvFilename);
+      if (cvAttached) count++;
+    } catch (cvErr) {
+      console.warn('CaesarAI CV attach warning:', cvErr);
+    }
 
     updateToast(100, `✅ Done! ${count} fields filled & CV attached!`, '💡 Human review: Review answers before clicking Submit.');
 
@@ -257,6 +289,7 @@
       }
     }, 8000);
   } catch (err) {
+    clearInterval(timerInterval);
     console.error('CaesarAI extension error:', err);
     updateToast(100, '⚠️ CaesarAI Engine Unreachable', 'Ensure CaesarAI is running on http://localhost:8000', true);
     setTimeout(() => {
