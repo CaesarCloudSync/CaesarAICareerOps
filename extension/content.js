@@ -85,7 +85,7 @@
     }
   }
 
-  // 2. DOM Field Value Setter with React Controlled Component Support
+  // 2. DOM Field Value Setter with Shadow DOM and Web Components Support
   function setFieldValue(el, val) {
     if (!el || val === undefined || val === null) return;
     el.focus();
@@ -104,32 +104,118 @@
     } catch (e) {
       el.value = strVal;
     }
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-    el.dispatchEvent(new Event('change', { bubbles: true }));
-    el.dispatchEvent(new Event('blur', { bubbles: true }));
+
+    // Use bubbles: true and composed: true to pierce Shadow DOM boundaries
+    el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+    el.dispatchEvent(new Event('blur', { bubbles: true, composed: true }));
+
+    // If el is inside a Web Component host (like <spl-input>), update the host directly
+    try {
+      const rootNode = el.getRootNode ? el.getRootNode() : null;
+      if (rootNode && rootNode.host) {
+        const host = rootNode.host;
+        host.value = strVal;
+        host.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        host.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+      }
+    } catch (e) {}
+  }
+
+  // 3. Multi-Layer Shadow DOM and Iframe Root Collector
+  function getAllRoots() {
+    const roots = [];
+    const seen = new Set();
+
+    function collectFrom(node) {
+      if (!node || seen.has(node)) return;
+      seen.add(node);
+      roots.push(node);
+
+      try {
+        const elements = node.querySelectorAll ? node.querySelectorAll('*') : [];
+        for (const el of elements) {
+          if (el.shadowRoot) {
+            collectFrom(el.shadowRoot);
+          }
+          if (el.tagName === 'IFRAME') {
+            try {
+              const iDoc = el.contentDocument || el.contentWindow?.document;
+              if (iDoc) collectFrom(iDoc);
+            } catch (e) {}
+          }
+        }
+      } catch (e) {}
+    }
+
+    collectFrom(document);
+    return roots;
+  }
+
+  function queryAllDeep(selector) {
+    const results = [];
+    const roots = getAllRoots();
+    for (const root of roots) {
+      try {
+        const found = root.querySelectorAll(selector);
+        for (const el of found) {
+          results.push(el);
+        }
+      } catch (e) {}
+    }
+    return results;
+  }
+
+  function queryDeep(selector) {
+    const roots = getAllRoots();
+    for (const root of roots) {
+      try {
+        const found = root.querySelector(selector);
+        if (found) return found;
+      } catch (e) {}
+    }
+    return null;
+  }
+
+  function getElementByIdDeep(id) {
+    if (!id) return null;
+    const roots = getAllRoots();
+    for (const root of roots) {
+      try {
+        if (root.getElementById) {
+          const el = root.getElementById(id);
+          if (el) return el;
+        }
+        const el = root.querySelector(`#${CSS.escape(id)}`);
+        if (el) return el;
+      } catch (e) {}
+    }
+    return null;
   }
 
   function getFieldLabel(el) {
     let lbl = '';
     const id = el.id;
-    if (id) {
+    const root = el.getRootNode ? el.getRootNode() : document;
+
+    if (id && root.querySelector) {
       try {
-        const l = document.querySelector(`label[for="${CSS.escape(id)}"]`);
+        const l = root.querySelector(`label[for="${CSS.escape(id)}"]`);
         if (l) lbl = l.innerText;
       } catch (e) {}
     }
-    if (!lbl && el.getAttribute('aria-labelledby')) {
+    if (!lbl && el.getAttribute('aria-labelledby') && root.getElementById) {
       try {
         const labelledBy = el.getAttribute('aria-labelledby');
-        const lEl = document.getElementById(labelledBy);
+        const lEl = root.getElementById(labelledBy);
         if (lEl) lbl = lEl.innerText;
       } catch (e) {}
     }
-    if (!lbl) {
+    if (!lbl && el.closest) {
       const p = el.closest('label');
       if (p) lbl = p.innerText;
     }
-    if (!lbl) {
+    if (!lbl && el.parentElement) {
       let cur = el.parentElement;
       for (let i = 0; i < 4; i++) {
         if (!cur) break;
@@ -141,38 +227,68 @@
         cur = cur.parentElement;
       }
     }
-    return (lbl || el.getAttribute('aria-label') || el.placeholder || el.name || '').trim().replace(/\s+/g, ' ');
-  }
 
-  function getAllDocuments() {
-    const docs = [document];
-    try {
-      document.querySelectorAll('iframe').forEach((iframe) => {
-        try {
-          const iDoc = iframe.contentDocument || iframe.contentWindow?.document;
-          if (iDoc && !docs.includes(iDoc)) {
-            docs.push(iDoc);
-          }
-        } catch (e) {
-          // Cross-origin iframe
+    // Inspect host custom element (e.g. <spl-input label="First name">)
+    if (root && root.host) {
+      const host = root.host;
+      if (!lbl) {
+        lbl = host.getAttribute('label') || host.getAttribute('aria-label') || host.getAttribute('placeholder') || '';
+      }
+      if (!lbl && host.parentElement) {
+        const parentHost = host.closest ? host.closest('oc-input, [formcontrolname], [data-test]') : null;
+        if (parentHost) {
+          lbl = parentHost.getAttribute('formcontrolname') || parentHost.getAttribute('data-test') || '';
         }
-      });
-    } catch (e) {}
-    return docs;
+      }
+    }
+
+    return (lbl || el.getAttribute('aria-label') || el.placeholder || el.name || el.id || '').trim().replace(/\s+/g, ' ');
   }
 
   function attachCvPdf(b64, fn) {
     if (!b64) return false;
     try {
-      let fileInp = null;
-      for (const doc of getAllDocuments()) {
-        try {
-          fileInp = doc.getElementById('_systemfield_resume') ||
-                    doc.querySelector('input[type="file"][id*="resume" i], input[type="file"][name*="resume" i], input[type="file"][id*="cv" i], input[type="file"][name*="cv" i], input[type="file"]');
-          if (fileInp) break;
-        } catch (e) {}
+      const fileInputs = queryAllDeep('input[type="file"]');
+      let targetInp = null;
+
+      for (const inp of fileInputs) {
+        const id = (inp.id || '').toLowerCase();
+        const name = (inp.name || '').toLowerCase();
+        const aria = (inp.getAttribute('aria-label') || '').toLowerCase();
+        const accept = (inp.getAttribute('accept') || '').toLowerCase();
+        const rootHost = inp.getRootNode?.()?.host;
+        const hostTag = (rootHost?.tagName || '').toLowerCase();
+        const hostData = (rootHost?.getAttribute('data-test') || '').toLowerCase();
+        const parentTag = (inp.parentElement?.tagName || '').toLowerCase();
+        const parentData = (inp.parentElement?.getAttribute?.('data-test') || '').toLowerCase();
+
+        // Skip avatar/image-only inputs (e.g. .bmp, .gif, .jpeg, .jpg, .png...)
+        if (accept && !accept.includes('.pdf') && (accept.includes('.jpg') || accept.includes('.png') || accept.includes('.webp') || accept.includes('.jfif'))) {
+          continue;
+        }
+
+        if (id.includes('resume') || id.includes('cv') || name.includes('resume') || name.includes('cv') ||
+            aria.includes('resume') || aria.includes('cv') || hostData.includes('resume') || parentData.includes('resume') ||
+            hostTag.includes('dropzone') || parentTag.includes('dropzone')) {
+          targetInp = inp;
+          break;
+        }
+
+        if (accept.includes('.pdf')) {
+          targetInp = inp;
+          break;
+        }
       }
-      if (!fileInp || (fileInp.files && fileInp.files.length > 0)) return false;
+
+      if (!targetInp && fileInputs.length > 0) {
+        targetInp = fileInputs.find(inp => {
+          const acc = (inp.getAttribute('accept') || '').toLowerCase();
+          return !acc || acc.includes('.pdf') || acc.includes('.doc');
+        }) || fileInputs[0];
+      }
+
+      if (!targetInp) return false;
+
       const byteChars = atob(b64);
       const byteNums = new Array(byteChars.length);
       for (let i = 0; i < byteChars.length; i++) {
@@ -182,9 +298,14 @@
       const cvFile = new File([byteArray], fn || 'Bob_Hillus_CV.pdf', { type: 'application/pdf' });
       const dt = new DataTransfer();
       dt.items.add(cvFile);
-      fileInp.files = dt.files;
-      fileInp.dispatchEvent(new Event('input', { bubbles: true }));
-      fileInp.dispatchEvent(new Event('change', { bubbles: true }));
+      targetInp.files = dt.files;
+      targetInp.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      targetInp.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+
+      const host = targetInp.getRootNode?.()?.host;
+      if (host) {
+        host.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+      }
       return true;
     } catch (e) {
       console.warn('CaesarAI PDF attach error:', e);
@@ -195,15 +316,25 @@
   function attachCoverLetterPdf(b64, fn) {
     if (!b64) return false;
     try {
-      let fileInp = null;
-      for (const doc of getAllDocuments()) {
-        try {
-          fileInp = doc.getElementById('_systemfield_cover_letter') ||
-                    doc.querySelector('input[type="file"][id*="cover" i], input[type="file"][name*="cover" i], input[type="file"][aria-label*="cover" i], input[type="file"][data-qa*="cover" i]');
-          if (fileInp) break;
-        } catch (e) {}
+      const fileInputs = queryAllDeep('input[type="file"]');
+      let targetInp = null;
+
+      for (const inp of fileInputs) {
+        const id = (inp.id || '').toLowerCase();
+        const name = (inp.name || '').toLowerCase();
+        const aria = (inp.getAttribute('aria-label') || '').toLowerCase();
+        const rootHost = inp.getRootNode?.()?.host;
+        const hostData = (rootHost?.getAttribute('data-test') || '').toLowerCase();
+        const hostTag = (rootHost?.tagName || '').toLowerCase();
+
+        if (id.includes('cover') || name.includes('cover') || aria.includes('cover') || hostData.includes('cover')) {
+          targetInp = inp;
+          break;
+        }
       }
-      if (!fileInp || (fileInp.files && fileInp.files.length > 0)) return false;
+
+      if (!targetInp) return false;
+
       const byteChars = atob(b64);
       const byteNums = new Array(byteChars.length);
       for (let i = 0; i < byteChars.length; i++) {
@@ -213,9 +344,9 @@
       const clFile = new File([byteArray], fn || 'Bob_Hillus_Cover_Letter.pdf', { type: 'application/pdf' });
       const dt = new DataTransfer();
       dt.items.add(clFile);
-      fileInp.files = dt.files;
-      fileInp.dispatchEvent(new Event('input', { bubbles: true }));
-      fileInp.dispatchEvent(new Event('change', { bubbles: true }));
+      targetInp.files = dt.files;
+      targetInp.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      targetInp.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
       return true;
     } catch (e) {
       console.warn('CaesarAI Cover Letter PDF attach error:', e);
@@ -223,19 +354,12 @@
     }
   }
 
-  // 3. Extract Live Interactive Form Elements
+  // 4. Extract Live Interactive Form Elements
   function extractFormFields() {
     const fields = [];
     const processedRadios = new Set();
     const inputSelector = 'input:not([type="hidden"]):not([type="submit"]):not([type="button"]), textarea, select, [contenteditable="true"], [role="textbox"], [role="combobox"]';
-    const els = [];
-
-    getAllDocuments().forEach((doc) => {
-      try {
-        const found = Array.from(doc.querySelectorAll(inputSelector));
-        els.push(...found);
-      } catch (e) {}
-    });
+    const els = queryAllDeep(inputSelector);
 
     els.forEach((el, index) => {
       const id = el.id || '';
@@ -287,92 +411,67 @@
     return fields;
   }
 
-  // 4. Robust Field Matcher
+  // 5. Robust Field Matcher
   function findElementForAction(act) {
     if (!act) return null;
     let el = null;
-    const docs = getAllDocuments();
 
-    for (const doc of docs) {
-      try {
-        if (act.id) el = doc.getElementById(act.id);
-        if (!el && act.caesar_id) el = doc.querySelector(`[data-caesar-id="${act.caesar_id}"]`);
-        if (!el && act.selector) el = doc.querySelector(act.selector);
-        if (!el && act.name) el = doc.querySelector(`[name="${CSS.escape(act.name)}"]`);
-        if (el) return el;
-      } catch (e) {}
+    if (act.id) el = getElementByIdDeep(act.id);
+    if (!el && act.caesar_id) el = queryDeep(`[data-caesar-id="${act.caesar_id}"]`);
+    if (!el && act.selector) {
+      try { el = queryDeep(act.selector); } catch (e) {}
     }
+    if (!el && act.name) {
+      try { el = queryDeep(`[name="${CSS.escape(act.name)}"]`); } catch (e) {}
+    }
+    if (el) return el;
 
     // Match by associated label text
     const labelText = (act.label || act.question || '').trim().toLowerCase();
     if (labelText && labelText.length > 2) {
-      for (const doc of docs) {
-        try {
-          const allLabels = Array.from(doc.querySelectorAll('label, [class*="label" i], [class*="question" i], [class*="title" i]'));
-          for (const l of allLabels) {
-            const txt = (l.innerText || '').trim().toLowerCase();
-            if (txt && (txt.includes(labelText) || labelText.includes(txt))) {
-              if (l.htmlFor) {
-                el = doc.getElementById(l.htmlFor);
-                if (el) return el;
-              }
-              el = l.querySelector('input:not([type="hidden"]):not([type="file"]), textarea, select');
-              if (el) return el;
-              let cur = l.parentElement;
-              for (let i = 0; i < 3; i++) {
-                if (!cur) break;
-                const found = cur.querySelector('input:not([type="hidden"]):not([type="file"]), textarea, select');
-                if (found) return found;
-                cur = cur.parentElement;
-              }
-            }
-          }
-        } catch (e) {}
+      const allInputs = queryAllDeep('input:not([type="hidden"]):not([type="file"]), textarea, select');
+      for (const inp of allInputs) {
+        const lbl = getFieldLabel(inp).toLowerCase();
+        if (lbl && (lbl.includes(labelText) || labelText.includes(lbl))) {
+          return inp;
+        }
       }
     }
 
     // Match by placeholder text
     const placeholderText = (act.placeholder || '').trim().toLowerCase();
     if (placeholderText && placeholderText.length > 2) {
-      for (const doc of docs) {
-        try {
-          const inputs = Array.from(doc.querySelectorAll('input, textarea'));
-          for (const inp of inputs) {
-            if (inp.placeholder && inp.placeholder.trim().toLowerCase().includes(placeholderText)) {
-              return inp;
-            }
-          }
-        } catch (e) {}
+      const allInputs = queryAllDeep('input, textarea');
+      for (const inp of allInputs) {
+        if (inp.placeholder && inp.placeholder.trim().toLowerCase().includes(placeholderText)) {
+          return inp;
+        }
       }
     }
 
     return null;
   }
 
-  // 5. Intelligent Fallback for Standard Candidate Profile Fields
+  // 6. Intelligent Fallback for Standard Candidate Profile Fields
   function fillStandardFields(profile = {}, initialCount = 0) {
     if (!profile) return initialCount;
     let count = initialCount;
 
     const standardMappings = [
-      { keys: ['first_name', 'firstname', 'first name', 'given name'], val: profile.firstName || (profile.fullName || '').split(' ')[0] },
-      { keys: ['last_name', 'lastname', 'last name', 'family name', 'surname'], val: profile.lastName || (profile.fullName || '').split(' ').slice(1).join(' ') },
+      { keys: ['first_name', 'firstname', 'first name', 'given name', 'given-name'], val: profile.firstName || (profile.fullName || '').split(' ')[0] },
+      { keys: ['last_name', 'lastname', 'last name', 'family name', 'family-name', 'surname'], val: profile.lastName || (profile.fullName || '').split(' ').slice(1).join(' ') },
+      { keys: ['confirm_email', 'confirm email', 'confirm your email', 'emailconfirmation', 'confirm-email'], val: profile.email },
+      { keys: ['email', 'email address', 'e-mail'], val: profile.email },
+      { keys: ['phone', 'mobile', 'telephone', 'phone number', 'phone-number'], val: profile.phone },
+      { keys: ['city', 'location', 'address', 'residence', 'place of residence', 'place-of-residence'], val: profile.location },
       { keys: ['full_name', 'fullname', 'full name', 'candidate_name', 'name'], val: profile.fullName },
-      { keys: ['email', 'email address'], val: profile.email },
-      { keys: ['phone', 'mobile', 'telephone', 'phone number'], val: profile.phone },
       { keys: ['linkedin', 'linkedin url', 'linkedin profile'], val: profile.linkedin },
       { keys: ['github', 'github url', 'github profile'], val: profile.github },
       { keys: ['website', 'portfolio', 'personal website', 'url'], val: profile.portfolio },
-      { keys: ['location', 'city', 'address', 'residence'], val: profile.location },
     ];
 
-    const inputs = [];
-    getAllDocuments().forEach((doc) => {
-      try {
-        const found = Array.from(doc.querySelectorAll('input:not([type="hidden"]):not([type="file"]):not([type="submit"]):not([type="button"]), textarea'));
-        inputs.push(...found);
-      } catch (e) {}
-    });
+    const inputSelector = 'input:not([type="hidden"]):not([type="file"]):not([type="submit"]):not([type="button"]), textarea';
+    const inputs = queryAllDeep(inputSelector);
 
     inputs.forEach((inp) => {
       if (inp.value && inp.value.trim().length > 0) return; // Skip already filled inputs
@@ -380,7 +479,12 @@
       const name = (inp.name || '').toLowerCase();
       const id = (inp.id || '').toLowerCase();
       const placeholder = (inp.placeholder || '').toLowerCase();
-      const combined = `${lbl} ${name} ${id} ${placeholder}`;
+      const autocomplete = (inp.getAttribute('autocomplete') || '').toLowerCase();
+      const rootHost = inp.getRootNode?.()?.host;
+      const hostLabel = (rootHost?.getAttribute('label') || '').toLowerCase();
+      const hostId = (rootHost?.id || '').toLowerCase();
+      const parentFormControl = (inp.closest?.('[formcontrolname]')?.getAttribute('formcontrolname') || '').toLowerCase();
+      const combined = `${lbl} ${name} ${id} ${placeholder} ${autocomplete} ${hostLabel} ${hostId} ${parentFormControl}`;
 
       for (const mapping of standardMappings) {
         if (!mapping.val) continue;
@@ -418,8 +522,8 @@
             if (optText === targetVal || optVal === targetVal) {
               el.selectedIndex = i;
               el.value = opt.value;
-              el.dispatchEvent(new Event('input', { bubbles: true }));
-              el.dispatchEvent(new Event('change', { bubbles: true }));
+              el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
               count++;
               break;
             }
@@ -427,7 +531,7 @@
         } else if (act.type === 'radio') {
           if (!el.checked) {
             el.click();
-            el.dispatchEvent(new Event('change', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
             count++;
           }
         } else {
