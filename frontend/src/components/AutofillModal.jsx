@@ -19,14 +19,17 @@ import {
   RotateCcw,
   AlertTriangle,
 } from 'lucide-react';
+import PipelineProgressCard from './PipelineProgressCard';
 
 export default function AutofillModal({
   isOpen,
   onClose,
   initialData = {},
   onApplicationCreated,
+  onProgressUpdate,
 }) {
   const [loading, setLoading] = useState(false);
+  const [singleJobProgress, setSingleJobProgress] = useState(null);
   const [markedInProgress, setMarkedInProgress] = useState(false);
   const [savingAnswers, setSavingAnswers] = useState(false);
   const [savedAnswersSuccess, setSavedAnswersSuccess] = useState(false);
@@ -144,6 +147,37 @@ export default function AutofillModal({
   // Manually generate answers with agy CLI (inspecting live form)
   const handleGenerateAnswers = async () => {
     setLoading(true);
+    let elapsed = 0;
+    const initialProgress = {
+      title: `Drafting Answers for ${company || 'Target Company'} — ${role || 'Role'}`,
+      status: 'running',
+      elapsedSeconds: 0,
+      percent: 15,
+      badge: 'AI Autofill (agy)',
+      tag: 'Single Job',
+      currentTarget: `${company || 'Target Company'} — ${role || 'Role'}`,
+      detail: 'Inspecting application form HTML and drafting tailored answers with agy...',
+    };
+    setSingleJobProgress(initialProgress);
+    onProgressUpdate?.(initialProgress);
+
+    const timer = setInterval(() => {
+      elapsed += 1;
+      const currentPct = Math.min(92, 15 + elapsed * 5);
+      const updated = {
+        title: `Drafting Answers for ${company || 'Target Company'} — ${role || 'Role'}`,
+        status: 'running',
+        elapsedSeconds: elapsed,
+        percent: currentPct,
+        badge: 'AI Autofill (agy)',
+        tag: 'Single Job',
+        currentTarget: `${company || 'Target Company'} — ${role || 'Role'}`,
+        detail: 'Inspecting application form HTML and drafting tailored answers with agy...',
+      };
+      setSingleJobProgress(updated);
+      onProgressUpdate?.(updated);
+    }, 1000);
+
     try {
       const res = await fetch('/api/autofill/generate', {
         method: 'POST',
@@ -154,6 +188,7 @@ export default function AutofillModal({
           role,
         }),
       });
+      clearInterval(timer);
       if (res.ok) {
         const data = await res.json();
         if (data.profile) setProfile(data.profile);
@@ -165,9 +200,48 @@ export default function AutofillModal({
         if ((data.answers && data.answers.length > 0) || data.cover_letter) {
           setActiveTab('answers');
         }
+
+        const completedProgress = {
+          title: `Answers Generated for ${company || 'Target Company'}`,
+          status: 'completed',
+          elapsedSeconds: elapsed,
+          percent: 100,
+          badge: 'AI Autofill (agy)',
+          tag: 'Single Job',
+          currentTarget: `${company || 'Target Company'} — ${role || 'Role'}`,
+          detail: `Done! ${data.answers?.length || 0} tailored answers & ${data.cover_letter ? 'cover letter' : 'profile fields'} drafted.`,
+        };
+        setSingleJobProgress(completedProgress);
+        onProgressUpdate?.(completedProgress);
+        onApplicationCreated?.();
+
+        setTimeout(() => {
+          setSingleJobProgress(null);
+          onProgressUpdate?.(null);
+        }, 5000);
+      } else {
+        throw new Error('HTTP ' + res.status);
       }
     } catch (err) {
+      clearInterval(timer);
       console.error('Failed to generate autofill answers with agy:', err);
+      const failedProgress = {
+        title: `Failed to Generate Answers`,
+        status: 'failed',
+        elapsedSeconds: elapsed,
+        percent: 100,
+        badge: 'AI Autofill (agy)',
+        tag: 'Single Job',
+        currentTarget: `${company || 'Target Company'} — ${role || 'Role'}`,
+        detail: `Error: ${err.message || 'Could not draft answers with agy.'}`,
+      };
+      setSingleJobProgress(failedProgress);
+      onProgressUpdate?.(failedProgress);
+
+      setTimeout(() => {
+        setSingleJobProgress(null);
+        onProgressUpdate?.(null);
+      }, 6000);
     } finally {
       setLoading(false);
     }
@@ -605,6 +679,22 @@ export default function AutofillModal({
             <X className="w-5 h-5" />
           </button>
         </div>
+
+        {/* Active Single Job Autofill Progress Card */}
+        {singleJobProgress && (
+          <div className="pt-3 pb-1 shrink-0">
+            <PipelineProgressCard
+              title={singleJobProgress.title}
+              status={singleJobProgress.status}
+              elapsedSeconds={singleJobProgress.elapsedSeconds || 0}
+              percent={singleJobProgress.percent || 0}
+              badge={singleJobProgress.badge || 'AI Autofill (agy)'}
+              tag={singleJobProgress.tag || 'Single Job'}
+              currentTarget={singleJobProgress.currentTarget}
+              detail={singleJobProgress.detail}
+            />
+          </div>
+        )}
 
         {/* Tab Selection */}
         <div className="flex items-center gap-2 pt-3 shrink-0">

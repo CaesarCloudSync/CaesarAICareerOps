@@ -25,6 +25,7 @@ export default function ApplicationsTable({ applications = [], onStatusChange, o
   const [isEvaluating, setIsEvaluating] = useState(false);
   const [activeAutofillJobId, setActiveAutofillJobId] = useState(null);
   const [activeAutofillJob, setActiveAutofillJob] = useState(null);
+  const [singleAutofillJob, setSingleAutofillJob] = useState(null);
   const [isAutofilling, setIsAutofilling] = useState(false);
   const [selectedAppIds, setSelectedAppIds] = useState(new Set());
   const [autofillModalConfig, setAutofillModalConfig] = useState({
@@ -540,6 +541,22 @@ export default function ApplicationsTable({ applications = [], onStatusChange, o
         </div>
       )}
 
+      {/* Active Single Job Autofill Progress Card */}
+      {singleAutofillJob && (
+        <div className="p-4 border-b border-indigo-500/30 bg-indigo-950/20">
+          <PipelineProgressCard
+            title={singleAutofillJob.title}
+            status={singleAutofillJob.status}
+            elapsedSeconds={singleAutofillJob.elapsedSeconds || 0}
+            percent={singleAutofillJob.percent || 0}
+            badge={singleAutofillJob.badge || "AI Autofill (agy)"}
+            tag={singleAutofillJob.tag || "Single Job"}
+            currentTarget={singleAutofillJob.currentTarget}
+            detail={singleAutofillJob.detail}
+          />
+        </div>
+      )}
+
       <div className="p-4 border-b border-slate-800/80 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
         <div>
           <h2 className="text-base font-semibold text-white">Application Pipeline Tracker</h2>
@@ -801,6 +818,7 @@ export default function ApplicationsTable({ applications = [], onStatusChange, o
         onClose={() => setAutofillModalConfig({ isOpen: false, data: {} })}
         initialData={autofillModalConfig.data}
         onApplicationCreated={onRefresh}
+        onProgressUpdate={setSingleAutofillJob}
       />
     </div>
   );
