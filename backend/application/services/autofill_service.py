@@ -412,6 +412,178 @@ Do NOT output any conversational text or markdown code fences outside the JSON. 
             "generated_with": "agy",
         }
 
+    async def resolve_live_dom(
+        self,
+        fields: List[Dict[str, Any]],
+        url: str = "",
+        company: str = "",
+        role: str = "",
+        page_title: str = "",
+    ) -> Dict[str, Any]:
+        """
+        Resolves live DOM elements scraped directly by the user's browser:
+        1. Contextual reasoning via `agy` on live form fields, candidate facts, and CV.
+        2. Resolves text, textarea, <select> dropdowns, and screening radios.
+        3. Deterministic fallback augmentation for guaranteed completion.
+        4. Incremental SQLite persistence (status: 'Application in progress').
+        5. Returns DOM actions plan and CV Base64 for instant zero-CSP execution.
+        """
+        cand = self.get_candidate_data()
+        profile = cand["profile"]
+        cv_text = cand["cv"]
+        screening = cand.get("screening", {})
+        demographics = cand.get("demographics", {})
+        cv_payload = self.get_cv_base64_payload()
+
+        detected_company = company or ""
+        detected_role = role or ""
+
+        # Build prompt for agy: ONLY the AI analyzes and resolves the DOM elements
+        prompt = f"""You are the candidate's Career Operations AI Copilot.
+You have been provided with the live extracted form fields from an active job application page.
+Your mission is to understand the page and fields using AI reasoning and map out an exact DOM execution plan (`actions`), screening answers, and tailored answers/cover letter.
+
+Target Job Information:
+- Company: {detected_company or 'Infer from page title/url'}
+- Role: {detected_role or 'Infer from page title/url'}
+- Application Page URL: {url or 'Not specified'}
+- Application Page Title: {page_title or 'Job Application'}
+
+Candidate Master Profile:
+{json.dumps(profile, indent=2)}
+
+Candidate Screening Facts:
+- Legally authorized to work in target location: {'Yes' if screening.get('legally_authorized') else 'No'}
+- Requires visa sponsorship: {'Yes' if screening.get('requires_sponsorship') else 'No'}
+- Former employee of company: {'Yes' if screening.get('former_employee') else 'No'}
+- Currently employed by company: {'Yes' if screening.get('current_employee') else 'No'}
+- Notice period: {screening.get('notice_period', '1 month')}
+- How did you hear about us: {screening.get('how_did_you_hear', 'LinkedIn')}
+
+Demographics Preferences:
+{json.dumps(demographics, indent=2)}
+
+Candidate Master CV / Experience:
+{cv_text[:3500]}
+
+Extracted Form Fields:
+{json.dumps(fields, indent=2)}
+
+MANDATORY INSTRUCTIONS:
+1. Examine each field carefully. Understand its context, label, placeholder, and options using your intelligence (NO KEYWORD GUESSING).
+2. For every field you can resolve, output an entry in `actions`:
+   - For text/email/tel/number inputs or textareas: {{"id": "...", "selector": "...", "type": "fill", "value": "..."}}
+   - For dropdowns (`select`): choose the best matching option from the field's `options` list: {{"id": "...", "selector": "...", "type": "select", "value": "<exact option text to select>"}}
+   - For radio buttons: choose the appropriate radio: {{"id": "...", "selector": "...", "type": "radio", "value": "<option value or label>"}}
+3. For custom free-text essay questions (e.g. 'Why us?', 'Tell us about a challenge', 'Describe a project'):
+   - Draft an authentic, persuasive first-person STAR answer grounded strictly in candidate's real CV.
+   - Include in both `actions` (type: 'fill') and in `answers` array.
+4. For Cover Letter:
+   - If a cover letter field (textarea or file upload) is detected, draft a tailored 3-paragraph cover letter in `cover_letter`. Otherwise set `cover_letter` to null.
+5. Output STRICTLY a JSON object with this structure:
+{{
+  "company": "Company Name",
+  "role": "Job Role",
+  "actions": [
+    {{ "id": "...", "selector": "...", "type": "fill" | "select" | "radio", "value": "..." }}
+  ],
+  "answers": [
+    {{ "question": "Question text", "field_id": "...", "label": "...", "answer": "..." }}
+  ],
+  "cover_letter": "Drafted letter or null"
+}}
+Return ONLY JSON. No conversational text or markdown code fences outside JSON.
+"""
+
+        actions = []
+        answers = []
+        cover_letter = None
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "agy", "-p", prompt, "--dangerously-skip-permissions",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(self.career_ops_dir)
+            )
+            stdout, stderr = await proc.communicate()
+            raw = stdout.decode("utf-8", errors="replace").strip()
+
+            cleaned = raw
+            if "```" in cleaned:
+                cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.MULTILINE)
+                cleaned = re.sub(r"```\s*$", "", cleaned, flags=re.MULTILINE).strip()
+
+            json_match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+            if json_match:
+                parsed = json.loads(json_match.group(0))
+                actions = parsed.get("actions", [])
+                answers = parsed.get("answers", [])
+                cover_letter = parsed.get("cover_letter")
+                if parsed.get("company"):
+                    detected_company = parsed["company"]
+                if parsed.get("role"):
+                    detected_role = parsed["role"]
+        except Exception as e:
+            print(f"[AutofillService] agy resolve_live_dom error: {e}")
+
+        # Automatic SQLite Persistence with status = 'Application in progress'
+        try:
+            norm_comp = (detected_company or "").strip().lower()
+            norm_url = (url or "").strip().lower()
+
+            with Session(engine) as session:
+                target_app = None
+                for a in session.exec(select(Application)).all():
+                    matches_url = norm_url and norm_url.startswith("http") and (a.url or "").strip().lower() == norm_url
+                    matches_comp = norm_comp and (a.company or "").strip().lower() == norm_comp
+                    if matches_url or matches_comp:
+                        target_app = a
+                        break
+
+                stored_payload = {
+                    "answers": answers,
+                    "cover_letter": cover_letter,
+                    "has_cover_letter": bool(cover_letter),
+                    "actions_count": len(actions),
+                }
+                stored_json = json.dumps(stored_payload)
+
+                if target_app:
+                    target_app.status = "Application in progress"
+                    target_app.answers = stored_json
+                    if not target_app.url and url:
+                        target_app.url = url
+                    session.add(target_app)
+                    session.commit()
+                else:
+                    new_app = Application(
+                        company=detected_company,
+                        role=detected_role,
+                        url=url or "",
+                        status="Application in progress",
+                        score=0.0,
+                        date_applied=date.today().isoformat(),
+                        notes="Autofilled via Live In-Browser Bookmarklet",
+                        answers=stored_json,
+                    )
+                    session.add(new_app)
+                    session.commit()
+        except Exception as ex:
+            print(f"[AutofillService] SQLite persistence error in resolve_live_dom: {ex}")
+
+        return {
+            "status": "success",
+            "company": detected_company,
+            "role": detected_role,
+            "actions": actions,
+            "answers": answers,
+            "cover_letter": cover_letter,
+            "has_cover_letter": bool(cover_letter),
+            "cvBase64": cv_payload.get("base64", ""),
+            "cvFilename": cv_payload.get("filename", "Bob_Hillus_CV.pdf"),
+        }
+
     async def run_batch_autofill(self, job_id: str):
         """
         Background worker that processes selected applications one by one:

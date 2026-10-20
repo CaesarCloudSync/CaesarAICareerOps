@@ -34,6 +34,32 @@ class BatchAutofillRequest(BaseModel):
     all: Optional[bool] = False
 
 
+class ResolveLiveRequest(BaseModel):
+    url: Optional[str] = ""
+    company: Optional[str] = ""
+    role: Optional[str] = ""
+    page_title: Optional[str] = ""
+    fields: List[Dict[str, Any]] = []
+
+
+@router.post("/resolve-live")
+async def resolve_live(payload: ResolveLiveRequest):
+    """
+    Live In-Browser DOM Autofill:
+    Receives live-scraped form fields directly from the candidate's active browser session,
+    uses `agy` + candidate profile/CV to generate exact DOM actions, screening answers,
+    and tailored cover letter, automatically persists into SQLite ('Application in progress'),
+    and returns actions and Base64 Master CV.
+    """
+    return await autofill_service.resolve_live_dom(
+        fields=payload.fields,
+        url=payload.url or "",
+        company=payload.company or "",
+        role=payload.role or "",
+        page_title=payload.page_title or "",
+    )
+
+
 @router.get("/candidate")
 async def get_candidate():
     """Retrieve raw candidate profile and contact details."""

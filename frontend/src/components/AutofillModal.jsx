@@ -218,6 +218,9 @@ export default function AutofillModal({
   // Build executable universal bookmarklet and console script
   const buildAutofillCode = () => {
     const payload = {
+      company: company || '',
+      role: role || '',
+      url: url || '',
       profile,
       answers,
       coverLetter: coverLetter || '',
@@ -227,9 +230,66 @@ export default function AutofillModal({
 
     return `(function(){
   try {
-    const data = ${JSON.stringify(payload)};
-    function fill(el, val) {
-      if (!el || !val) return;
+    const payloadData = ${JSON.stringify(payload)};
+
+    // 1. Create or reset Floating Progress Toast
+    const oldToast = document.getElementById('caesar-autofill-toast');
+    if (oldToast) oldToast.remove();
+
+    const toast = document.createElement('div');
+    toast.id = 'caesar-autofill-toast';
+    toast.style.cssText = [
+      'position:fixed', 'top:20px', 'right:20px', 'z-index:2147483647',
+      'width:340px', 'max-width:calc(100vw - 40px)',
+      'background:#0f172a', 'color:#f8fafc',
+      'border:1px solid #10b981', 'border-radius:14px',
+      'box-shadow:0 20px 40px rgba(0,0,0,0.6), 0 0 0 1px rgba(16,185,129,0.2)',
+      'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif',
+      'font-size:13px', 'line-height:1.4', 'padding:14px 16px', 'box-sizing:border-box',
+      'transition:opacity 0.4s ease, transform 0.4s ease',
+      'opacity:1', 'transform:translateY(0)'
+    ].join(';');
+
+    toast.innerHTML = \`
+      <div style="display:flex;align-items:center;justify-content:between;gap:8px;margin-bottom:8px;">
+        <div style="display:flex;align-items:center;gap:6px;font-weight:700;font-size:14px;color:#10b981;flex:1;">
+          <span style="font-size:16px;">⚡</span> CaesarAI Autofill
+        </div>
+        <button id="caesar-toast-close" style="background:transparent;border:none;color:#94a3b8;font-size:16px;cursor:pointer;padding:2px 6px;line-height:1;border-radius:4px;" title="Close">✕</button>
+      </div>
+      <div id="caesar-toast-msg" style="font-size:12px;color:#e2e8f0;font-weight:500;">🔍 Scanning form fields...</div>
+      <div style="margin-top:10px;height:6px;width:100%;background:#1e293b;border-radius:999px;overflow:hidden;">
+        <div id="caesar-toast-bar" style="height:100%;width:25%;background:#10b981;border-radius:999px;transition:width 0.4s ease, background 0.4s ease;"></div>
+      </div>
+      <div id="caesar-toast-sub" style="margin-top:7px;font-size:11px;color:#94a3b8;">Discovering live DOM elements</div>
+    \`;
+
+    document.body.appendChild(toast);
+
+    const closeBtn = document.getElementById('caesar-toast-close');
+    if (closeBtn) {
+      closeBtn.onclick = function() {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(-10px)';
+        setTimeout(function() { toast.remove(); }, 400);
+      };
+    }
+
+    function updateToast(pct, msg, sub, isError) {
+      const bar = document.getElementById('caesar-toast-bar');
+      const msgEl = document.getElementById('caesar-toast-msg');
+      const subEl = document.getElementById('caesar-toast-sub');
+      if (bar) {
+        bar.style.width = pct + '%';
+        if (isError) bar.style.background = '#ef4444';
+      }
+      if (msgEl) msgEl.innerText = msg;
+      if (subEl) subEl.innerText = sub;
+    }
+
+    // Helper to dispatch React/Angular compatible input events
+    function setFieldValue(el, val) {
+      if (!el || val === undefined || val === null) return;
       el.focus();
       const proto = el instanceof HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
       const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
@@ -239,161 +299,41 @@ export default function AutofillModal({
       el.dispatchEvent(new Event('blur', { bubbles: true }));
     }
 
-    const p = data.profile || {};
-    let count = 0;
-
-    function getFieldInfo(inp) {
-      let label = '';
-      if (inp.id) {
-        const l = document.querySelector('label[for="' + inp.id + '"]');
-        if (l) label = l.innerText;
+    // Helper to find label text
+    function getElementLabel(el) {
+      let lbl = '';
+      if (el.id) {
+        try {
+          const l = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+          if (l) lbl = l.innerText;
+        } catch(e) {}
       }
-      if (!label) {
-        const l = inp.closest('label');
-        if (l) label = l.innerText;
+      if (!lbl) {
+        const p = el.closest('label');
+        if (p) lbl = p.innerText;
       }
-      if (!label) {
-        let cur = inp.parentElement;
-        for (let s = 0; s < 4; s++) {
+      if (!lbl) {
+        let cur = el.parentElement;
+        for (let i = 0; i < 4; i++) {
           if (!cur) break;
-          const l = cur.querySelector('label, [class*="label"], [class*="Label"], [class*="title"]');
-          if (l && l.innerText) { label = l.innerText; break; }
+          const found = cur.querySelector('label, [class*="label" i], [class*="legend" i], [class*="question" i], [class*="title" i]');
+          if (found && found.innerText && found.innerText.length < 300) {
+            lbl = found.innerText;
+            break;
+          }
           cur = cur.parentElement;
         }
       }
-      const name = inp.name || '';
-      const id = inp.id || '';
-      const placeholder = inp.placeholder || '';
-      const aria = inp.getAttribute('aria-label') || '';
-      const sig = (name + ' ' + id + ' ' + placeholder + ' ' + aria + ' ' + label).toLowerCase();
-      return { label: label.toLowerCase(), sig };
+      return (lbl || el.placeholder || el.getAttribute('aria-label') || '').trim().replace(/\\s+/g, ' ');
     }
 
-    /* 1. Fill standard contact fields */
-    document.querySelectorAll('input, textarea').forEach(function(inp) {
-      if (inp.type === 'file' || inp.type === 'radio' || inp.type === 'checkbox') return;
-      const info = getFieldInfo(inp);
-      const label = info.label;
-      const sig = info.sig;
-
-      if ((sig.includes('first_name') || sig.includes('firstname') || sig.includes('given name') || label.includes('first name')) && p.firstName && !inp.value) {
-        fill(inp, p.firstName); count++;
-      } else if ((sig.includes('last_name') || sig.includes('lastname') || sig.includes('family name') || sig.includes('surname') || label.includes('last name')) && p.lastName && !inp.value) {
-        fill(inp, p.lastName); count++;
-      } else if ((sig.includes('_systemfield_name') || sig.includes('full_name') || sig.includes('fullname') || label.trim() === 'name' || label.includes('full name') || sig.includes('your name') || inp.id === 'name' || inp.name === 'name') && p.fullName && !inp.value && !sig.includes('first') && !sig.includes('last')) {
-        fill(inp, p.fullName); count++;
-      } else if ((sig.includes('email') || label.includes('email')) && p.email && !inp.value) {
-        fill(inp, p.email); count++;
-      } else if ((sig.includes('phone') || sig.includes('mobile') || label.includes('phone') || label.includes('mobile')) && p.phone && !inp.value) {
-        fill(inp, p.phone); count++;
-      } else if ((sig.includes('github') || label.includes('github')) && p.github && !inp.value) {
-        fill(inp, p.github); count++;
-      } else if ((sig.includes('linkedin') || label.includes('linkedin')) && p.linkedin && !inp.value) {
-        fill(inp, p.linkedin); count++;
-      } else if ((sig.includes('portfolio') || sig.includes('website') || label.includes('portfolio') || label.includes('website')) && p.portfolio && !inp.value) {
-        fill(inp, p.portfolio); count++;
-      } else if ((sig.includes('location') || sig.includes('city') || label.includes('location')) && !inp.value) {
-        fill(inp, p.location || 'London, United Kingdom'); count++;
-      }
-    });
-
-    /* 2. Select radio buttons (e.g. How did you hear) */
-    document.querySelectorAll('input[type="radio"]').forEach(function(radio) {
-      let label = '';
-      if (radio.id) {
-        const l = document.querySelector('label[for="' + radio.id + '"]');
-        if (l) label = l.innerText;
-      }
-      if (!label) {
-        const parent = radio.closest('label') || radio.parentElement;
-        if (parent) label = parent.innerText;
-      }
-      const text = (label || radio.value || '').toLowerCase();
-      if (text.includes('job board') || text.includes('linkedin') || text.includes('user') || text.includes('social media')) {
-        if (!radio.checked) {
-          radio.click();
-          count++;
-        }
-      }
-    });
-
-    /* 3. Fill tailored essay questions (by ID, Name, or Label) */
-    function fillAnswersList(ansList) {
-      if (!ansList || !ansList.length) return 0;
-      let filled = 0;
-      ansList.forEach(function(ans) {
-        if (!ans || !ans.answer) return;
-
-        // Try exact field ID first
-        if (ans.field_id) {
-          const el = document.getElementById(ans.field_id);
-          if (el && (!el.value || el.value.length < 15)) {
-            fill(el, ans.answer);
-            count++;
-            filled++;
-            return;
-          }
-        }
-
-        // Try exact field name
-        if (ans.field_name) {
-          const el = document.querySelector('[name="' + ans.field_name + '"]');
-          if (el && (!el.value || el.value.length < 15)) {
-            fill(el, ans.answer);
-            count++;
-            filled++;
-            return;
-          }
-        }
-
-        const qLower = (ans.label || ans.question || '').toLowerCase();
-        const qClean = qLower.replace(/[^a-z0-9]/g, ' ').replace(/\s+/g, ' ').trim();
-        const qWords = qClean.split(' ').filter(function(w) { return w.length > 3; });
-
-        document.querySelectorAll('textarea, input[type="text"]').forEach(function(inp) {
-          if (inp.value && inp.value.length > 20) return;
-          const info = getFieldInfo(inp);
-          const labelClean = info.label.replace(/[^a-z0-9]/g, ' ').replace(/\s+/g, ' ').trim();
-
-          let matches = 0;
-          for (let i = 0; i < qWords.length; i++) {
-            if (labelClean.includes(qWords[i])) matches++;
-          }
-          if ((qWords.length >= 2 && matches >= Math.min(3, qWords.length)) || (qClean.length > 8 && labelClean.includes(qClean.slice(0, 25)))) {
-            fill(inp, ans.answer);
-            count++;
-            filled++;
-          }
-        });
-      });
-      return filled;
-    }
-
-    fillAnswersList(data.answers || []);
-
-    /* 4. Fill cover letter if textarea exists */
-    function fillCoverLetter(cl) {
-      if (!cl) return;
-      document.querySelectorAll('textarea').forEach(function(ta) {
-        if (ta.value && ta.value.length > 20) return;
-        const info = getFieldInfo(ta);
-        if (info.label.includes('cover letter') || info.sig.includes('cover_letter') || info.sig.includes('coverletter')) {
-          fill(ta, cl);
-          count++;
-        }
-      });
-    }
-
-    if (data.coverLetter) {
-      fillCoverLetter(data.coverLetter);
-    }
-
-    /* 5. Auto-attach CV PDF via zero-CSP Base64 DataTransfer */
-    function attachResume(b64, fn) {
-      if (!b64) return;
+    // Helper to attach CV PDF
+    function attachCvPdf(b64, fn) {
+      if (!b64) return false;
       try {
-        const fileInp = document.getElementById('_systemfield_resume') || document.querySelector('input[type="file"][id*="resume"], input[type="file"][name*="resume"], input[type="file"]');
-        if (!fileInp || (fileInp.files && fileInp.files.length > 0)) return;
+        const fileInp = document.getElementById('_systemfield_resume') ||
+                        document.querySelector('input[type="file"][id*="resume" i], input[type="file"][name*="resume" i], input[type="file"][id*="cv" i], input[type="file"][name*="cv" i], input[type="file"]');
+        if (!fileInp || (fileInp.files && fileInp.files.length > 0)) return false;
         const byteChars = atob(b64);
         const byteNums = new Array(byteChars.length);
         for (let i = 0; i < byteChars.length; i++) {
@@ -406,50 +346,154 @@ export default function AutofillModal({
         fileInp.files = dt.files;
         fileInp.dispatchEvent(new Event('input', { bubbles: true }));
         fileInp.dispatchEvent(new Event('change', { bubbles: true }));
-        count++;
-      } catch (e) {}
+        return true;
+      } catch(e) {
+        console.warn('CaesarAI PDF attach error:', e);
+        return false;
+      }
     }
 
-    // Attach from baked-in payload if available
-    if (data.cvBase64) {
-      attachResume(data.cvBase64, data.cvFilename);
-    }
+    // 2. Extract live interactive form elements from page
+    const fields = [];
+    const seen = new Set();
 
-    /* 6. Also auto-read from clipboard if fresh answers or CV were copied */
-    if (navigator.clipboard && navigator.clipboard.readText) {
-      navigator.clipboard.readText().then(function(text) {
-        if (text && text.includes('__caesar__')) {
-          try {
-            const clipData = JSON.parse(text);
-            if (clipData && clipData.answers) {
-              const extra = fillAnswersList(clipData.answers);
-              if (extra > 0) {
-                showBanner(count);
-              }
-            }
-            if (clipData && clipData.coverLetter) {
-              fillCoverLetter(clipData.coverLetter);
-            }
-            if (clipData && clipData.cvBase64) {
-              attachResume(clipData.cvBase64, clipData.cvFilename);
-            }
-          } catch(e) {}
+    document.querySelectorAll('input, textarea, select').forEach(function(el) {
+      const tag = el.tagName.toLowerCase();
+      const type = (el.type || '').toLowerCase();
+      if (type === 'hidden' || type === 'submit' || type === 'button' || type === 'reset') return;
+
+      const id = el.id || '';
+      const name = el.name || '';
+      const key = (id || name || (tag + '_' + type + '_' + el.placeholder)).toLowerCase();
+      if (key && seen.has(key) && type !== 'radio') return;
+      if (key) seen.add(key);
+
+      const label = getElementLabel(el);
+      const options = [];
+
+      if (tag === 'select') {
+        Array.from(el.options || []).forEach(function(opt) {
+          if (opt.text && opt.text.trim()) options.push(opt.text.trim());
+        });
+      } else if (type === 'radio' && name) {
+        try {
+          document.querySelectorAll('input[type="radio"][name="' + CSS.escape(name) + '"]').forEach(function(r) {
+            const rlbl = getElementLabel(r) || r.value;
+            if (rlbl) options.push(rlbl);
+          });
+        } catch(e) {}
+      }
+
+      let selector = '';
+      if (id) {
+        try { selector = '#' + CSS.escape(id); } catch(e) { selector = '#' + id; }
+      } else if (name) {
+        try {
+          selector = tag + '[name="' + CSS.escape(name) + '"]' + (type === 'radio' ? '[value="' + CSS.escape(el.value) + '"]' : '');
+        } catch(e) {}
+      }
+
+      fields.push({
+        id: id,
+        name: name,
+        tag: tag,
+        type: type,
+        label: label,
+        placeholder: el.placeholder || '',
+        options: options,
+        selector: selector
+      });
+    });
+
+    updateToast(25, '🔍 Discovered ' + fields.length + ' form fields', 'Sending rendered DOM to CaesarAI engine...');
+
+    // 3. Post to CaesarAI Backend for AI Resolution
+    const reqBody = {
+      url: window.location.href,
+      page_title: document.title,
+      company: payloadData.company || '',
+      role: payloadData.role || '',
+      fields: fields
+    };
+
+    updateToast(65, '🤖 agy: Resolving dropdowns & drafting custom answers...', 'Reasoning with Candidate Profile & CV...');
+
+    fetch('http://localhost:8000/api/autofill/resolve-live', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(reqBody)
+    })
+    .then(function(res) {
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return res.json();
+    })
+    .then(function(data) {
+      let count = 0;
+      const actions = data.actions || [];
+
+      // Execute each action from agy action plan
+      actions.forEach(function(act) {
+        let el = null;
+        if (act.id) el = document.getElementById(act.id);
+        if (!el && act.selector) {
+          try { el = document.querySelector(act.selector); } catch(e) {}
         }
-      }).catch(function(){});
-    }
+        if (!el) return;
 
-    /* 6. Floating banner visual feedback */
-    function showBanner(cnt) {
-      const existing = document.getElementById('caesar-autofill-banner');
-      if (existing) existing.remove();
-      const banner = document.createElement('div');
-      banner.id = 'caesar-autofill-banner';
-      banner.style.cssText = 'position:fixed;top:20px;right:20px;z-index:9999999;background:#0f172a;color:#fff;padding:12px 18px;border-radius:12px;font-family:system-ui,sans-serif;font-size:13px;box-shadow:0 10px 25px rgba(0,0,0,0.5);border:1px solid #10b981;display:flex;align-items:center;gap:10px;';
-      banner.innerHTML = '<span style="font-size:18px">⚡</span> <strong>CaesarAI:</strong> Auto-filled ' + cnt + ' fields, profile & attached CV! Review before submitting.';
-      document.body.appendChild(banner);
-      setTimeout(function() { banner.remove(); }, 6000);
-    }
-    showBanner(count);
+        if (act.type === 'select') {
+          const targetVal = (act.value || '').trim().toLowerCase();
+          for (let i = 0; i < el.options.length; i++) {
+            const opt = el.options[i];
+            const optText = (opt.text || '').trim().toLowerCase();
+            const optVal = (opt.value || '').trim().toLowerCase();
+            if (optText === targetVal || optVal === targetVal) {
+              el.selectedIndex = i;
+              el.value = opt.value;
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+              count++;
+              break;
+            }
+          }
+        } else if (act.type === 'radio') {
+          if (!el.checked) {
+            el.click();
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            count++;
+          }
+        } else {
+          // fill text or textarea
+          setFieldValue(el, act.value);
+          count++;
+        }
+      });
+
+      // Attach CV PDF
+      const cvAttached = attachCvPdf(data.cvBase64 || payloadData.cvBase64, data.cvFilename || payloadData.cvFilename);
+      if (cvAttached) count++;
+
+      updateToast(100, '✅ Done! ' + count + ' fields filled & CV attached!', '💡 Human review: Review answers before clicking Submit.');
+
+      setTimeout(function() {
+        if (toast && toast.parentElement) {
+          toast.style.opacity = '0';
+          toast.style.transform = 'translateY(-10px)';
+          setTimeout(function() { toast.remove(); }, 400);
+        }
+      }, 8000);
+    })
+    .catch(function(err) {
+      console.warn('CaesarAI backend error:', err);
+      updateToast(100, '⚠️ CaesarAI unreachable on localhost:8000', 'Start local server to resolve live fields with agy.', true);
+      setTimeout(function() {
+        if (toast && toast.parentElement) {
+          toast.style.opacity = '0';
+          toast.style.transform = 'translateY(-10px)';
+          setTimeout(function() { toast.remove(); }, 400);
+        }
+      }, 7000);
+    });
+
   } catch(err) {
     alert('CaesarAI Autofill Error: ' + err.message);
   }
@@ -808,7 +852,7 @@ export default function AutofillModal({
                     👆 <strong>Drag the button once</strong> directly onto your browser's Bookmarks Bar. It will save as <strong>"⚡ CaesarAI Autofill"</strong>.
                   </p>
                   <p className="text-[11px] text-indigo-300/90 mt-1 bg-indigo-950/40 p-2 rounded-lg border border-indigo-500/20">
-                    💡 <strong>No re-dragging for new jobs!</strong> When you click <em>"Launch Application Page"</em>, your latest tailored answers automatically copy to your clipboard, allowing this one bookmark to fill new jobs every time.
+                    💡 <strong>Universal & Dynamic!</strong> When clicked on any job page (Ashby, Greenhouse, Lever, etc.), this bookmarklet scans the rendered form, consults your local CaesarAI <code>agy</code> engine, displays a floating progress card, fills dropdowns/radios, drafts custom answers, attaches your CV PDF, and auto-saves to your database.
                   </p>
                 </div>
               </div>
