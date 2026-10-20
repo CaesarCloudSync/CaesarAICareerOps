@@ -576,7 +576,8 @@ class NaturalDiscoveryService:
         raw_postings: List[Dict[str, Any]],
         spec: Optional[Dict[str, Any]] = None,
         target_count: int = 50,
-        max_per_company: int = 2
+        max_per_company: int = 2,
+        existing_company_counts: Optional[Dict[str, int]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Combats company monopolization and irrelevant role leakage:
@@ -605,37 +606,18 @@ class NaturalDiscoveryService:
         # Sort candidates by match percentage
         clean_candidates.sort(key=lambda x: x.get("match_percentage", 0), reverse=True)
 
-        # Enforce Per-Company Diversity Cap (Multi-pass to maximize market diversity)
+        # Enforce Strict Per-Company Diversity Cap (Hard limit: never exceed max_per_company)
         selected_roles = []
         company_counts = defaultdict(int)
+        if existing_company_counts:
+            for comp_name, count in existing_company_counts.items():
+                company_counts[comp_name.strip().lower()] = count
 
-        # Pass 1: Up to 2 roles per company
         for role in clean_candidates:
             company = role["company"].strip().lower()
             if company_counts[company] < max_per_company:
                 selected_roles.append(role)
                 company_counts[company] += 1
-                if len(selected_roles) >= target_count:
-                    break
-
-        # Pass 2: Up to 3 roles per company if target count not yet reached
-        if len(selected_roles) < target_count:
-            for role in clean_candidates:
-                if role in selected_roles:
-                    continue
-                company = role["company"].strip().lower()
-                if company_counts[company] < max_per_company + 1:
-                    selected_roles.append(role)
-                    company_counts[company] += 1
-                    if len(selected_roles) >= target_count:
-                        break
-
-        # Pass 3: Fill remaining if still needed
-        if len(selected_roles) < target_count:
-            for role in clean_candidates:
-                if role in selected_roles:
-                    continue
-                selected_roles.append(role)
                 if len(selected_roles) >= target_count:
                     break
 
@@ -865,8 +847,24 @@ class NaturalDiscoveryService:
                 substep_name="Diversity Cap & Queue Sync",
             )
 
-        # 7. Apply diversity cap & dynamic role matching guardrails
-        final_selected = self.filter_and_diversify_roles(raw_candidates, spec=spec, target_count=needed_target, max_per_company=2)
+        # 7. Apply strict diversity cap (max 2/company) factoring in existing queue
+        existing_counts = defaultdict(int)
+        with Session(engine) as session:
+            for item in session.exec(select(PipelineItem)).all():
+                url_m = re.search(r"https?://[^\s|]+", item.raw_text)
+                if url_m and url_m.group(0) in initial_existing_urls:
+                    parts = [p.strip() for p in item.raw_text.split("|")]
+                    if len(parts) >= 2:
+                        comp_name = parts[1].strip().lower()
+                        existing_counts[comp_name] += 1
+
+        final_selected = self.filter_and_diversify_roles(
+            raw_candidates,
+            spec=spec,
+            target_count=needed_target,
+            max_per_company=2,
+            existing_company_counts=existing_counts,
+        )
         selected_urls = {r["url"] for r in final_selected}
 
         # 8. Sync into Database & update pipeline.md (strictly non-destructive: existing inbox items are always preserved)
