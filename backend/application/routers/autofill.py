@@ -62,6 +62,238 @@ async def resolve_live(payload: ResolveLiveRequest):
     )
 
 
+@router.post("/resolve-live-async")
+async def resolve_live_async(payload: ResolveLiveRequest):
+    """
+    Asynchronous Live DOM Form Generation:
+    Receives scraped form fields from browser, creates a real job_id in AutofillBatchTracker,
+    spawns background agy reasoning task, and sets status to 'Application Generated' when complete.
+    """
+    import re
+    detected_company = payload.company or ""
+    detected_role = payload.role or ""
+    url = payload.url or ""
+    page_title = payload.page_title or ""
+
+    if not detected_company or not detected_role:
+        clean_title = re.sub(r"\s*-\s*Careers.*$", "", page_title, flags=re.IGNORECASE)
+        for sep in [" — ", " - ", " | ", " at "]:
+            if sep in clean_title:
+                parts = clean_title.split(sep, 1)
+                if not detected_company:
+                    detected_company = parts[0].strip()
+                if not detected_role:
+                    detected_role = parts[1].strip()
+                break
+        detected_company = detected_company or "Target Company"
+        detected_role = detected_role or "Software Engineer"
+
+    # Find or create application with status 'Application in progress'
+    norm_url = url.strip().lower()
+    norm_comp = detected_company.strip().lower()
+    target_app_id = 0
+
+    with Session(engine) as session:
+        for a in session.exec(select(Application)).all():
+            matches_url = norm_url and norm_url.startswith("http") and (a.url or "").strip().lower() == norm_url
+            matches_comp = norm_comp and (a.company or "").strip().lower() == norm_comp
+            if matches_url or matches_comp:
+                target_app_id = a.id
+                a.status = "Application in progress"
+                session.add(a)
+                session.commit()
+                break
+
+        if not target_app_id:
+            new_app = Application(
+                company=detected_company,
+                role=detected_role,
+                url=url,
+                status="Application in progress",
+                date_applied=date.today().isoformat(),
+            )
+            session.add(new_app)
+            session.commit()
+            session.refresh(new_app)
+            target_app_id = new_app.id
+
+    job = autofill_tracker.create_job(app_ids=[target_app_id])
+    target_name = f"{detected_company} — {detected_role}"
+    job.current_target = target_name
+    job.detail = f"Queued AI contextual reasoning on {len(payload.fields)} live fields with agy..."
+
+    payload_dict = {
+        "app_id": target_app_id,
+        "fields": payload.fields,
+        "url": url,
+        "company": detected_company,
+        "role": detected_role,
+        "page_title": page_title,
+    }
+    asyncio.create_task(autofill_service.run_async_live_resolution(job.job_id, payload_dict))
+
+    return {
+        "status": "queued",
+        "job_id": job.job_id,
+        "job": job.to_dict(),
+        "app_id": target_app_id,
+        "company": detected_company,
+        "role": detected_role,
+    }
+
+
+def _clean_job_url(u: str) -> str:
+    if not u:
+        return ""
+    clean = u.strip().lower().rstrip("/")
+    return clean.split("?")[0].split("#")[0]
+
+
+def _is_url_match(u1: str, u2: str) -> bool:
+    c1 = _clean_job_url(u1)
+    c2 = _clean_job_url(u2)
+    if not c1 or not c2:
+        return False
+    return c1 == c2 or (len(c1) > 15 and c1 in c2) or (len(c2) > 15 and c2 in c1)
+
+
+@router.get("/check-status")
+async def check_autofill_status(
+    url: Optional[str] = "",
+    company: Optional[str] = "",
+    title: Optional[str] = "",
+):
+    """
+    Checks if an application exists for the active tab URL/company,
+    and whether AI answers and DOM actions are already generated and ready for instant autofill.
+    """
+    norm_comp = (company or "").strip().lower()
+
+    if not norm_comp and title:
+        clean_title = re.sub(r"\s*-\s*Careers.*$", "", title, flags=re.IGNORECASE)
+        for sep in [" — ", " - ", " | ", " at "]:
+            if sep in clean_title:
+                parts = clean_title.split(sep, 1)
+                norm_comp = parts[0].strip().lower()
+                break
+
+    with Session(engine) as session:
+        for a in session.exec(select(Application)).all():
+            matches_url = _is_url_match(url, a.url or "")
+            matches_comp = norm_comp and (
+                norm_comp == (a.company or "").strip().lower()
+                or norm_comp in (a.company or "").strip().lower()
+                or (a.company or "").strip().lower() in norm_comp
+            )
+            if matches_url or matches_comp:
+                has_answers = False
+                actions_count = 0
+                answers_count = 0
+                if a.answers:
+                    try:
+                        d = json.loads(a.answers)
+                        if isinstance(d, dict):
+                            actions_count = len(d.get("actions", [])) or d.get("actions_count", 0)
+                            answers_count = len(d.get("answers", []))
+                            has_answers = bool(actions_count or answers_count or d.get("cover_letter"))
+                        elif isinstance(d, list):
+                            answers_count = len(d)
+                            has_answers = len(d) > 0
+                    except Exception:
+                        pass
+
+                return {
+                    "exists": True,
+                    "app_id": a.id,
+                    "company": a.company,
+                    "role": a.role,
+                    "status": a.status,
+                    "has_generated": has_answers or (a.status == "Application Generated"),
+                    "actions_count": actions_count,
+                    "answers_count": answers_count,
+                }
+
+    return {
+        "exists": False,
+        "status": None,
+        "has_generated": False,
+        "actions_count": 0,
+        "answers_count": 0,
+    }
+
+
+class ApplySavedRequest(BaseModel):
+    url: Optional[str] = ""
+    company: Optional[str] = ""
+    role: Optional[str] = ""
+    title: Optional[str] = ""
+
+
+@router.post("/apply-saved")
+async def apply_saved(payload: ApplySavedRequest):
+    """
+    Instant In-Browser Autofill:
+    Retrieves pre-generated actions and answers from SQLite,
+    attaches candidate Master CV PDF Base64, and returns immediately (<200ms) with zero AI latency.
+    """
+    norm_comp = (payload.company or "").strip().lower()
+    if not norm_comp and payload.title:
+        clean_title = re.sub(r"\s*-\s*Careers.*$", "", payload.title, flags=re.IGNORECASE)
+        for sep in [" — ", " - ", " | ", " at "]:
+            if sep in clean_title:
+                parts = clean_title.split(sep, 1)
+                norm_comp = parts[0].strip().lower()
+                break
+
+    cv_payload = autofill_service.get_cv_base64_payload()
+
+    with Session(engine) as session:
+        for a in session.exec(select(Application)).all():
+            matches_url = _is_url_match(payload.url or "", a.url or "")
+            matches_comp = norm_comp and (
+                norm_comp == (a.company or "").strip().lower()
+                or norm_comp in (a.company or "").strip().lower()
+                or (a.company or "").strip().lower() in norm_comp
+            )
+            if matches_url or matches_comp:
+                actions = []
+                answers = []
+                cover_letter = None
+                if a.answers:
+                    try:
+                        d = json.loads(a.answers)
+                        if isinstance(d, dict):
+                            actions = d.get("actions", [])
+                            answers = d.get("answers", [])
+                            cover_letter = d.get("cover_letter")
+                        elif isinstance(d, list):
+                            answers = d
+                    except Exception:
+                        pass
+
+                return {
+                    "status": "success",
+                    "found": True,
+                    "company": a.company,
+                    "role": a.role,
+                    "actions": actions,
+                    "answers": answers,
+                    "cover_letter": cover_letter,
+                    "has_cover_letter": bool(cover_letter),
+                    "cvBase64": cv_payload.get("base64", ""),
+                    "cvFilename": cv_payload.get("filename", "Bob_Hillus_CV.pdf"),
+                }
+
+    return {
+        "status": "not_found",
+        "found": False,
+        "actions": [],
+        "answers": [],
+        "cvBase64": cv_payload.get("base64", ""),
+        "cvFilename": cv_payload.get("filename", "Bob_Hillus_CV.pdf"),
+    }
+
+
 @router.get("/candidate")
 async def get_candidate():
     """Retrieve raw candidate profile and contact details."""

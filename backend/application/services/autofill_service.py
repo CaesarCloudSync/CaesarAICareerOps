@@ -543,6 +543,7 @@ Return ONLY JSON. No conversational text or markdown code fences outside JSON.
 
                 stored_payload = {
                     "answers": answers,
+                    "actions": actions,
                     "cover_letter": cover_letter,
                     "has_cover_letter": bool(cover_letter),
                     "actions_count": len(actions),
@@ -550,7 +551,7 @@ Return ONLY JSON. No conversational text or markdown code fences outside JSON.
                 stored_json = json.dumps(stored_payload)
 
                 if target_app:
-                    target_app.status = "Application in progress"
+                    target_app.status = "Application Generated"
                     target_app.answers = stored_json
                     if not target_app.url and url:
                         target_app.url = url
@@ -561,10 +562,10 @@ Return ONLY JSON. No conversational text or markdown code fences outside JSON.
                         company=detected_company,
                         role=detected_role,
                         url=url or "",
-                        status="Application in progress",
+                        status="Application Generated",
                         score=0.0,
                         date_applied=date.today().isoformat(),
-                        notes="Autofilled via Live In-Browser Bookmarklet",
+                        notes="AI Resolved via Live In-Browser DOM",
                         answers=stored_json,
                     )
                     session.add(new_app)
@@ -633,6 +634,7 @@ Return ONLY JSON. No conversational text or markdown code fences outside JSON.
                 with Session(engine) as session:
                     db_app = session.get(Application, app_id)
                     if db_app:
+                        db_app.status = "Application Generated"
                         db_app.answers = json.dumps(payload_to_store)
                         session.add(db_app)
                         session.commit()
@@ -649,6 +651,46 @@ Return ONLY JSON. No conversational text or markdown code fences outside JSON.
                 job.record_result(app_id, target_name, False, error=str(e))
 
         job.complete()
+
+    async def run_async_live_resolution(self, job_id: str, payload: Dict[str, Any]):
+        """
+        Background worker for asynchronous live DOM resolution:
+        Executes agy contextual reasoning on scraped form fields,
+        stores the result with status 'Application Generated',
+        and updates the job progress so the dashboard shows real-time progress.
+        """
+        job = autofill_tracker.get_job(job_id)
+        if not job:
+            return
+
+        target_name = job.current_target or "Application"
+        job.update_progress(1, target_name, "Contextual AI reasoning with agy on live form fields...")
+
+        try:
+            res = await self.resolve_live_dom(
+                fields=payload.get("fields", []),
+                url=payload.get("url", ""),
+                company=payload.get("company", ""),
+                role=payload.get("role", ""),
+                page_title=payload.get("page_title", ""),
+            )
+
+            actions = res.get("actions", [])
+            answers = res.get("answers", [])
+            has_cov = res.get("has_cover_letter", False)
+
+            job.record_result(
+                app_id=payload.get("app_id", 0),
+                target=target_name,
+                success=True,
+                questions_count=len(answers),
+                has_cover_letter=has_cov,
+            )
+            job.complete()
+            job.detail = f"Generated {len(actions)} DOM actions and {len(answers)} custom answers. Ready for 1-click autofill!"
+        except Exception as e:
+            print(f"[AutofillService] run_async_live_resolution failed: {e}")
+            job.fail(str(e))
 
     async def apply_from_pipeline(
         self,

@@ -6,7 +6,7 @@
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      width: 320px;
+      width: 340px;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       background: #090d16;
       color: #f1f5f9;
@@ -16,8 +16,8 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      margin-bottom: 14px;
-      padding-bottom: 12px;
+      margin-bottom: 12px;
+      padding-bottom: 10px;
       border-bottom: 1px solid #1e293b;
     }
     .logo {
@@ -54,20 +54,26 @@
     }
     .dot-online { background: #10b981; box-shadow: 0 0 6px #10b981; }
     .dot-offline { background: #ef4444; }
+    
     .card {
       background: #0f172a;
       border: 1px solid #1e293b;
       border-radius: 12px;
       padding: 12px;
-      margin-bottom: 14px;
+      margin-bottom: 12px;
+    }
+    .card-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 4px;
     }
     .card-title {
-      font-size: 11px;
+      font-size: 10px;
       text-transform: uppercase;
       letter-spacing: 0.05em;
       color: #64748b;
       font-weight: 700;
-      margin-bottom: 4px;
     }
     .card-val {
       font-size: 12px;
@@ -75,40 +81,116 @@
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      font-weight: 500;
     }
-    .btn-fill {
-      width: 100%;
-      background: linear-gradient(135deg, #10b981, #059669);
-      border: none;
-      color: #ffffff;
-      padding: 12px 16px;
-      border-radius: 10px;
-      font-size: 13px;
+    
+    .app-status-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 10px;
       font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 6px;
+      border: 1px solid transparent;
+    }
+    .app-status-generated {
+      background: rgba(168, 85, 247, 0.18);
+      border-color: rgba(168, 85, 247, 0.5);
+      color: #d8b4fe;
+    }
+    .app-status-progress {
+      background: rgba(245, 158, 11, 0.18);
+      border-color: rgba(245, 158, 11, 0.5);
+      color: #fcd34d;
+    }
+    .app-status-applied {
+      background: rgba(59, 130, 246, 0.18);
+      border-color: rgba(59, 130, 246, 0.5);
+      color: #93c5fd;
+    }
+    .app-status-ready {
+      background: rgba(100, 116, 139, 0.18);
+      border-color: rgba(100, 116, 139, 0.4);
+      color: #94a3b8;
+    }
+
+    .btn-container {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .btn {
+      width: 100%;
+      border: none;
+      padding: 11px 14px;
+      border-radius: 10px;
       cursor: pointer;
       display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-      box-shadow: 0 4px 14px rgba(16, 185, 129, 0.35);
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 2px;
       transition: all 0.2s;
+      text-align: left;
     }
-    .btn-fill:hover {
-      background: linear-gradient(135deg, #059669, #047857);
+    .btn-main {
+      font-size: 13px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .btn-sub {
+      font-size: 10.5px;
+      opacity: 0.85;
+      font-weight: 400;
+    }
+    
+    /* Button 1: Queue AI Generation */
+    .btn-queue {
+      background: linear-gradient(135deg, #4f46e5, #6366f1);
+      color: #ffffff;
+      box-shadow: 0 4px 14px rgba(99, 102, 241, 0.25);
+    }
+    .btn-queue:hover:not(:disabled) {
+      background: linear-gradient(135deg, #4338ca, #4f46e5);
       transform: translateY(-1px);
     }
-    .btn-fill:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-      transform: none;
+
+    /* Button 2: Instant Autofill */
+    .btn-instant {
+      background: linear-gradient(135deg, #059669, #10b981);
+      color: #ffffff;
+      box-shadow: 0 4px 14px rgba(16, 185, 129, 0.3);
     }
+    .btn-instant:hover:not(:disabled) {
+      background: linear-gradient(135deg, #047857, #059669);
+      transform: translateY(-1px);
+    }
+    .btn-instant.highlight {
+      box-shadow: 0 0 0 2px #10b981, 0 6px 18px rgba(16, 185, 129, 0.45);
+      animation: pulse-ring 2s infinite;
+    }
+    @keyframes pulse-ring {
+      0%, 100% { box-shadow: 0 0 0 2px #10b981, 0 4px 14px rgba(16, 185, 129, 0.35); }
+      50% { box-shadow: 0 0 0 3px #34d399, 0 8px 22px rgba(16, 185, 129, 0.55); }
+    }
+
+    .btn:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+      transform: none !important;
+      box-shadow: none !important;
+    }
+
     .footer {
-      margin-top: 12px;
       display: flex;
       justify-content: space-between;
       align-items: center;
       font-size: 11px;
       color: #64748b;
+      padding-top: 6px;
     }
     .kbd {
       background: #1e293b;
@@ -118,12 +200,20 @@
       font-family: monospace;
       color: #94a3b8;
     }
+    .dashboard-link {
+      color: #818cf8;
+      text-decoration: none;
+      font-weight: 500;
+    }
+    .dashboard-link:hover {
+      text-decoration: underline;
+    }
   </style>
 </head>
 <body>
   <div class="header">
     <div class="logo">
-      <span>⚡</span> CaesarAI
+      <span>⚡</span> CaesarAI Autofill
     </div>
     <div id="statusBadge" class="status-badge status-offline">
       <div id="statusDot" class="dot dot-offline"></div>
@@ -132,16 +222,40 @@
   </div>
 
   <div class="card">
-    <div class="card-title">Target Job Page</div>
+    <div class="card-row">
+      <span class="card-title">Target Job Page</span>
+      <span id="appStatusBadge" class="app-status-tag app-status-ready">Ready</span>
+    </div>
     <div id="pageTitle" class="card-val">Detecting active tab...</div>
+    <div id="statusDetail" style="margin-top: 6px; font-size: 11px; color: #94a3b8;">
+      Checking generation status...
+    </div>
   </div>
 
-  <button id="btnAutofill" class="btn-fill" disabled>
-    <span>⚡</span> Auto-Fill Application (agy)
-  </button>
+  <div class="btn-container">
+    <!-- Button 1: Queue AI Generation -->
+    <button id="btnQueue" class="btn btn-queue" disabled>
+      <div class="btn-main">
+        <span>⚡</span> 1. Queue AI Generation (agy)
+      </div>
+      <div class="btn-sub">
+        Scrapes live form & runs reasoning in background
+      </div>
+    </button>
+
+    <!-- Button 2: Instant Autofill -->
+    <button id="btnInstant" class="btn btn-instant" disabled>
+      <div class="btn-main">
+        <span>🎯</span> 2. Instant Autofill Application
+      </div>
+      <div id="btnInstantSub" class="btn-sub">
+        0s instant replay: fills all fields & attaches CV
+      </div>
+    </button>
+  </div>
 
   <div class="footer">
-    <span>Zero-regex AI autofill</span>
+    <a href="http://localhost:8000" target="_blank" class="dashboard-link">Open Dashboard ↗</a>
     <span class="kbd">Alt+Shift+C</span>
   </div>
 

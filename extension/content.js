@@ -1,66 +1,91 @@
-// CaesarAI CareerOps — Live DOM Form Autofill Content Script
-// Zero-regex, Zero-keyword AI contextual autofill with agy
+// CaesarAI CareerOps — Decoupled Live DOM Form Autofill Content Script
+// Zero-regex, Zero-keyword AI contextual reasoning with agy
 
-(async function runCaesarAutofill() {
-  // 1. Render or reuse on-page floating toast progress card
-  let toast = document.getElementById('caesar-autofill-toast');
-  if (toast) toast.remove();
+(function initCaesarContentScript() {
+  if (window.__caesarAutofillLoaded) {
+    return;
+  }
+  window.__caesarAutofillLoaded = true;
 
-  toast = document.createElement('div');
-  toast.id = 'caesar-autofill-toast';
-  toast.style.cssText = [
-    'position: fixed',
-    'top: 20px',
-    'right: 20px',
-    'z-index: 2147483647',
-    'width: 360px',
-    'max-width: calc(100vw - 40px)',
-    'background: #0f172a',
-    'color: #f8fafc',
-    'border: 1px solid #10b981',
-    'border-radius: 14px',
-    'box-shadow: 0 20px 40px rgba(0,0,0,0.6), 0 0 0 1px rgba(16,185,129,0.25)',
-    'font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-    'font-size: 13px',
-    'line-height: 1.4',
-    'padding: 14px 16px',
-    'box-sizing: border-box',
-    'transition: opacity 0.4s, transform 0.4s',
-    'opacity: 1',
-    'transform: translateY(0)',
-  ].join(';');
+  // 1. Toast UI System
+  function showToast({ pct = 0, title = '⚡ CaesarAI Autofill', msg = '', sub = '', isErr = false, autoDismissMs = null }) {
+    let toast = document.getElementById('caesar-autofill-toast');
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = 'caesar-autofill-toast';
+      toast.style.cssText = [
+        'position: fixed',
+        'top: 20px',
+        'right: 20px',
+        'z-index: 2147483647',
+        'width: 360px',
+        'max-width: calc(100vw - 40px)',
+        'background: #0f172a',
+        'color: #f8fafc',
+        'border: 1px solid #10b981',
+        'border-radius: 14px',
+        'box-shadow: 0 20px 40px rgba(0,0,0,0.6), 0 0 0 1px rgba(16,185,129,0.25)',
+        'font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+        'font-size: 13px',
+        'line-height: 1.4',
+        'padding: 14px 16px',
+        'box-sizing: border-box',
+        'transition: opacity 0.4s, transform 0.4s',
+        'opacity: 1',
+        'transform: translateY(0)',
+      ].join(';');
 
-  toast.innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;">
-      <div style="display:flex;align-items:center;gap:6px;font-weight:700;font-size:14px;color:#10b981;">
-        <span style="font-size:16px;">⚡</span> CaesarAI Autofill
-      </div>
-      <button id="caesar-toast-close" style="background:transparent;border:none;color:#94a3b8;font-size:16px;cursor:pointer;padding:2px 6px;line-height:1;border-radius:4px;" title="Close">✕</button>
-    </div>
-    <div id="caesar-toast-msg" style="font-size:12px;color:#e2e8f0;font-weight:500;">🔍 Inspecting application form...</div>
-    <div style="margin-top:10px;height:6px;width:100%;background:#1e293b;border-radius:999px;overflow:hidden;">
-      <div id="caesar-toast-bar" style="height:100%;width:15%;background:#10b981;border-radius:999px;transition:width 0.4s, background 0.4s;"></div>
-    </div>
-    <div id="caesar-toast-sub" style="margin-top:7px;font-size:11px;color:#94a3b8;">Discovering interactive form inputs...</div>
-  `;
+      toast.innerHTML = `
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;">
+          <div id="caesar-toast-title" style="display:flex;align-items:center;gap:6px;font-weight:700;font-size:14px;color:#10b981;">
+            <span>⚡</span> CaesarAI Autofill
+          </div>
+          <button id="caesar-toast-close" style="background:transparent;border:none;color:#94a3b8;font-size:16px;cursor:pointer;padding:2px 6px;line-height:1;border-radius:4px;" title="Close">✕</button>
+        </div>
+        <div id="caesar-toast-msg" style="font-size:12px;color:#e2e8f0;font-weight:500;"></div>
+        <div style="margin-top:10px;height:6px;width:100%;background:#1e293b;border-radius:999px;overflow:hidden;">
+          <div id="caesar-toast-bar" style="height:100%;width:0%;background:#10b981;border-radius:999px;transition:width 0.4s, background 0.4s;"></div>
+        </div>
+        <div id="caesar-toast-sub" style="margin-top:7px;font-size:11px;color:#94a3b8;"></div>
+      `;
 
-  document.body.appendChild(toast);
-  document.getElementById('caesar-toast-close')?.addEventListener('click', () => {
-    toast.remove();
-  });
+      document.body.appendChild(toast);
+      document.getElementById('caesar-toast-close')?.addEventListener('click', () => {
+        dismissToast();
+      });
+    }
 
-  function updateToast(pct, msg, sub, isErr = false) {
-    const bar = document.getElementById('caesar-toast-bar');
+    const titleEl = document.getElementById('caesar-toast-title');
     const msgEl = document.getElementById('caesar-toast-msg');
     const subEl = document.getElementById('caesar-toast-sub');
+    const bar = document.getElementById('caesar-toast-bar');
+
+    if (titleEl) titleEl.innerHTML = title;
+    if (msgEl) msgEl.innerText = msg;
+    if (subEl) subEl.innerText = sub || '';
     if (bar) {
       bar.style.width = pct + '%';
       bar.style.background = isErr ? '#ef4444' : '#10b981';
     }
-    if (msgEl) msgEl.innerText = msg;
-    if (subEl) subEl.innerText = sub || '';
+
+    if (autoDismissMs) {
+      if (window.__caesarToastDismissTimer) clearTimeout(window.__caesarToastDismissTimer);
+      window.__caesarToastDismissTimer = setTimeout(() => {
+        dismissToast();
+      }, autoDismissMs);
+    }
   }
 
+  function dismissToast() {
+    const toast = document.getElementById('caesar-autofill-toast');
+    if (toast) {
+      toast.style.opacity = '0';
+      toast.style.transform = 'translateY(-10px)';
+      setTimeout(() => toast.remove(), 400);
+    }
+  }
+
+  // 2. DOM Field Value Setter with React Controlled Component Support
   function setFieldValue(el, val) {
     if (!el || val === undefined || val === null) return;
     el.focus();
@@ -137,92 +162,59 @@
     }
   }
 
-  // 2. Extract live interactive form elements
-  const fields = [];
-  const processedRadios = new Set();
-  const els = Array.from(document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]), textarea, select'));
+  // 3. Extract Live Interactive Form Elements
+  function extractFormFields() {
+    const fields = [];
+    const processedRadios = new Set();
+    const els = Array.from(document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]), textarea, select'));
 
-  els.forEach((el) => {
-    const id = el.id || '';
-    const name = el.name || '';
-    const type = (el.type || el.tagName).toLowerCase();
-    const tag = el.tagName.toLowerCase();
+    els.forEach((el) => {
+      const id = el.id || '';
+      const name = el.name || '';
+      const type = (el.type || el.tagName).toLowerCase();
+      const tag = el.tagName.toLowerCase();
 
-    if (type === 'radio') {
-      if (name && processedRadios.has(name)) return;
-      if (name) processedRadios.add(name);
-    }
+      if (type === 'radio') {
+        if (name && processedRadios.has(name)) return;
+        if (name) processedRadios.add(name);
+      }
 
-    const label = getFieldLabel(el);
-    const options = [];
-    if (tag === 'select') {
-      Array.from(el.options || []).forEach((opt) => {
-        const txt = (opt.text || opt.value || '').trim();
-        if (txt) options.push(txt);
+      const label = getFieldLabel(el);
+      const options = [];
+      if (tag === 'select') {
+        Array.from(el.options || []).forEach((opt) => {
+          const txt = (opt.text || opt.value || '').trim();
+          if (txt) options.push(txt);
+        });
+      }
+
+      let selector = '';
+      if (id) {
+        try { selector = '#' + CSS.escape(id); } catch (e) {}
+      } else if (name) {
+        try {
+          selector = tag + '[name="' + CSS.escape(name) + '"]' + (type === 'radio' ? '[value="' + CSS.escape(el.value) + '"]' : '');
+        } catch (e) {}
+      }
+
+      fields.push({
+        id,
+        name,
+        tag,
+        type,
+        label,
+        placeholder: el.placeholder || '',
+        options,
+        selector,
       });
-    }
-
-    let selector = '';
-    if (id) {
-      try { selector = '#' + CSS.escape(id); } catch (e) {}
-    } else if (name) {
-      try {
-        selector = tag + '[name="' + CSS.escape(name) + '"]' + (type === 'radio' ? '[value="' + CSS.escape(el.value) + '"]' : '');
-      } catch (e) {}
-    }
-
-    fields.push({
-      id,
-      name,
-      tag,
-      type,
-      label,
-      placeholder: el.placeholder || '',
-      options,
-      selector,
-    });
-  });
-
-  updateToast(30, `🔍 Discovered ${fields.length} form fields`, 'Sending rendered DOM to CaesarAI engine...');
-
-  // 3. Post to CaesarAI backend (Zero-CSP through extension host permissions)
-  const reqBody = {
-    url: window.location.href,
-    page_title: document.title,
-    fields,
-  };
-
-  updateToast(65, '🤖 agy: Resolving dropdowns & drafting custom answers... (0s)', 'Reasoning with Candidate Profile & CV...');
-
-  const startTs = Date.now();
-  const timerInterval = setInterval(() => {
-    const elapsed = Math.round((Date.now() - startTs) / 1000);
-    const dynamicPct = Math.min(94, 65 + Math.round(elapsed * 0.7));
-    updateToast(
-      dynamicPct,
-      `🤖 agy: Reasoning & drafting custom answers... (${elapsed}s)`,
-      'Grounding custom essay questions and profile in your CV...'
-    );
-  }, 1000);
-
-  try {
-    const res = await fetch('http://localhost:8000/api/autofill/resolve-live', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(reqBody),
     });
 
-    clearInterval(timerInterval);
+    return fields;
+  }
 
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-    }
-
-    const data = await res.json();
+  // 4. Execute DOM Actions Plan & Attach CV PDF
+  function executeActions(actions = [], cvBase64 = '', cvFilename = '') {
     let count = 0;
-    const actions = data.actions || [];
-
-    // Execute actions determined solely by agy with per-action safety
     actions.forEach((act) => {
       try {
         let el = null;
@@ -271,33 +263,153 @@
       }
     });
 
-    // Attach CV PDF safely
+    // Attach CV PDF
     try {
-      const cvAttached = attachCvPdf(data.cvBase64, data.cvFilename);
+      const cvAttached = attachCvPdf(cvBase64, cvFilename);
       if (cvAttached) count++;
     } catch (cvErr) {
       console.warn('CaesarAI CV attach warning:', cvErr);
     }
 
-    updateToast(100, `✅ Done! ${count} fields filled & CV attached!`, '💡 Human review: Review answers before clicking Submit.');
-
-    setTimeout(() => {
-      if (toast && toast.parentElement) {
-        toast.style.opacity = '0';
-        toast.style.transform = 'translateY(-10px)';
-        setTimeout(() => toast.remove(), 400);
-      }
-    }, 8000);
-  } catch (err) {
-    clearInterval(timerInterval);
-    console.error('CaesarAI extension error:', err);
-    updateToast(100, '⚠️ CaesarAI Engine Unreachable', 'Ensure CaesarAI is running on http://localhost:8000', true);
-    setTimeout(() => {
-      if (toast && toast.parentElement) {
-        toast.style.opacity = '0';
-        toast.style.transform = 'translateY(-10px)';
-        setTimeout(() => toast.remove(), 400);
-      }
-    }, 6000);
+    return count;
   }
+
+  // 5. Asynchronous Queue Action (Button 1)
+  async function handleQueueGeneration() {
+    showToast({
+      pct: 35,
+      title: '<span>⚡</span> CaesarAI Queueing',
+      msg: '🔍 Extracting live form elements...',
+      sub: 'Preparing DOM fields for background agy reasoning...',
+    });
+
+    const fields = extractFormFields();
+    showToast({
+      pct: 65,
+      title: '<span>⚡</span> CaesarAI Queueing',
+      msg: `Discovered ${fields.length} form inputs`,
+      sub: 'Dispatching non-blocking background job...',
+    });
+
+    try {
+      const res = await fetch('http://localhost:8000/api/autofill/resolve-live-async', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: window.location.href,
+          page_title: document.title,
+          fields,
+        }),
+      });
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+      }
+
+      const data = await res.json();
+      showToast({
+        pct: 100,
+        title: '<span>✅</span> Queued in Background!',
+        msg: `Job #${data.job_id} running in background`,
+        sub: 'Status: "Application in progress". You can freely navigate away anytime!',
+        autoDismissMs: 6500,
+      });
+
+      return { success: true, job_id: data.job_id };
+    } catch (err) {
+      console.error('Failed to queue autofill:', err);
+      showToast({
+        pct: 100,
+        title: '<span>⚠️</span> Queueing Error',
+        msg: 'Failed to contact CaesarAI engine',
+        sub: err.message,
+        isErr: true,
+        autoDismissMs: 6000,
+      });
+      return { success: false, error: err.message };
+    }
+  }
+
+  // 6. Instant Autofill Action (Button 2)
+  async function handleInstantAutofill() {
+    showToast({
+      pct: 30,
+      title: '<span>🎯</span> CaesarAI Instant Fill',
+      msg: '⚡ Fetching pre-generated answers & DOM actions...',
+      sub: 'Querying local SQLite cache (<100ms)...',
+    });
+
+    try {
+      const res = await fetch('http://localhost:8000/api/autofill/apply-saved', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: window.location.href,
+          title: document.title,
+        }),
+      });
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+      }
+
+      const data = await res.json();
+
+      if (!data.found || (!data.actions?.length && !data.answers?.length)) {
+        showToast({
+          pct: 100,
+          title: '<span>⚠️</span> No Pre-Generated Answers',
+          msg: 'Answers not found for this page yet',
+          sub: 'Click "1. Queue AI Generation (agy)" to generate them first!',
+          isErr: true,
+          autoDismissMs: 6500,
+        });
+        return { success: false, error: 'not_found' };
+      }
+
+      showToast({
+        pct: 75,
+        title: '<span>🎯</span> CaesarAI Instant Fill',
+        msg: `Injecting ${data.actions.length} pre-generated actions...`,
+        sub: 'Filling form fields & attaching Master CV PDF...',
+      });
+
+      const count = executeActions(data.actions, data.cvBase64, data.cvFilename);
+
+      showToast({
+        pct: 100,
+        title: '<span>✅</span> Instant Autofill Applied!',
+        msg: `Successfully filled ${count} fields & attached CV!`,
+        sub: '💡 Human Review: Verify answers before clicking Submit.',
+        autoDismissMs: 7000,
+      });
+
+      return { success: true, count };
+    } catch (err) {
+      console.error('Instant autofill failed:', err);
+      showToast({
+        pct: 100,
+        title: '<span>⚠️</span> Autofill Error',
+        msg: 'Failed to execute instant autofill',
+        sub: err.message,
+        isErr: true,
+        autoDismissMs: 6000,
+      });
+      return { success: false, error: err.message };
+    }
+  }
+
+  // 7. Listen for messages from popup or background worker
+  chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.action === 'caesar_queue_generation') {
+      handleQueueGeneration().then(sendResponse);
+      return true; // Keep channel open for async response
+    } else if (request.action === 'caesar_instant_autofill') {
+      handleInstantAutofill().then(sendResponse);
+      return true; // Keep channel open for async response
+    }
+  });
+
+  window.__caesarQueue = handleQueueGeneration;
+  window.__caesarInstant = handleInstantAutofill;
 })();

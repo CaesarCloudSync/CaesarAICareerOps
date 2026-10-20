@@ -85,8 +85,10 @@ export default function ApplicationsTable({ applications = [], onStatusChange, o
       }
     };
     checkActiveJobs();
+    const interval = setInterval(checkActiveJobs, 2500);
     return () => {
       isMounted = false;
+      clearInterval(interval);
     };
   }, []);
 
@@ -279,7 +281,39 @@ export default function ApplicationsTable({ applications = [], onStatusChange, o
     return 'bg-slate-800 text-slate-400 border-slate-700';
   };
 
-  const statusOptions = ['Application in progress', 'Evaluated', 'Applied', 'Interviewing', 'Offer', 'Rejected', 'Archived'];
+  const getStatusBadgeClass = (status) => {
+    switch (status) {
+      case 'Application Generated':
+        return 'bg-purple-950/80 text-purple-200 border-purple-500/60 shadow-sm shadow-purple-900/30 hover:border-purple-400 font-semibold';
+      case 'Application in progress':
+        return 'bg-amber-950/80 text-amber-300 border-amber-500/60 shadow-sm shadow-amber-900/30 hover:border-amber-400 animate-pulse';
+      case 'Applied':
+        return 'bg-blue-950/80 text-blue-300 border-blue-500/60 shadow-sm shadow-blue-900/30 hover:border-blue-400 font-medium';
+      case 'Evaluated':
+        return 'bg-indigo-950/80 text-indigo-300 border-indigo-500/60 shadow-sm shadow-indigo-900/30 hover:border-indigo-400 font-medium';
+      case 'Interviewing':
+        return 'bg-emerald-950/80 text-emerald-300 border-emerald-500/60 shadow-sm shadow-emerald-900/30 hover:border-emerald-400 font-semibold';
+      case 'Offer':
+        return 'bg-yellow-950/80 text-yellow-300 border-yellow-500/60 shadow-sm shadow-yellow-900/30 hover:border-yellow-400 font-bold';
+      case 'Rejected':
+        return 'bg-rose-950/80 text-rose-300 border-rose-500/60 shadow-sm shadow-rose-900/30 hover:border-rose-400 font-medium';
+      case 'Archived':
+        return 'bg-slate-900 text-slate-400 border-slate-700/80 hover:border-slate-600 font-normal';
+      default:
+        return 'bg-slate-950 text-slate-300 border-slate-700/60';
+    }
+  };
+
+  const statusOptions = [
+    'Application in progress',
+    'Application Generated',
+    'Evaluated',
+    'Applied',
+    'Interviewing',
+    'Offer',
+    'Rejected',
+    'Archived',
+  ];
 
   const handleDeleteApplication = (id, company, role) => {
     const roleClean = cleanRole(role);
@@ -782,15 +816,24 @@ export default function ApplicationsTable({ applications = [], onStatusChange, o
                       </span>
                     </td>
                     <td className="py-3 px-4">
-                      <select
-                        value={app.status}
-                        onChange={(e) => onStatusChange(app.company, app.role, e.target.value)}
-                        className="bg-slate-950 border border-slate-700/60 rounded px-2 py-1 text-xs text-slate-300 focus:outline-none focus:border-indigo-500"
-                      >
-                        {statusOptions.map((st) => (
-                          <option key={st} value={st}>{st}</option>
-                        ))}
-                      </select>
+                      <div className="relative inline-flex items-center">
+                        <select
+                          value={app.status}
+                          onChange={(e) => onStatusChange(app.company, app.role, e.target.value)}
+                          className={`appearance-none text-xs px-2.5 py-1 pr-6 rounded-lg border transition-all cursor-pointer focus:outline-none focus:ring-1 focus:ring-indigo-500/50 ${getStatusBadgeClass(app.status)}`}
+                        >
+                          {statusOptions.map((st) => (
+                            <option key={st} value={st} className="bg-slate-900 text-slate-200">
+                              {st}
+                            </option>
+                          ))}
+                        </select>
+                        <div className="pointer-events-none absolute right-2 text-current opacity-60">
+                          <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 9l-7 7-7-7" />
+                          </svg>
+                        </div>
+                      </div>
                     </td>
                     <td className="py-3 px-4 font-mono text-slate-400">{app.date_applied || '—'}</td>
                     <td className="py-3 px-4 text-right">
