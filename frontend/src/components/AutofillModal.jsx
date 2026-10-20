@@ -18,6 +18,9 @@ import {
   Trash2,
   RotateCcw,
   AlertTriangle,
+  Download,
+  Folder,
+  Zap,
 } from 'lucide-react';
 import PipelineProgressCard from './PipelineProgressCard';
 
@@ -41,7 +44,8 @@ export default function AutofillModal({
   const [cvData, setCvData] = useState({ filename: 'Bob_Hillus_CV.pdf', base64: '' });
   const [copiedScript, setCopiedScript] = useState(false);
   const [copiedField, setCopiedField] = useState(null);
-  const [activeTab, setActiveTab] = useState('profile'); // 'profile' | 'bookmarklet' | 'answers'
+  const [copiedExtensionPath, setCopiedExtensionPath] = useState(false);
+  const [activeTab, setActiveTab] = useState('profile'); // 'profile' | 'extension' | 'bookmarklet' | 'answers'
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [clearingAgy, setClearingAgy] = useState(false);
 
@@ -743,15 +747,15 @@ export default function AutofillModal({
 
           <button
             type="button"
-            onClick={() => setActiveTab('bookmarklet')}
+            onClick={() => setActiveTab('extension')}
             className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors ${
-              activeTab === 'bookmarklet'
+              activeTab === 'extension' || activeTab === 'bookmarklet'
                 ? 'bg-indigo-600 text-white shadow-sm'
                 : 'bg-slate-800/80 text-slate-400 hover:text-slate-200'
             }`}
           >
-            <Bookmark className="w-3.5 h-3.5" />
-            <span>⚡ 1-Click Bookmarklet</span>
+            <Zap className="w-3.5 h-3.5 text-emerald-400" />
+            <span>⚡ Chrome Extension & Autofill</span>
           </button>
 
           <button
@@ -971,37 +975,73 @@ export default function AutofillModal({
             </div>
           ) : (
             <div className="space-y-4 p-2">
-              <div className="p-3.5 rounded-xl bg-gradient-to-r from-indigo-950/40 to-slate-900 border border-indigo-500/30 space-y-2">
-                <div className="font-bold text-white text-xs flex items-center gap-2">
-                  <Bookmark className="w-4 h-4 text-indigo-400" />
-                  <span>One-Time Setup: Universal Bookmarklet</span>
+              {/* Primary: CaesarAI Chrome Extension (Zero-CSP) */}
+              <div className="p-4 rounded-xl bg-gradient-to-r from-emerald-950/40 via-indigo-950/30 to-slate-900 border border-emerald-500/40 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="font-bold text-white text-sm flex items-center gap-2">
+                    <span className="text-emerald-400 text-base">⚡</span>
+                    <span>CaesarAI Chrome Extension (Zero-CSP Guaranteed)</span>
+                  </div>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                    Recommended
+                  </span>
                 </div>
-                <p className="text-slate-300 leading-relaxed text-xs">
-                  Drag the button below directly into your browser's Bookmarks Bar. When you are on any job application (Ashby, Greenhouse, Lever, Workable), click it once to autofill your answers and profile in 1 second!
+
+                <p className="text-slate-300 text-xs leading-relaxed">
+                  Bypasses 100% of Content Security Policy (CSP) and Mixed-Content restrictions on Greenhouse, Ashby, Lever, and Workday. Once loaded into Chrome, click the toolbar icon or press <kbd className="bg-slate-800 text-emerald-300 px-1.5 py-0.5 rounded font-mono text-[10px] border border-slate-700">Alt+Shift+C</kbd> on any application page to trigger live AI form resolution.
                 </p>
-                <div className="pt-2">
+
+                <div className="flex flex-wrap items-center gap-2.5 pt-1">
                   <a
-                    href={getBookmarkletHref()}
-                    className="inline-flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-bold rounded-xl shadow-lg shadow-indigo-600/30 cursor-grab active:cursor-grabbing text-sm transition-transform hover:scale-[1.02]"
-                    title="Drag this button to your browser Bookmarks Bar"
+                    href="/api/autofill/extension.zip"
+                    download="caesarai-autofill-extension.zip"
+                    className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-bold rounded-xl shadow-md shadow-emerald-950/40 text-xs transition-all hover:scale-[1.02]"
                   >
-                    <span>⚡ CaesarAI Autofill</span>
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Download Extension .ZIP</span>
                   </a>
-                  <p className="text-[11px] text-slate-400 mt-2">
-                    👆 <strong>Drag the button once</strong> directly onto your browser's Bookmarks Bar. It will save as <strong>"⚡ CaesarAI Autofill"</strong>.
-                  </p>
-                  <p className="text-[11px] text-indigo-300/90 mt-1 bg-indigo-950/40 p-2 rounded-lg border border-indigo-500/20">
-                    💡 <strong>Universal & Dynamic!</strong> When clicked on any job page (Ashby, Greenhouse, Lever, etc.), this bookmarklet scans the rendered form, consults your local CaesarAI <code>agy</code> engine, displays a floating progress card, fills dropdowns/radios, drafts custom answers, attaches your CV PDF, and auto-saves to your database.
-                  </p>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText('/home/amari/Desktop/CaesarAICareerOps/extension');
+                      setCopiedExtensionPath(true);
+                      setTimeout(() => setCopiedExtensionPath(false), 2500);
+                    }}
+                    className="inline-flex items-center gap-2 px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium rounded-xl border border-slate-700 text-xs transition-colors"
+                  >
+                    <Folder className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>{copiedExtensionPath ? 'Path Copied!' : 'Copy Extension Folder Path'}</span>
+                  </button>
+                </div>
+
+                <div className="p-3 bg-slate-950/70 border border-slate-800/80 rounded-lg space-y-1.5 text-[11px] text-slate-300">
+                  <div className="font-semibold text-white text-xs">🚀 30-Second Chrome Installation:</div>
+                  <ol className="list-decimal list-inside space-y-1 text-slate-400">
+                    <li>Open <code className="text-emerald-300 select-all">chrome://extensions</code> in a new tab.</li>
+                    <li>Toggle <strong className="text-slate-200">Developer mode</strong> (switch in top-right corner) to ON.</li>
+                    <li>Click <strong className="text-slate-200">Load unpacked</strong> and select the <code className="text-indigo-300 select-all">extension</code> folder.</li>
+                  </ol>
                 </div>
               </div>
 
-              <div className="p-3 bg-slate-950/80 border border-slate-800 rounded-xl space-y-2">
-                <div className="text-xs font-semibold text-slate-300">
-                  Alternative: Direct Console Run
+              {/* Secondary: Bookmarklet Accordion */}
+              <div className="p-3 bg-slate-950/70 border border-slate-800 rounded-xl space-y-2">
+                <div className="text-xs font-semibold text-slate-300 flex items-center justify-between">
+                  <span className="flex items-center gap-1.5">
+                    <Bookmark className="w-3.5 h-3.5 text-slate-400" />
+                    <span>Alternative: Universal Bookmarklet</span>
+                  </span>
+                  <a
+                    href={getBookmarkletHref()}
+                    className="px-3 py-1 bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 font-semibold rounded-lg border border-indigo-500/30 text-[11px] cursor-grab active:cursor-grabbing"
+                    title="Drag to Bookmarks Bar"
+                  >
+                    <span>⚡ Drag Bookmarklet</span>
+                  </a>
                 </div>
-                <p className="text-[11px] text-slate-400">
-                  If you prefer not using bookmarks, click <strong>"Copy Autofill Script"</strong> below, open DevTools on the application page (<kbd className="bg-slate-800 px-1 py-0.5 rounded font-mono text-[10px]">F12</kbd> or <kbd className="bg-slate-800 px-1 py-0.5 rounded font-mono text-[10px]">Ctrl+Shift+J</kbd>), and press <kbd className="bg-slate-800 px-1 py-0.5 rounded font-mono text-[10px]">Enter</kbd>.
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  Drag the button to your Bookmarks Bar. Note: Some strict job boards (e.g. Greenhouse) block bookmarklet network calls via CSP. Use the Chrome Extension above for guaranteed zero-block execution.
                 </p>
               </div>
             </div>

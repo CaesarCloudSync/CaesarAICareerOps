@@ -437,3 +437,44 @@ async def get_saved_answers(
                     pass
 
     return {"found": False, "answers": [], "cover_letter": None, "has_cover_letter": False}
+
+
+@router.get("/extension-info")
+async def get_extension_info():
+    """Returns absolute path to the local extension folder for direct loading in Chrome."""
+    from backend.application.settings import ROOT_DIR
+    ext_dir = ROOT_DIR / "extension"
+    return {
+        "path": str(ext_dir),
+        "exists": ext_dir.exists(),
+        "files": [f.name for f in ext_dir.iterdir() if f.is_file()] if ext_dir.exists() else [],
+    }
+
+
+@router.get("/extension.zip")
+async def download_extension_zip():
+    """Packages the extension/ folder on the fly and streams a downloadable zip file."""
+    import io
+    import zipfile
+    from fastapi.responses import Response
+    from backend.application.settings import ROOT_DIR
+
+    ext_dir = ROOT_DIR / "extension"
+    if not ext_dir.exists():
+        raise HTTPException(status_code=404, detail="Extension directory not found")
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        for file_path in ext_dir.rglob("*"):
+            if file_path.is_file():
+                arcname = file_path.relative_to(ext_dir)
+                zip_file.write(file_path, arcname)
+
+    buffer.seek(0)
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": 'attachment; filename="caesarai-autofill-extension.zip"',
+        },
+    )
