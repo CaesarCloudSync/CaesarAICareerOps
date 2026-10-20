@@ -99,11 +99,82 @@ class SQLModelRepository(BaseRepository):
         with Session(engine) as session:
             return session.get(Application, app_id)
 
+    def _sync_applications_md(self, session: Session):
+        """Synchronizes data/applications.md tracker file with all current database Application records."""
+        try:
+            apps_md = self.career_ops_dir / "data" / "applications.md"
+            if not apps_md.parent.exists():
+                return
+            all_apps = session.exec(select(Application).order_by(Application.id)).all()
+            header = (
+                "# Applications Tracker\n\n"
+                "| # | Date | Company | Via | Role | Score | Status | PDF | Report | Notes |\n"
+                "|---|------|---------|-----|------|-------|--------|-----|--------|-------|\n"
+            )
+            rows = []
+            for a in all_apps:
+                rep_path = a.report_path or ""
+                rep_name = Path(rep_path).name if rep_path else ""
+                rep_link = f"[Report]({rep_path})" if rep_path else ""
+                pdf_name = rep_name.replace(".md", ".pdf") if rep_name else ""
+                pdf_link = f"[PDF](output/{pdf_name})" if pdf_name else ""
+                notes = a.notes or ""
+                rows.append(
+                    f"| {a.num} | {a.date_applied} | {a.company} | direct | {a.role} | {a.score:.1f}/5.0 | {a.status} | {pdf_link} | {rep_link} | {notes} |\n"
+                )
+            apps_md.write_text(header + "".join(rows), encoding="utf-8")
+        except Exception as e:
+            print(f"[SQLModelRepository] Failed to sync applications.md: {e}")
+
     async def create_application(self, app_data: ApplicationCreate) -> Application:
         with Session(engine) as session:
+            norm_company = (app_data.company or "").strip().lower()
+            norm_role = (app_data.role or "").strip().lower()
+            norm_role_clean = re.sub(r"\s+evaluation$", "", norm_role, flags=re.IGNORECASE).strip()
+            norm_url = (app_data.url or "").strip().lower()
+
+            existing_app = None
+            all_apps = session.exec(select(Application)).all()
+            for existing in all_apps:
+                e_comp = (existing.company or "").strip().lower()
+                e_role = (existing.role or "").strip().lower()
+                e_role_clean = re.sub(r"\s+evaluation$", "", e_role, flags=re.IGNORECASE).strip()
+                e_url = (existing.url or "").strip().lower()
+
+                # Match by URL if valid http link
+                if norm_url and norm_url.startswith("http") and e_url == norm_url:
+                    existing_app = existing
+                    break
+
+                # Match by Company and Role
+                if e_comp and norm_company and (e_comp == norm_company or e_comp in norm_company or norm_company in e_comp):
+                    if norm_role_clean and (e_role_clean == norm_role_clean or norm_role_clean in e_role_clean or e_role_clean in norm_role_clean):
+                        existing_app = existing
+                        break
+
+            today_str = app_data.date_applied or date.today().isoformat()
+
+            if existing_app:
+                # Update existing application record in place rather than creating a duplicate
+                existing_app.score = app_data.score
+                if app_data.report_path:
+                    existing_app.report_path = app_data.report_path
+                if app_data.url and not existing_app.url:
+                    existing_app.url = app_data.url
+                if not existing_app.status or existing_app.status.lower() == "evaluated":
+                    existing_app.status = app_data.status or "Evaluated"
+                existing_app.date_applied = today_str
+                if app_data.notes:
+                    existing_app.notes = app_data.notes
+
+                session.add(existing_app)
+                session.commit()
+                session.refresh(existing_app)
+                self._sync_applications_md(session)
+                return existing_app
+
             count = session.exec(select(func.count(Application.id))).one()
             num_str = f"{count + 1:03d}"
-            today_str = app_data.date_applied or date.today().isoformat()
 
             app = Application(
                 num=num_str,
@@ -120,21 +191,7 @@ class SQLModelRepository(BaseRepository):
             session.commit()
             session.refresh(app)
 
-            # Sync immediately with data/applications.md tracker table if exists
-            apps_md = self.career_ops_dir / "data" / "applications.md"
-            if apps_md.exists():
-                content = apps_md.read_text(encoding="utf-8", errors="replace")
-                rep_path = app_data.report_path or ""
-                rep_name = Path(rep_path).name if rep_path else ""
-                if not (rep_name and rep_name in content):
-                    rep_link = f"[Report]({rep_path})" if rep_path else ""
-                    pdf_name = rep_name.replace(".md", ".pdf") if rep_name else ""
-                    pdf_link = f"[PDF](output/{pdf_name})" if pdf_name else ""
-                    row = f"| {num_str} | {today_str} | {app_data.company} | direct | {app_data.role} | {app_data.score:.1f}/5.0 | {app_data.status} | {pdf_link} | {rep_link} | {app_data.notes or ''} |\n"
-                    if not content.endswith("\n"):
-                        content += "\n"
-                    apps_md.write_text(content + row, encoding="utf-8")
-
+            self._sync_applications_md(session)
             return app
 
     async def update_application_status(self, company: str, role: str, new_status: str) -> bool:
@@ -150,6 +207,7 @@ class SQLModelRepository(BaseRepository):
                 a.status = new_status
                 session.add(a)
             session.commit()
+            self._sync_applications_md(session)
             return True
 
     async def delete_application(self, app_id: int) -> bool:
@@ -178,6 +236,7 @@ class SQLModelRepository(BaseRepository):
 
             session.delete(app)
             session.commit()
+            self._sync_applications_md(session)
             return True
 
     async def delete_all_applications(self) -> int:
