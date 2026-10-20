@@ -6,6 +6,7 @@ export default function Navbar({ activeTab, setActiveTab, stats, health, onOpenA
 
   const tabs = [
     { id: 'pipeline', label: `📥 Pipeline Inbox (${stats.pipeline_inbox_count || 0})` },
+    { id: 'schedules', label: '⏰ Pipeline Schedules' },
     { id: 'tracker', label: '📊 Applications' },
     { id: 'evaluator', label: '⚡ Job Evaluator' },
     { id: 'reports', label: `📄 Reports & PDFs (${stats.total_reports || 0})` },

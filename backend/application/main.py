@@ -16,15 +16,19 @@ from backend.application.routers import (
     pdfs_router,
     auth_router,
     settings_router,
+    schedules_router,
 )
-
+from backend.application.services.scheduler_service import scheduler_service
+import asyncio
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Initialize SQLModel database on startup (works for SQLite, Supabase, Cloud SQL)
     init_database()
+    scheduler_task = asyncio.create_task(scheduler_service.run_loop())
     yield
+    scheduler_task.cancel()
 
 
 app = FastAPI(
@@ -53,6 +57,7 @@ app.include_router(reports_router)
 app.include_router(pdfs_router)
 app.include_router(auth_router)
 app.include_router(settings_router)
+app.include_router(schedules_router)
 
 # Mount generated PDF output directory
 career_ops_output = BACKEND_DIR / "career-ops" / "output"

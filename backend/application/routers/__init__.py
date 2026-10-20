@@ -6,6 +6,7 @@ from backend.application.routers.reports import router as reports_router
 from backend.application.routers.pdfs import router as pdfs_router
 from backend.application.routers.auth import router as auth_router
 from backend.application.routers.settings import router as settings_router
+from backend.application.routers.schedules import router as schedules_router
 
 __all__ = [
     "applications_router",
@@ -16,4 +17,5 @@ __all__ = [
     "pdfs_router",
     "auth_router",
     "settings_router",
+    "schedules_router",
 ]

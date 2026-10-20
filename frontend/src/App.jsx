@@ -7,6 +7,7 @@ import PipelineInbox from './components/PipelineInbox';
 import ReportsViewer from './components/ReportsViewer';
 import CvEditor from './components/CvEditor';
 import DiscoverySettingsView from './components/DiscoverySettingsView';
+import ScheduleManager from './components/ScheduleManager';
 import AgyAuthModal from './components/AgyAuthModal';
 
 export default function App() {
@@ -108,6 +109,8 @@ export default function App() {
             onRefresh={loadData}
           />
         )}
+
+        {activeTab === 'schedules' && <ScheduleManager />}
 
         {activeTab === 'reports' && (
           <ReportsViewer

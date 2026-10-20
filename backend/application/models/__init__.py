@@ -33,6 +33,12 @@ from backend.application.models.settings_model import (
     ExpandCompaniesRequest,
 )
 
+from backend.application.models.schedule import (
+    ScheduleTask,
+    ScheduleCreateRequest,
+    ScheduleUpdateRequest,
+)
+
 __all__ = [
     "Application",
     "ApplicationCreate",
@@ -58,4 +64,7 @@ __all__ = [
     "CandidateProfileData",
     "DiscoverJobsRequest",
     "ExpandCompaniesRequest",
+    "ScheduleTask",
+    "ScheduleCreateRequest",
+    "ScheduleUpdateRequest",
 ]
