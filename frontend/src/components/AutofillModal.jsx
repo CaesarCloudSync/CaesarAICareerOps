@@ -15,6 +15,8 @@ import {
   ArrowRight,
   Clock,
   Save,
+  Trash2,
+  RotateCcw,
 } from 'lucide-react';
 
 export default function AutofillModal({
@@ -24,12 +26,14 @@ export default function AutofillModal({
   onApplicationCreated,
 }) {
   const [loading, setLoading] = useState(false);
-  const [markingInProgress, setMarkingInProgress] = useState(false);
   const [markedInProgress, setMarkedInProgress] = useState(false);
   const [savingAnswers, setSavingAnswers] = useState(false);
   const [savedAnswersSuccess, setSavedAnswersSuccess] = useState(false);
   const [profile, setProfile] = useState({});
   const [answers, setAnswers] = useState([]);
+  const [coverLetter, setCoverLetter] = useState('');
+  const [hasCoverLetter, setHasCoverLetter] = useState(false);
+  const [copiedCoverLetter, setCopiedCoverLetter] = useState(false);
   const [cvData, setCvData] = useState({ filename: 'Bob_Hillus_CV.pdf', base64: '' });
   const [copiedScript, setCopiedScript] = useState(false);
   const [copiedField, setCopiedField] = useState(null);
@@ -39,11 +43,33 @@ export default function AutofillModal({
   const role = initialData.role || initialData.title || '';
   const url = initialData.url || '';
 
-  // Initialize modal state on open: fetch CV base64, candidate profile, and saved answers if available
+  // Initialize modal state on open:
+  // 1. Automatically update application to "Application in progress"
+  // 2. Fetch CV base64, candidate profile, and saved answers/cover letter
   useEffect(() => {
     if (!isOpen) return;
 
-    setMarkedInProgress(initialData.status === 'Application in progress');
+    // Automatically set application as "Application in progress" in the background
+    if (company || role || url) {
+      fetch('/api/applications', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          company: company || 'Target Company',
+          role: role || 'Target Role',
+          status: 'Application in progress',
+          url: url || '',
+          date_applied: new Date().toISOString().split('T')[0],
+        }),
+      })
+        .then((res) => {
+          if (res.ok) {
+            setMarkedInProgress(true);
+            onApplicationCreated?.();
+          }
+        })
+        .catch((err) => console.error('Failed to auto-set application in progress:', err));
+    }
 
     // Fetch candidate CV base64 for reliable zero-CSP upload
     fetch('/api/autofill/cv-base64')
@@ -55,13 +81,18 @@ export default function AutofillModal({
       })
       .catch((err) => console.error('Failed to load CV base64:', err));
 
-    // If initialData already has answers, use them
+    // If initialData already has answers or cover letter, use them
+    if (initialData.cover_letter) {
+      setCoverLetter(initialData.cover_letter);
+      setHasCoverLetter(true);
+    }
+
     if (initialData.answers && initialData.answers.length > 0) {
       setAnswers(initialData.answers);
       setProfile(initialData.profile || {});
       setActiveTab('answers');
     } else {
-      // Check for previously saved answers in SQLite for this job
+      // Check for previously saved answers and cover letter in SQLite for this job
       fetch(
         `/api/autofill/saved-answers?company=${encodeURIComponent(company)}&role=${encodeURIComponent(
           role
@@ -69,9 +100,20 @@ export default function AutofillModal({
       )
         .then((res) => (res.ok ? res.json() : null))
         .then((data) => {
-          if (data && data.found && data.answers && data.answers.length > 0) {
-            setAnswers(data.answers);
-            setActiveTab('answers');
+          if (data && data.found) {
+            if (data.answers && data.answers.length > 0) {
+              setAnswers(data.answers);
+            }
+            if (data.cover_letter) {
+              setCoverLetter(data.cover_letter);
+              setHasCoverLetter(true);
+            }
+            if ((data.answers && data.answers.length > 0) || data.cover_letter) {
+              setActiveTab('answers');
+            } else {
+              setAnswers([]);
+              setActiveTab('profile');
+            }
           } else {
             setAnswers([]);
             setActiveTab('profile');
@@ -96,7 +138,7 @@ export default function AutofillModal({
     }
   }, [isOpen, initialData, company, role, url]);
 
-  // Manually generate answers with agy CLI
+  // Manually generate answers with agy CLI (inspecting live form)
   const handleGenerateAnswers = async () => {
     setLoading(true);
     try {
@@ -112,8 +154,12 @@ export default function AutofillModal({
       if (res.ok) {
         const data = await res.json();
         if (data.profile) setProfile(data.profile);
-        if (data.answers && data.answers.length > 0) {
-          setAnswers(data.answers);
+        if (data.answers) setAnswers(data.answers);
+        if (data.cover_letter) {
+          setCoverLetter(data.cover_letter);
+          setHasCoverLetter(true);
+        }
+        if ((data.answers && data.answers.length > 0) || data.cover_letter) {
           setActiveTab('answers');
         }
       }
@@ -124,9 +170,8 @@ export default function AutofillModal({
     }
   };
 
-  // Persist customized/edited answers to database
+  // Persist customized/edited answers and cover letter to database
   const handleSaveAnswers = async () => {
-    if (!answers || answers.length === 0) return;
     setSavingAnswers(true);
     try {
       const res = await fetch('/api/autofill/save-answers', {
@@ -137,6 +182,7 @@ export default function AutofillModal({
           role,
           url,
           answers,
+          cover_letter: coverLetter,
         }),
       });
       if (res.ok) {
@@ -151,30 +197,10 @@ export default function AutofillModal({
     }
   };
 
-  // Manually set application status to "Application in progress"
-  const handleSetInProgress = async () => {
-    setMarkingInProgress(true);
-    try {
-      const res = await fetch('/api/applications', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          company: company || 'Target Company',
-          role: role || 'Target Role',
-          status: 'Application in progress',
-          url: url || '',
-          date_applied: new Date().toISOString().split('T')[0],
-        }),
-      });
-      if (res.ok) {
-        setMarkedInProgress(true);
-        onApplicationCreated?.();
-      }
-    } catch (err) {
-      console.error('Failed to set application in progress:', err);
-    } finally {
-      setMarkingInProgress(false);
-    }
+  // Clear AI written fields (empties answers and cover letter)
+  const handleClearFields = () => {
+    setAnswers((prev) => prev.map((ans) => ({ ...ans, answer: '' })));
+    setCoverLetter('');
   };
 
   // Handle Escape key to close
@@ -194,6 +220,7 @@ export default function AutofillModal({
     const payload = {
       profile,
       answers,
+      coverLetter: coverLetter || '',
       cvBase64: cvData.base64 || '',
       cvFilename: cvData.filename || 'Bob_Hillus_CV.pdf',
     };
@@ -290,25 +317,49 @@ export default function AutofillModal({
       }
     });
 
-    /* 3. Fill tailored essay questions */
+    /* 3. Fill tailored essay questions (by ID, Name, or Label) */
     function fillAnswersList(ansList) {
       if (!ansList || !ansList.length) return 0;
       let filled = 0;
       ansList.forEach(function(ans) {
-        const qLower = (ans.question || '').toLowerCase();
-        const qClean = qLower.replace(/[^a-z0-9]/g, ' ').replace(/\\s+/g, ' ').trim();
+        if (!ans || !ans.answer) return;
+
+        // Try exact field ID first
+        if (ans.field_id) {
+          const el = document.getElementById(ans.field_id);
+          if (el && (!el.value || el.value.length < 15)) {
+            fill(el, ans.answer);
+            count++;
+            filled++;
+            return;
+          }
+        }
+
+        // Try exact field name
+        if (ans.field_name) {
+          const el = document.querySelector('[name="' + ans.field_name + '"]');
+          if (el && (!el.value || el.value.length < 15)) {
+            fill(el, ans.answer);
+            count++;
+            filled++;
+            return;
+          }
+        }
+
+        const qLower = (ans.label || ans.question || '').toLowerCase();
+        const qClean = qLower.replace(/[^a-z0-9]/g, ' ').replace(/\s+/g, ' ').trim();
         const qWords = qClean.split(' ').filter(function(w) { return w.length > 3; });
 
         document.querySelectorAll('textarea, input[type="text"]').forEach(function(inp) {
           if (inp.value && inp.value.length > 20) return;
           const info = getFieldInfo(inp);
-          const labelClean = info.label.replace(/[^a-z0-9]/g, ' ').replace(/\\s+/g, ' ').trim();
-          
+          const labelClean = info.label.replace(/[^a-z0-9]/g, ' ').replace(/\s+/g, ' ').trim();
+
           let matches = 0;
           for (let i = 0; i < qWords.length; i++) {
             if (labelClean.includes(qWords[i])) matches++;
           }
-          if (matches >= 2 || (qWords.length <= 2 && matches >= 1) || (qClean.length > 10 && labelClean.includes(qClean.slice(0, 20)))) {
+          if ((qWords.length >= 2 && matches >= Math.min(3, qWords.length)) || (qClean.length > 8 && labelClean.includes(qClean.slice(0, 25)))) {
             fill(inp, ans.answer);
             count++;
             filled++;
@@ -320,7 +371,24 @@ export default function AutofillModal({
 
     fillAnswersList(data.answers || []);
 
-    /* 4. Auto-attach CV PDF via zero-CSP Base64 DataTransfer */
+    /* 4. Fill cover letter if textarea exists */
+    function fillCoverLetter(cl) {
+      if (!cl) return;
+      document.querySelectorAll('textarea').forEach(function(ta) {
+        if (ta.value && ta.value.length > 20) return;
+        const info = getFieldInfo(ta);
+        if (info.label.includes('cover letter') || info.sig.includes('cover_letter') || info.sig.includes('coverletter')) {
+          fill(ta, cl);
+          count++;
+        }
+      });
+    }
+
+    if (data.coverLetter) {
+      fillCoverLetter(data.coverLetter);
+    }
+
+    /* 5. Auto-attach CV PDF via zero-CSP Base64 DataTransfer */
     function attachResume(b64, fn) {
       if (!b64) return;
       try {
@@ -347,7 +415,7 @@ export default function AutofillModal({
       attachResume(data.cvBase64, data.cvFilename);
     }
 
-    /* 5. Also auto-read from clipboard if fresh answers or CV were copied */
+    /* 6. Also auto-read from clipboard if fresh answers or CV were copied */
     if (navigator.clipboard && navigator.clipboard.readText) {
       navigator.clipboard.readText().then(function(text) {
         if (text && text.includes('__caesar__')) {
@@ -358,6 +426,9 @@ export default function AutofillModal({
               if (extra > 0) {
                 showBanner(count);
               }
+            }
+            if (clipData && clipData.coverLetter) {
+              fillCoverLetter(clipData.coverLetter);
             }
             if (clipData && clipData.cvBase64) {
               attachResume(clipData.cvBase64, clipData.cvFilename);
@@ -418,6 +489,7 @@ export default function AutofillModal({
           company,
           role,
           answers,
+          coverLetter: coverLetter || '',
           cvBase64: cvData.base64,
           cvFilename: cvData.filename,
         })
@@ -501,26 +573,26 @@ export default function AutofillModal({
 
           <button
             type="button"
-            disabled={answers.length === 0 && !loading}
-            onClick={() => (answers.length > 0 || loading) && setActiveTab('answers')}
+            disabled={answers.length === 0 && !coverLetter && !loading}
+            onClick={() => (answers.length > 0 || coverLetter || loading) && setActiveTab('answers')}
             className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors ${
               activeTab === 'answers'
                 ? 'bg-indigo-600 text-white shadow-sm'
-                : answers.length === 0 && !loading
+                : answers.length === 0 && !coverLetter && !loading
                 ? 'bg-slate-800/30 text-slate-500 cursor-not-allowed border border-slate-800/50'
                 : 'bg-slate-800/80 text-slate-400 hover:text-slate-200'
             }`}
             title={
-              answers.length === 0
-                ? 'Click "Generate with agy" below to unlock tailored answers'
+              answers.length === 0 && !coverLetter
+                ? 'Click "Generate with agy" below to inspect form and unlock tailored answers'
                 : 'View AI written fields'
             }
           >
             <Sparkles className="w-3.5 h-3.5" />
             <span>AI Written Fields (agy)</span>
-            {answers.length > 0 && (
+            {(answers.length > 0 || coverLetter) && (
               <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-indigo-500/30 text-indigo-200 ml-0.5">
-                {answers.length}
+                {answers.length + (coverLetter ? 1 : 0)}
               </span>
             )}
           </button>
@@ -535,7 +607,7 @@ export default function AutofillModal({
                 Drafting tailored application answers with <strong className="text-indigo-400">agy</strong>...
               </div>
               <div className="text-xs text-slate-500 max-w-sm mx-auto">
-                Grounded in your real Master CV achievements and metrics. No fake numbers or hallucinated skills.
+                Inspecting form fields and grounding answers in your real Master CV achievements.
               </div>
             </div>
           ) : activeTab === 'answers' ? (
@@ -556,8 +628,19 @@ export default function AutofillModal({
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
+                    onClick={handleClearFields}
+                    disabled={answers.length === 0 && !coverLetter}
+                    className="px-2.5 py-1.5 rounded-lg bg-rose-950/40 hover:bg-rose-900/60 border border-rose-500/30 text-rose-300 font-medium text-xs flex items-center gap-1.5 transition-all disabled:opacity-40"
+                    title="Clear AI written text in fields"
+                  >
+                    <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                    <span>Clear Fields</span>
+                  </button>
+
+                  <button
+                    type="button"
                     onClick={handleSaveAnswers}
-                    disabled={savingAnswers || answers.length === 0}
+                    disabled={savingAnswers || (answers.length === 0 && !coverLetter)}
                     className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1.5 shadow-md shadow-emerald-950/50 transition-all hover:scale-[1.02] disabled:opacity-50"
                     title="Save your changes to this job application"
                   >
@@ -573,6 +656,54 @@ export default function AutofillModal({
                 </div>
               </div>
 
+              {/* Cover Letter Section (if field exists or generated) */}
+              {(hasCoverLetter || coverLetter) && (
+                <div className="p-3 bg-slate-950/70 border border-indigo-500/30 rounded-xl space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5">
+                      <FileText className="w-3.5 h-3.5 text-indigo-400" />
+                      <span className="font-semibold text-white tracking-wide text-xs">
+                        Tailored Cover Letter (agy)
+                      </span>
+                      <span className="px-1.5 py-0.5 rounded text-[10px] bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 font-mono">
+                        Form Field Detected
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard.writeText(coverLetter || '');
+                        setCopiedCoverLetter(true);
+                        setTimeout(() => setCopiedCoverLetter(false), 2000);
+                      }}
+                      className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors flex items-center gap-1 text-[11px] shrink-0"
+                      title="Copy cover letter"
+                    >
+                      {copiedCoverLetter ? (
+                        <>
+                          <Check className="w-3 h-3 text-emerald-400" />
+                          <span className="text-emerald-400">Copied!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3 h-3" />
+                          <span>Copy</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  <textarea
+                    rows={7}
+                    value={coverLetter}
+                    onChange={(e) => setCoverLetter(e.target.value)}
+                    className="w-full p-2.5 bg-slate-900 border border-slate-700/80 rounded-lg text-slate-200 text-xs font-sans leading-relaxed focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                    placeholder="Type or edit your cover letter..."
+                  />
+                </div>
+              )}
+
+              {/* Dynamic Free-Text Questions */}
               {answers.map((ans, idx) => (
                 <div key={idx} className="p-3 bg-slate-950/70 border border-slate-800 rounded-xl space-y-2">
                   <div className="flex items-center justify-between gap-2">
@@ -608,6 +739,17 @@ export default function AutofillModal({
                   />
                 </div>
               ))}
+
+              {/* Empty state when form has no custom essay questions */}
+              {answers.length === 0 && !coverLetter && (
+                <div className="p-6 text-center border border-dashed border-slate-800 rounded-xl space-y-2 bg-slate-950/40">
+                  <Check className="w-8 h-8 text-emerald-400 mx-auto" />
+                  <div className="text-xs font-semibold text-white">No Custom Essay Questions Found</div>
+                  <div className="text-[11px] text-slate-400 max-w-sm mx-auto">
+                    This job application does not require essay questions or a cover letter. Candidate profile contact fields and Master CV PDF are ready for 1-click autofill.
+                  </div>
+                </div>
+              )}
             </div>
           ) : activeTab === 'profile' ? (
             <div className="space-y-2.5">
@@ -691,32 +833,14 @@ export default function AutofillModal({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {/* Set as In Progress button (to the left of generate) */}
-            {markedInProgress ? (
-              <button
-                type="button"
-                disabled
-                className="px-3.5 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs font-semibold flex items-center gap-1.5 cursor-default shadow-sm"
-              >
-                <Check className="w-3.5 h-3.5 text-amber-400" />
-                <span>In Progress</span>
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={handleSetInProgress}
-                disabled={markingInProgress}
-                className="px-3.5 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-500 active:bg-amber-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-md shadow-amber-950/40 transition-all hover:scale-[1.02] disabled:opacity-60"
-                title="Mark application as 'Application in progress' in tracker"
-              >
-                {markingInProgress ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <Clock className="w-3.5 h-3.5 text-amber-200" />
-                )}
-                <span>{markingInProgress ? 'Updating...' : 'Set as In Progress'}</span>
-              </button>
-            )}
+            {/* Automatic status indicator */}
+            <div
+              className="px-3 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs font-semibold flex items-center gap-1.5 shadow-sm"
+              title="Application status automatically set to 'Application in progress'"
+            >
+              <Clock className="w-3.5 h-3.5 text-amber-400" />
+              <span>Application in progress</span>
+            </div>
 
             {/* Manual Generate with agy button */}
             <button

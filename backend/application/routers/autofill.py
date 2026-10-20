@@ -1,10 +1,16 @@
+import json
+import asyncio
 from typing import List, Optional, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel, Field
+from sqlmodel import Session, select
 
 from backend.application.repository.base import BaseRepository
 from backend.application.dependencies import get_career_repository
+from backend.application.database import engine
+from backend.application.models import Application, ApplicationCreate
 from backend.application.services.autofill_service import autofill_service
+from backend.application.services.autofill_tracker import autofill_tracker
 
 router = APIRouter(prefix="/api/autofill", tags=["Autofill"])
 
@@ -21,6 +27,11 @@ class ApplyFromPipelineRequest(BaseModel):
     company: Optional[str] = ""
     role: Optional[str] = ""
     raw_line: Optional[str] = ""
+
+
+class BatchAutofillRequest(BaseModel):
+    app_ids: Optional[List[int]] = None
+    all: Optional[bool] = False
 
 
 @router.get("/candidate")
@@ -43,14 +54,14 @@ async def generate_answers(payload: AutofillGenerateRequest):
     )
 
     # Persist answers if generated
-    if result.get("answers"):
+    if result.get("answers") or result.get("cover_letter"):
         try:
-            import json
-            from sqlmodel import Session, select
-            from backend.application.database import engine
-            from backend.application.models import Application
-
-            answers_json = json.dumps(result["answers"])
+            payload_to_store = {
+                "answers": result.get("answers", []),
+                "cover_letter": result.get("cover_letter"),
+                "has_cover_letter": result.get("has_cover_letter", False),
+            }
+            answers_json = json.dumps(payload_to_store)
             norm_comp = (payload.company or "").strip().lower()
             norm_url = (payload.url or "").strip().lower()
 
@@ -63,10 +74,66 @@ async def generate_answers(payload: AutofillGenerateRequest):
                         session.add(a)
                         session.commit()
                         break
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[AutofillRouter] Error persisting answers: {e}")
 
     return result
+
+
+@router.post("/batch")
+async def start_batch_autofill(payload: BatchAutofillRequest):
+    """
+    Starts an asynchronous batch autofill job:
+    Iterates over target applications, inspects form HTML, prompts `agy`,
+    and stores answers INCREMENTALLY to SQLite.
+    """
+    target_ids = []
+    with Session(engine) as session:
+        if payload.all or not payload.app_ids:
+            all_apps = session.exec(select(Application)).all()
+            target_ids = [a.id for a in all_apps if a.id is not None]
+        else:
+            target_ids = [i for i in payload.app_ids if i is not None]
+
+    if not target_ids:
+        raise HTTPException(status_code=400, detail="No applications selected for batch autofill")
+
+    job = autofill_tracker.create_job(app_ids=target_ids)
+    asyncio.create_task(autofill_service.run_batch_autofill(job.job_id))
+
+    return {
+        "status": "started",
+        "job_id": job.job_id,
+        "total": job.total,
+        "detail": job.detail,
+    }
+
+
+@router.get("/job/active")
+async def get_active_batch_job():
+    """Check if a batch autofill job is currently in flight."""
+    job = autofill_tracker.get_active_job()
+    if not job:
+        return {"active": False, "job": None}
+    return {"active": True, "job": job.to_dict()}
+
+
+@router.get("/job/{job_id}")
+async def get_batch_job_status(job_id: str):
+    """Get the live progress and status of a batch autofill job."""
+    job = autofill_tracker.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    return job.to_dict()
+
+
+@router.post("/job/{job_id}/cancel")
+async def cancel_batch_job(job_id: str):
+    """Cancel a running batch autofill job."""
+    ok = autofill_tracker.cancel_job(job_id)
+    if not ok:
+        raise HTTPException(status_code=400, detail="Job cannot be cancelled or is not running")
+    return {"status": "cancelled", "job_id": job_id}
 
 
 @router.post("/apply-from-pipeline")
@@ -95,7 +162,6 @@ async def get_cv_pdf():
     import yaml
     from backend.application.settings import BACKEND_DIR
 
-    # Extract candidate name from profile.yml
     profile_path = BACKEND_DIR / "career-ops" / "config" / "profile.yml"
     cand_name = "Candidate"
     if profile_path.exists():
@@ -174,6 +240,7 @@ class SaveAnswersPayload(BaseModel):
     role: Optional[str] = ""
     url: Optional[str] = ""
     answers: List[Dict[str, Any]] = []
+    cover_letter: Optional[str] = None
 
 
 @router.post("/save-answers")
@@ -181,13 +248,13 @@ async def save_answers(
     payload: SaveAnswersPayload,
     repo: BaseRepository = Depends(get_career_repository),
 ):
-    """Save or update tailored answers for an application."""
-    import json
-    from sqlmodel import Session, select
-    from backend.application.database import engine
-    from backend.application.models import Application, ApplicationCreate
-
-    answers_json = json.dumps(payload.answers)
+    """Save or update tailored answers and cover letter for an application."""
+    data_to_store = {
+        "answers": payload.answers,
+        "cover_letter": payload.cover_letter,
+        "has_cover_letter": bool(payload.cover_letter),
+    }
+    answers_json = json.dumps(data_to_store)
     norm_comp = (payload.company or "").strip().lower()
     norm_url = (payload.url or "").strip().lower()
 
@@ -207,7 +274,12 @@ async def save_answers(
             session.add(target_app)
             session.commit()
             session.refresh(target_app)
-            return {"status": "updated", "id": target_app.id, "answers": payload.answers}
+            return {
+                "status": "updated",
+                "id": target_app.id,
+                "answers": payload.answers,
+                "cover_letter": payload.cover_letter
+            }
 
     # If no existing application, create one with status 'Application in progress'
     new_app = await repo.create_application(ApplicationCreate(
@@ -217,7 +289,12 @@ async def save_answers(
         url=payload.url or "",
         answers=answers_json,
     ))
-    return {"status": "created", "id": new_app.id, "answers": payload.answers}
+    return {
+        "status": "created",
+        "id": new_app.id,
+        "answers": payload.answers,
+        "cover_letter": payload.cover_letter
+    }
 
 
 @router.get("/saved-answers")
@@ -226,12 +303,7 @@ async def get_saved_answers(
     role: Optional[str] = "",
     url: Optional[str] = "",
 ):
-    """Retrieve previously saved tailored answers for a job application."""
-    import json
-    from sqlmodel import Session, select
-    from backend.application.database import engine
-    from backend.application.models import Application
-
+    """Retrieve previously saved tailored answers and cover letter for a job application."""
     norm_comp = (company or "").strip().lower()
     norm_url = (url or "").strip().lower()
 
@@ -243,9 +315,22 @@ async def get_saved_answers(
             if (matches_url or matches_comp) and a.answers:
                 try:
                     data = json.loads(a.answers)
-                    return {"found": True, "answers": data}
+                    # Check if dict with answers/cover_letter or legacy array
+                    if isinstance(data, dict):
+                        return {
+                            "found": True,
+                            "answers": data.get("answers", []),
+                            "cover_letter": data.get("cover_letter"),
+                            "has_cover_letter": data.get("has_cover_letter", False),
+                        }
+                    elif isinstance(data, list):
+                        return {
+                            "found": True,
+                            "answers": data,
+                            "cover_letter": None,
+                            "has_cover_letter": False,
+                        }
                 except Exception:
                     pass
 
-    return {"found": False, "answers": []}
-
+    return {"found": False, "answers": [], "cover_letter": None, "has_cover_letter": False}

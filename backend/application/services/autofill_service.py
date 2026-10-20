@@ -7,9 +7,13 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 from datetime import date
 
+from sqlmodel import Session, select
+
 from backend.application.settings import BACKEND_DIR, ROOT_DIR
 from backend.application.models import ApplicationCreate, Application
 from backend.application.repository.base import BaseRepository
+from backend.application.database import engine
+from backend.application.services.autofill_tracker import autofill_tracker
 
 
 class AutofillService:
@@ -44,7 +48,6 @@ class AutofillService:
         if self.cv_path.exists():
             try:
                 cv_text = self.cv_path.read_text(encoding="utf-8")
-                # Look for name and contact info on top lines
                 first_lines = "\n".join(cv_text.splitlines()[:6])
                 if not profile.get("fullName"):
                     name_m = re.search(r"^#\s*([A-Za-z\s]+?)(?:\s*—|\s*-|\n|$)", first_lines)
@@ -78,6 +81,137 @@ class AutofillService:
 
         return {"profile": profile, "cv": cv_text}
 
+    async def inspect_page_form(self, url: str) -> Dict[str, Any]:
+        """
+        Dynamically inspects the job application URL using Playwright Chromium to extract:
+        - raw form fields (id, name, type, label)
+        - whether a cover letter field (file or textarea) exists
+        - list of custom essay/free-text fields (excluding static profile/contact fields)
+        """
+        if not url or not url.startswith("http"):
+            return {"fields": [], "has_cover_letter": False, "custom_questions": []}
+
+        # Normalize URL paths for common ATS engines
+        target_url = url
+        if "jobs.ashbyhq.com" in target_url and not target_url.rstrip("/").endswith("application"):
+            target_url = target_url.rstrip("/") + "/application"
+        elif "jobs.lever.co" in target_url and not target_url.rstrip("/").endswith("apply"):
+            target_url = target_url.rstrip("/") + "/apply"
+
+        raw_fields = []
+        try:
+            from playwright.async_api import async_playwright
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                context = await browser.new_context(
+                    user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                )
+                page = await context.new_page()
+                try:
+                    await page.goto(target_url, timeout=12000, wait_until="domcontentloaded")
+                    await page.wait_for_timeout(1500)
+
+                    raw_fields = await page.evaluate("""() => {
+                        const results = [];
+                        const els = document.querySelectorAll('input, textarea, select');
+                        els.forEach(el => {
+                            const tag = el.tagName.toLowerCase();
+                            const type = (el.type || '').toLowerCase();
+                            if (type === 'hidden' || type === 'submit' || type === 'button') return;
+
+                            let label = '';
+                            if (el.id) {
+                                const l = document.querySelector('label[for="' + el.id + '"]');
+                                if (l) label = l.innerText;
+                            }
+                            if (!label) {
+                                const l = el.closest('label');
+                                if (l) label = l.innerText;
+                            }
+                            if (!label) {
+                                let cur = el.parentElement;
+                                for (let i = 0; i < 4; i++) {
+                                    if (!cur) break;
+                                    const l = cur.querySelector('label, [class*="label"], [class*="Label"], [class*="title"], [class*="legend"], [class*="question"]');
+                                    if (l && l.innerText && l.innerText.length < 300) { label = l.innerText; break; }
+                                    cur = cur.parentElement;
+                                }
+                            }
+                            results.push({
+                                tag: tag,
+                                type: type,
+                                id: el.id || '',
+                                name: el.name || '',
+                                label: (label || el.placeholder || el.getAttribute('aria-label') || '').trim().replace(/\\s+/g, ' '),
+                                placeholder: el.placeholder || '',
+                            });
+                        });
+                        return results;
+                    }""")
+                finally:
+                    await browser.close()
+        except Exception as e:
+            print(f"[AutofillService] Playwright inspection fallback for {url}: {e}")
+            # Fallback to simple HTTP request
+            try:
+                import httpx
+                async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+                    resp = await client.get(target_url, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"})
+                    if resp.status_code == 200:
+                        text = resp.text
+                        # Simple label and textarea scanner
+                        for m in re.finditer(r'<label[^>]*>(.*?)</label>', text, re.I | re.DOTALL):
+                            clean_lbl = re.sub(r'<[^>]+>', ' ', m.group(1)).strip()
+                            if clean_lbl:
+                                raw_fields.append({"tag": "input", "type": "text", "id": "", "name": "", "label": clean_lbl, "placeholder": ""})
+            except Exception as ex:
+                print(f"[AutofillService] HTTP fallback error: {ex}")
+
+        # Classify fields
+        standard_patterns = r"(first.*name|last.*name|full.*name|given.*name|surname|email|phone|mobile|resume|cv\b|portfolio|github|linkedin|location|city|country|pronoun|gender|race|veteran|disability|salary|notice|work.*authoriz|sponsorship|consent|recaptcha)"
+        cover_letter_pattern = r"cover[-_\s]?letter"
+
+        has_cover_letter = False
+        custom_questions = []
+
+        seen_labels = set()
+        for f in raw_fields:
+            lbl = f["label"]
+            f_type = f["type"]
+            tag = f["tag"]
+            id_name = f"{f['id']} {f['name']}".lower()
+
+            if not lbl and not id_name:
+                continue
+
+            # Check for cover letter field (file upload or textarea/input)
+            if re.search(cover_letter_pattern, lbl, re.I) or re.search(cover_letter_pattern, id_name, re.I):
+                has_cover_letter = True
+                continue
+
+            if "recaptcha" in id_name or "recaptcha" in lbl.lower():
+                continue
+
+            # Free-text questions
+            norm_lbl = lbl.lower()
+            if norm_lbl in seen_labels:
+                continue
+            seen_labels.add(norm_lbl)
+
+            if tag == "textarea":
+                if not re.search(standard_patterns, lbl, re.I):
+                    custom_questions.append(f)
+            elif f_type in ("text", ""):
+                # Custom text questions (ends with ?, or starts with question words, or >= 5 words long)
+                if ("?" in lbl or len(lbl.split()) >= 4 or re.search(r"^(why|tell|describe|how|what|projects?|share)\b", lbl, re.I)) and not re.search(standard_patterns, lbl, re.I):
+                    custom_questions.append(f)
+
+        return {
+            "fields": raw_fields,
+            "has_cover_letter": has_cover_letter,
+            "custom_questions": custom_questions,
+        }
+
     async def generate_autofill_answers(
         self,
         url: str = "",
@@ -87,26 +221,61 @@ class AutofillService:
         job_description: str = "",
     ) -> Dict[str, Any]:
         """
-        Uses `agy` CLI to generate tailored, authentic answers to application form questions
-        grounded in the candidate's CV and profile.
+        Dynamically inspects the application form HTML and uses `agy` CLI to:
+        1. Only answer real custom free-text questions that exist on the page.
+        2. Keep profile and CV fields static.
+        3. Generate a tailored cover letter if a cover letter field exists.
+        4. If NO custom essay questions exist, returns answers: [] without fabricating fake answers.
         """
         cand = self.get_candidate_data()
         profile = cand["profile"]
         cv_text = cand["cv"]
 
-        # Default questions if none provided
-        target_questions = questions or [
-            f"Why {company or 'this company'}, and why now?",
-            "What is the most impactful engineering or technical system you have built, and what was your specific contribution?",
-            "How did you know it worked? What did success and metrics look like in production?",
-            f"Have you used {company or 'our'} technology or products - even in a personal project? What did you build or explore?",
-        ]
+        form_info = await self.inspect_page_form(url)
+        custom_questions = form_info.get("custom_questions", [])
+        has_cover_letter = form_info.get("has_cover_letter", False)
+
+        # If user explicitly supplied questions, use those
+        if questions:
+            target_question_items = [{"label": q, "id": "", "name": ""} for q in questions]
+        else:
+            target_question_items = custom_questions
+
+        # If no custom essay questions exist AND no cover letter field requested:
+        # Return empty answers immediately! Static fields (Name, Email, CV PDF) will handle autofill.
+        if not target_question_items and not has_cover_letter:
+            return {
+                "status": "success",
+                "company": company,
+                "role": role,
+                "url": url,
+                "profile": profile,
+                "answers": [],
+                "has_cover_letter": False,
+                "cover_letter": None,
+                "generated_with": "agy",
+                "message": "No free-text questions or cover letter requested on this application form.",
+            }
 
         # Prepare agy prompt
-        q_list_text = "\n".join([f"{i+1}. {q}" for i, q in enumerate(target_questions)])
-        
+        q_descriptions = []
+        for i, q in enumerate(target_question_items):
+            lbl = q.get("label") or q.get("question") or f"Question {i+1}"
+            f_id = q.get("id") or ""
+            f_name = q.get("name") or ""
+            q_descriptions.append(f"{i+1}. Label: \"{lbl}\" (Field ID: {f_id or 'none'}, Name: {f_name or 'none'})")
+
+        q_text = "\n".join(q_descriptions) if q_descriptions else "No free-text essay questions detected."
+        cover_letter_instruction = (
+            "A Cover Letter field (upload or textarea) WAS detected on the form. "
+            "Draft a compelling, professional 3-paragraph Cover Letter specifically tailored to this company and role, "
+            "grounded strictly in the candidate's achievements and Master CV."
+            if has_cover_letter else
+            "No cover letter requested. Set \"cover_letter\" to null."
+        )
+
         prompt = f"""You are the candidate's elite Career Operations Assistant.
-Your task is to draft high-conviction, professional, authentic application form answers for a real job application.
+Analyze the target job application and generate answers strictly for the detected custom form questions.
 
 Target Opportunity:
 - Company: {company or 'Target Company'}
@@ -119,23 +288,28 @@ Candidate Master Profile:
 Candidate Master CV / Experience:
 {cv_text[:3500]}
 
-Questions to Answer:
-{q_list_text}
+Detected Custom Form Questions:
+{q_text}
+
+Cover Letter Requirement:
+{cover_letter_instruction}
 
 MANDATORY RULES:
-1. Write answers in the first person ("I") with an articulate, humble, high-agency engineering tone.
+1. ONLY answer genuine custom essay/free-text questions (e.g. 'Why Company', 'Describe a project', 'Technical challenge'). Do NOT answer standard contact info, demographic surveys, or yes/no questions.
 2. Ground all experience, technical stack, achievements, and metrics strictly in the candidate's real CV.
-3. For "Why Company", reference the company's real mission, infrastructure, and engineering challenges.
-4. For "Most impactful system", choose the strongest STAR achievement from the CV with real production metrics (e.g. p95 latency reduction, RPS scale, zero data loss).
-5. For "How did you know it worked", supply exact observable metrics (monitoring, dashboards, throughput, SLAs).
-6. Return your output STRICTLY as a JSON object with this exact schema:
+3. If no custom essay questions exist, return "answers": [].
+4. Return your output STRICTLY as a JSON object with this exact schema:
 {{
-  "profile": {json.dumps(profile)},
+  "has_questions": { "true" if target_question_items else "false" },
+  "has_cover_letter": { "true" if has_cover_letter else "false" },
+  "cover_letter": "The drafted 3-paragraph cover letter if requested, or null",
   "answers": [
     {{
-      "question": "Exact question text",
-      "answer": "The complete drafted answer paragraph (ready to paste)",
-      "field_matcher": ["keyword1", "keyword2"]
+      "question": "Exact question / label text",
+      "field_id": "Field ID if available",
+      "field_name": "Field Name if available",
+      "label": "Exact label text",
+      "answer": "The complete drafted answer paragraph"
     }}
   ]
 }}
@@ -143,6 +317,7 @@ Do NOT output any conversational text or markdown code fences outside the JSON. 
 """
 
         answers = []
+        cover_letter = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 "agy", "-p", prompt, "--dangerously-skip-permissions",
@@ -162,36 +337,9 @@ Do NOT output any conversational text or markdown code fences outside the JSON. 
             if json_match:
                 parsed = json.loads(json_match.group(0))
                 answers = parsed.get("answers", [])
-                if parsed.get("profile"):
-                    profile.update({k: v for k, v in parsed["profile"].items() if v})
+                cover_letter = parsed.get("cover_letter")
         except Exception as e:
-            print(f"[AutofillService] agy generation failed or timed out: {e}")
-
-        # Fallback answers if agy was empty
-        if not answers:
-            comp_name = company or "the team"
-            answers = [
-                {
-                    "question": f"Why {comp_name}, and why now?",
-                    "answer": f"I am deeply compelled by {comp_name}'s high-performance engineering mission. Having engineered distributed microservices handling 15M+ daily requests and low-latency APIs, I thrive where latency, reliability, and developer experience meet. Joining {comp_name} now gives me the opportunity to deploy scalable architectures and solve hard distributed systems challenges.",
-                    "field_matcher": ["why", comp_name.lower(), "now", "interest", "motivation"]
-                },
-                {
-                    "question": "What is the most impactful technical system you have built?",
-                    "answer": "At FinTech ScaleUp UK, I designed and maintained core RESTful microservices in Go and Python (FastAPI) handling 15M+ daily transactions across payment gateways. I reduced p95 API response times from 340ms to 48ms by implementing multi-tiered Redis caching and optimizing PostgreSQL composite indexes, while engineering asynchronous pipelines on Kafka to guarantee at-least-once message delivery.",
-                    "field_matcher": ["impact", "built", "contribution", "project", "system"]
-                },
-                {
-                    "question": "How did you know it worked? What did success look like?",
-                    "answer": "Success was measured through real-time Prometheus/Grafana metrics and production SLAs: p95 latency plummeted by 85% to 48ms under peak load, transaction failure rates dropped to near-zero, and our stress tests validated 2,500 RPS throughput with zero message loss across Kafka topics.",
-                    "field_matcher": ["success", "worked", "metrics", "look like", "measure"]
-                },
-                {
-                    "question": f"Have you used {comp_name} technology or products?",
-                    "answer": f"Yes, I have closely explored {comp_name}'s APIs and developer tooling in side projects, integrating voice synthesis and streaming audio endpoints into automated pipelines. The latency and audio fidelity stand out, and I am excited to help optimize these infrastructure pipelines for enterprise clients.",
-                    "field_matcher": [comp_name.lower(), "used", "personal", "side project", "explore"]
-                }
-            ]
+            print(f"[AutofillService] agy generation failed: {e}")
 
         return {
             "status": "success",
@@ -200,8 +348,76 @@ Do NOT output any conversational text or markdown code fences outside the JSON. 
             "url": url,
             "profile": profile,
             "answers": answers,
+            "has_cover_letter": bool(cover_letter or has_cover_letter),
+            "cover_letter": cover_letter,
             "generated_with": "agy",
         }
+
+    async def run_batch_autofill(self, job_id: str):
+        """
+        Background worker that processes selected applications one by one:
+        - Inspects live form
+        - Invokes `agy` if free-text questions or cover letter exists
+        - Persists answers INCREMENTALLY to SQLite after each job completes!
+        """
+        job = autofill_tracker.get_job(job_id)
+        if not job:
+            return
+
+        total = len(job.app_ids)
+        for idx, app_id in enumerate(job.app_ids, start=1):
+            if job.cancelled:
+                job.cancel()
+                return
+
+            # Fetch application from DB
+            target_app = None
+            with Session(engine) as session:
+                target_app = session.get(Application, app_id)
+
+            if not target_app:
+                job.record_result(app_id, f"App #{app_id}", False, error="Application not found in database")
+                continue
+
+            target_name = f"{target_app.company} — {target_app.role}"
+            job.update_progress(idx, target_name, f"Inspecting application form & drafting with agy ({idx}/{total})...")
+
+            try:
+                result = await self.generate_autofill_answers(
+                    url=target_app.url or "",
+                    company=target_app.company or "",
+                    role=target_app.role or "",
+                )
+
+                answers_list = result.get("answers", [])
+                cover_letter = result.get("cover_letter")
+                
+                # INCREMENTAL PERSISTENCE TO SQLITE
+                payload_to_store = {
+                    "answers": answers_list,
+                    "cover_letter": cover_letter,
+                    "has_cover_letter": result.get("has_cover_letter", False),
+                }
+                
+                with Session(engine) as session:
+                    db_app = session.get(Application, app_id)
+                    if db_app:
+                        db_app.answers = json.dumps(payload_to_store)
+                        session.add(db_app)
+                        session.commit()
+
+                job.record_result(
+                    app_id=app_id,
+                    target=target_name,
+                    success=True,
+                    questions_count=len(answers_list),
+                    has_cover_letter=bool(cover_letter),
+                )
+            except Exception as e:
+                print(f"[AutofillService] Error in batch autofill for {target_name}: {e}")
+                job.record_result(app_id, target_name, False, error=str(e))
+
+        job.complete()
 
     async def apply_from_pipeline(
         self,
@@ -245,6 +461,23 @@ Do NOT output any conversational text or markdown code fences outside the JSON. 
             company=clean_company,
             role=clean_role,
         )
+
+        # Persist answers if any
+        if autofill_data.get("answers") or autofill_data.get("cover_letter"):
+            try:
+                with Session(engine) as session:
+                    db_app = session.get(Application, created_app.id)
+                    if db_app:
+                        payload = {
+                            "answers": autofill_data.get("answers", []),
+                            "cover_letter": autofill_data.get("cover_letter"),
+                            "has_cover_letter": autofill_data.get("has_cover_letter", False),
+                        }
+                        db_app.answers = json.dumps(payload)
+                        session.add(db_app)
+                        session.commit()
+            except Exception as e:
+                print(f"[AutofillService] Failed to persist answers for new application: {e}")
 
         return {
             "status": "success",
