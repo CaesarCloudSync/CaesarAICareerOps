@@ -379,7 +379,7 @@ Do NOT output any conversational text or markdown code fences outside the JSON. 
         cover_letter = None
         try:
             proc = await asyncio.create_subprocess_exec(
-                "agy", "-p", prompt, "--dangerously-skip-permissions",
+                "agy", "-p", prompt, "--dangerously-skip-permissions", "--disable-slash-commands", "--effort", "low",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(self.career_ops_dir)
@@ -501,7 +501,7 @@ Return ONLY JSON. No conversational text or markdown code fences outside JSON.
 
         try:
             proc = await asyncio.create_subprocess_exec(
-                "agy", "-p", prompt, "--dangerously-skip-permissions",
+                "agy", "-p", prompt, "--dangerously-skip-permissions", "--disable-slash-commands", "--effort", "low",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(self.career_ops_dir)
