@@ -70,119 +70,59 @@ async def resolve_live_async(payload: ResolveLiveRequest):
     Receives scraped form fields from browser, creates a real job_id in AutofillBatchTracker,
     spawns background agy reasoning task, and sets status to 'Application Generated' when complete.
     """
-def extract_ats_job_key(u: str) -> str:
-    """Extracts a normalized ATS job identifier from URLs to match canonical postings."""
+from urllib.parse import urlparse
+
+
+def normalize_job_url(u: str) -> str:
+    """Simple domain + path matching (strips query parameters, trailing slashes, and /application)."""
     if not u:
         return ""
-    clean = u.strip().lower().split("?")[0].split("#")[0].rstrip("/")
-    if clean.endswith("/application"):
-        clean = clean[:-12]
-    
-    # Ashby: jobs.ashbyhq.com/<company>/<uuid>
-    m = re.search(r"jobs\.ashbyhq\.com/([^/]+)/([a-f0-9\-]+)", clean)
-    if m:
-        return f"ashby:{m.group(1)}:{m.group(2)}"
-        
-    # Greenhouse: greenhouse.io/<company>/jobs/<id>
-    m = re.search(r"greenhouse\.io/([^/]+)/jobs/(\d+)", clean)
-    if m:
-        return f"greenhouse:{m.group(1)}:{m.group(2)}"
-
-    # Lever: jobs.lever.co/<company>/<id>
-    m = re.search(r"jobs\.lever\.co/([^/]+)/([a-f0-9\-]+)", clean)
-    if m:
-        return f"lever:{m.group(1)}:{m.group(2)}"
-
-    # Workday: <company>.wd*.myworkdayjobs.com/.../job/.../<id>
-    m = re.search(r"([a-z0-9\-]+)\.wd\d*\.myworkdayjobs\.com/.*?/job/.*?/([^/?#]+)", clean)
-    if m:
-        return f"workday:{m.group(1)}:{m.group(2)}"
-
-    # SmartRecruiters: jobs.smartrecruiters.com/<company>/<id>
-    m = re.search(r"jobs\.smartrecruiters\.com/([^/]+)/([a-f0-9\-]+)", clean)
-    if m:
-        return f"smartrecruiters:{m.group(1)}:{m.group(2)}"
-
-    # Rippling: ats.rippling.com/<company>/jobs/<id>
-    m = re.search(r"ats\.rippling\.com/([^/]+)/jobs/([a-f0-9\-]+)", clean)
-    if m:
-        return f"rippling:{m.group(1)}:{m.group(2)}"
-
-    return clean
-
-
-def _clean_job_url(u: str) -> str:
-    if not u:
-        return ""
-    clean = u.strip().lower().rstrip("/")
-    return clean.split("?")[0].split("#")[0]
+    p = urlparse(u.strip().lower())
+    path = p.path.rstrip("/")
+    if path.endswith("/application"):
+        path = path[:-12]
+    elif path.endswith("/apply"):
+        path = path[:-6]
+    return f"{p.netloc}{path}"
 
 
 def _is_url_match(u1: str, u2: str) -> bool:
-    k1 = extract_ats_job_key(u1)
-    k2 = extract_ats_job_key(u2)
-    if k1 and k2 and k1 == k2:
-        return True
-    c1 = _clean_job_url(u1)
-    c2 = _clean_job_url(u2)
-    if not c1 or not c2:
+    n1 = normalize_job_url(u1)
+    n2 = normalize_job_url(u2)
+    if not n1 or not n2:
         return False
-    return c1 == c2 or (len(c1) > 15 and c1 in c2) or (len(c2) > 15 and c2 in c1)
+    return n1 == n2 or n1 in n2 or n2 in n1
 
 
 def extract_company_and_role_from_context(url: str, title: str) -> tuple[str, str]:
-    """Robustly detects company and role using ATS URL structure (domain + job ID) and page title."""
+    """Clean company and role extraction using URL domain and page title."""
     company = ""
     role = ""
 
-    # 1. First check URL for ATS company domain/slug
-    if url:
-        m_ashby = re.search(r"jobs\.ashbyhq\.com/([^/]+)", url, re.I)
-        if m_ashby:
-            company = m_ashby.group(1).replace("-", " ").title()
-        else:
-            m_gh = re.search(r"greenhouse\.io/([^/]+)", url, re.I)
-            if m_gh:
-                company = m_gh.group(1).replace("-", " ").title()
-            else:
-                m_lever = re.search(r"jobs\.lever\.co/([^/]+)", url, re.I)
-                if m_lever:
-                    company = m_lever.group(1).replace("-", " ").title()
-                else:
-                    m_wd = re.search(r"([a-z0-9\-]+)\.wd\d*\.myworkdayjobs\.com", url, re.I)
-                    if m_wd:
-                        company = m_wd.group(1).replace("-", " ").title()
-                    else:
-                        m_sr = re.search(r"jobs\.smartrecruiters\.com/([^/]+)", url, re.I)
-                        if m_sr:
-                            company = m_sr.group(1).replace("-", " ").title()
-                        else:
-                            m_rip = re.search(r"ats\.rippling\.com/([^/]+)", url, re.I)
-                            if m_rip:
-                                company = m_rip.group(1).replace("-", " ").title()
-
-    # 2. Check title for "@ Company" (Ashby standard: "Role @ Company")
+    # Check title for "@ Company" (standard: "Role @ Company")
     if title:
-        clean = re.sub(r"\s*-\s*Careers.*$", "", title, flags=re.IGNORECASE).strip()
+        clean = title.strip()
         if " @ " in clean:
             parts = clean.split(" @ ")
             role = parts[0].strip()
-            if not company:
-                company = parts[1].strip()
+            company = parts[1].strip()
         elif " at " in clean:
             parts = clean.split(" at ")
             role = parts[0].strip()
-            if not company:
-                company = parts[1].strip()
+            company = parts[1].strip()
+        elif " - " in clean:
+            parts = clean.split(" - ")
+            role = parts[0].strip()
+            company = parts[-1].strip()
         else:
-            for sep in [" — ", " - ", " | "]:
-                if sep in clean:
-                    parts = clean.split(sep, 1)
-                    if not company:
-                        company = parts[0].strip()
-                    if not role:
-                        role = parts[1].strip()
-                    break
+            role = clean
+
+    # Fallback company from URL domain if still empty
+    if not company and url:
+        p = urlparse(url)
+        parts = [part for part in p.path.strip("/").split("/") if part]
+        if parts:
+            company = parts[0].replace("-", " ").title()
 
     return company or "Target Company", role or "Software Engineer"
 
