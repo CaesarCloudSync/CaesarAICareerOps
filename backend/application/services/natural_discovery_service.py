@@ -752,6 +752,7 @@ class NaturalDiscoveryService:
         selected_urls = {r["url"] for r in final_selected}
 
         # 8. Sync into Database & update pipeline.md (strictly non-destructive: existing inbox items are always preserved)
+        role_score_map = {r["url"]: r.get("match_percentage") for r in final_selected if r.get("match_percentage")}
         with Session(engine) as session:
             # Remove unselected staged items from this run, keep initial items + final_selected
             for item in session.exec(select(PipelineItem)).all():
@@ -761,6 +762,19 @@ class NaturalDiscoveryService:
                     # If it was newly staged in this run but not selected for the top cut, prune it
                     if item_url in staged_new_urls and item_url not in selected_urls:
                         session.delete(item)
+                    elif item_url in role_score_map:
+                        score = role_score_map[item_url]
+                        if not re.search(r"\d+(\.\d+)?%\s*match", item.raw_text):
+                            parts = [p.strip() for p in item.raw_text.split("|")]
+                            new_parts = [parts[0], parts[1], parts[2]]
+                            if len(parts) > 3 and not "posted:" in parts[3].lower():
+                                new_parts.append(parts[3])
+                            new_parts.append(f"{score}% match")
+                            posted = next((p for p in parts if p.lower().startswith("posted:")), None)
+                            if posted:
+                                new_parts.append(posted)
+                            item.raw_text = " | ".join(new_parts)
+                            session.add(item)
             session.commit()
             total_count = len(session.exec(select(PipelineItem)).all())
 

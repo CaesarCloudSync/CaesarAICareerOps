@@ -1329,10 +1329,18 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
               const url = getUrlFromItem(item);
               const isSelected = selectedUrls.has(url || item);
 
-              // Extract display title & company if pipe delimited
+              // Extract display title, company, location, and match score if pipe delimited
               const parts = item.split('|').map((p) => p.trim());
               const displayTitle = parts.length > 2 ? `${parts[1]} — ${parts[2]}` : item;
-              const locationPart = parts.length > 3 ? parts[3] : '';
+
+              // Find match score if present in any part (e.g. "93.6% match" or "92%")
+              const matchScorePart = parts.find((p) => /\d+(\.\d+)?%\s*match/i.test(p) || /^\d+(\.\d+)?%$/i.test(p));
+              const matchScore = matchScorePart ? matchScorePart.replace(/match/i, '').trim() : null;
+
+              // Extract location and posted date (excluding matchScorePart)
+              const otherParts = parts.slice(3).filter((p) => p !== matchScorePart);
+              const locationPart = otherParts.find((p) => !p.toLowerCase().startsWith('posted:')) || '';
+              const postedPart = otherParts.find((p) => p.toLowerCase().startsWith('posted:')) || '';
 
               return (
                 <div
@@ -1358,13 +1366,27 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
                     </button>
                     <span className="text-xs font-mono text-slate-500 shrink-0 mt-0.5">#{idx + 1}</span>
                     <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-200 break-words">{displayTitle}</div>
-                      {locationPart && (
-                        <div className="text-[11px] text-slate-400 flex items-center gap-1">
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                          <span>{locationPart}</span>
-                        </div>
-                      )}
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-xs font-medium text-slate-200 break-words">{displayTitle}</span>
+                        {matchScore && (
+                          <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20 font-semibold shrink-0">
+                            {matchScore} match
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-400">
+                        {locationPart && (
+                          <div className="flex items-center gap-1">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                            <span>{locationPart}</span>
+                          </div>
+                        )}
+                        {postedPart && (
+                          <span className="text-[10px] text-slate-500 font-mono">
+                            {postedPart}
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
 
