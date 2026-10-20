@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from backend.application.models import (
     Application,
+    ApplicationCreate,
     StatusUpdateRequest,
     DashboardStats,
 )
@@ -26,6 +27,15 @@ async def list_applications(
 ) -> List[Application]:
     """Retrieve all tracked job applications."""
     return await repo.get_applications()
+
+
+@router.post("/applications", response_model=Application)
+async def create_application(
+    payload: ApplicationCreate,
+    repo: BaseRepository = Depends(get_career_repository),
+) -> Application:
+    """Create or track a new job application."""
+    return await repo.create_application(payload)
 
 
 @router.post("/applications/status")

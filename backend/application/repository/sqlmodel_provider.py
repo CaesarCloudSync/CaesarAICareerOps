@@ -161,8 +161,10 @@ class SQLModelRepository(BaseRepository):
                     existing_app.report_path = app_data.report_path
                 if app_data.url and not existing_app.url:
                     existing_app.url = app_data.url
-                if not existing_app.status or existing_app.status.lower() == "evaluated":
-                    existing_app.status = app_data.status or "Evaluated"
+                if app_data.status:
+                    existing_app.status = app_data.status
+                elif not existing_app.status:
+                    existing_app.status = "Evaluated"
                 existing_app.date_applied = today_str
                 if app_data.notes:
                     existing_app.notes = app_data.notes

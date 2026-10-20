@@ -1370,6 +1370,7 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
         isOpen={autofillModalConfig.isOpen}
         onClose={() => setAutofillModalConfig({ isOpen: false, data: {} })}
         initialData={autofillModalConfig.data}
+        onApplicationCreated={onRefresh}
       />
     </div>
   </div>

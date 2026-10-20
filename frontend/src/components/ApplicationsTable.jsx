@@ -653,6 +653,7 @@ export default function ApplicationsTable({ applications = [], onStatusChange, o
         isOpen={autofillModalConfig.isOpen}
         onClose={() => setAutofillModalConfig({ isOpen: false, data: {} })}
         initialData={autofillModalConfig.data}
+        onApplicationCreated={onRefresh}
       />
     </div>
   );
