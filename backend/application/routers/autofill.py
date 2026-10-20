@@ -209,7 +209,7 @@ async def check_autofill_status(
                     "company": a.company,
                     "role": a.role,
                     "status": a.status,
-                    "has_generated": has_answers or (a.status == "Application Generated"),
+                    "has_generated": (a.status == "Application Generated") and (actions_count > 0),
                     "actions_count": actions_count,
                     "answers_count": answers_count,
                 }
@@ -247,6 +247,7 @@ async def apply_saved(payload: ApplySavedRequest):
                 break
 
     cv_payload = autofill_service.get_cv_base64_payload()
+    cand_data = autofill_service.get_candidate_data()
 
     with Session(engine) as session:
         for a in session.exec(select(Application)).all():
@@ -281,6 +282,8 @@ async def apply_saved(payload: ApplySavedRequest):
                     "answers": answers,
                     "cover_letter": cover_letter,
                     "has_cover_letter": bool(cover_letter),
+                    "profile": cand_data.get("profile", {}),
+                    "screening": cand_data.get("screening", {}),
                     "cvBase64": cv_payload.get("base64", ""),
                     "cvFilename": cv_payload.get("filename", "Bob_Hillus_CV.pdf"),
                 }

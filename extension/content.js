@@ -168,7 +168,7 @@
     const processedRadios = new Set();
     const els = Array.from(document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]), textarea, select'));
 
-    els.forEach((el) => {
+    els.forEach((el, index) => {
       const id = el.id || '';
       const name = el.name || '';
       const type = (el.type || el.tagName).toLowerCase();
@@ -188,6 +188,8 @@
         });
       }
 
+      el.setAttribute('data-caesar-id', `caesar-field-${index}`);
+
       let selector = '';
       if (id) {
         try { selector = '#' + CSS.escape(id); } catch (e) {}
@@ -195,6 +197,9 @@
         try {
           selector = tag + '[name="' + CSS.escape(name) + '"]' + (type === 'radio' ? '[value="' + CSS.escape(el.value) + '"]' : '');
         } catch (e) {}
+      }
+      if (!selector) {
+        selector = `[data-caesar-id="caesar-field-${index}"]`;
       }
 
       fields.push({
@@ -206,25 +211,120 @@
         placeholder: el.placeholder || '',
         options,
         selector,
+        caesar_id: `caesar-field-${index}`,
       });
     });
 
     return fields;
   }
 
-  // 4. Execute DOM Actions Plan & Attach CV PDF
+  // 4. Robust Field Matcher
+  function findElementForAction(act) {
+    if (!act) return null;
+    let el = null;
+    if (act.id) {
+      try { el = document.getElementById(act.id); } catch (e) {}
+    }
+    if (!el && act.caesar_id) {
+      try { el = document.querySelector(`[data-caesar-id="${act.caesar_id}"]`); } catch (e) {}
+    }
+    if (!el && act.selector) {
+      try { el = document.querySelector(act.selector); } catch (e) {}
+    }
+    if (!el && act.name) {
+      try { el = document.querySelector(`[name="${CSS.escape(act.name)}"]`); } catch (e) {}
+    }
+
+    // Match by associated label text
+    const labelText = (act.label || act.question || '').trim().toLowerCase();
+    if (!el && labelText && labelText.length > 2) {
+      const allLabels = Array.from(document.querySelectorAll('label, [class*="label" i], [class*="question" i], [class*="title" i]'));
+      for (const l of allLabels) {
+        const txt = (l.innerText || '').trim().toLowerCase();
+        if (txt && (txt.includes(labelText) || labelText.includes(txt))) {
+          if (l.htmlFor) {
+            el = document.getElementById(l.htmlFor);
+            if (el) break;
+          }
+          el = l.querySelector('input:not([type="hidden"]):not([type="file"]), textarea, select');
+          if (el) break;
+          let cur = l.parentElement;
+          for (let i = 0; i < 3; i++) {
+            if (!cur) break;
+            const found = cur.querySelector('input:not([type="hidden"]):not([type="file"]), textarea, select');
+            if (found) {
+              el = found;
+              break;
+            }
+            cur = cur.parentElement;
+          }
+          if (el) break;
+        }
+      }
+    }
+
+    // Match by placeholder text
+    const placeholderText = (act.placeholder || '').trim().toLowerCase();
+    if (!el && placeholderText && placeholderText.length > 2) {
+      const inputs = Array.from(document.querySelectorAll('input, textarea'));
+      for (const inp of inputs) {
+        if (inp.placeholder && inp.placeholder.trim().toLowerCase().includes(placeholderText)) {
+          el = inp;
+          break;
+        }
+      }
+    }
+
+    return el;
+  }
+
+  // 5. Intelligent Fallback for Standard Candidate Profile Fields
+  function fillStandardFields(profile = {}, initialCount = 0) {
+    if (!profile) return initialCount;
+    let count = initialCount;
+
+    const standardMappings = [
+      { keys: ['first_name', 'firstname', 'first name', 'given name'], val: profile.firstName || (profile.fullName || '').split(' ')[0] },
+      { keys: ['last_name', 'lastname', 'last name', 'family name', 'surname'], val: profile.lastName || (profile.fullName || '').split(' ').slice(1).join(' ') },
+      { keys: ['full_name', 'fullname', 'full name', 'candidate_name', 'name'], val: profile.fullName },
+      { keys: ['email', 'email address'], val: profile.email },
+      { keys: ['phone', 'mobile', 'telephone', 'phone number'], val: profile.phone },
+      { keys: ['linkedin', 'linkedin url', 'linkedin profile'], val: profile.linkedin },
+      { keys: ['github', 'github url', 'github profile'], val: profile.github },
+      { keys: ['website', 'portfolio', 'personal website', 'url'], val: profile.portfolio },
+      { keys: ['location', 'city', 'address', 'residence'], val: profile.location },
+    ];
+
+    const inputs = Array.from(document.querySelectorAll('input:not([type="hidden"]):not([type="file"]):not([type="submit"]):not([type="button"]), textarea'));
+
+    inputs.forEach((inp) => {
+      if (inp.value && inp.value.trim().length > 0) return; // Skip already filled inputs
+      const lbl = getFieldLabel(inp).toLowerCase();
+      const name = (inp.name || '').toLowerCase();
+      const id = (inp.id || '').toLowerCase();
+      const placeholder = (inp.placeholder || '').toLowerCase();
+      const combined = `${lbl} ${name} ${id} ${placeholder}`;
+
+      for (const mapping of standardMappings) {
+        if (!mapping.val) continue;
+        const matched = mapping.keys.some((k) => combined.includes(k));
+        if (matched) {
+          setFieldValue(inp, mapping.val);
+          count++;
+          break;
+        }
+      }
+    });
+
+    return count;
+  }
+
+  // 6. Execute DOM Actions Plan & Attach CV PDF
   function executeActions(actions = [], cvBase64 = '', cvFilename = '') {
     let count = 0;
     actions.forEach((act) => {
       try {
-        let el = null;
-        if (act.id) el = document.getElementById(act.id);
-        if (!el && act.selector) {
-          try { el = document.querySelector(act.selector); } catch (e) {}
-        }
-        if (!el && act.name) {
-          try { el = document.querySelector(`[name="${CSS.escape(act.name)}"]`); } catch (e) {}
-        }
+        const el = findElementForAction(act);
         if (!el) return;
 
         if (act.type === 'select') {
@@ -274,7 +374,7 @@
     return count;
   }
 
-  // 5. Asynchronous Queue Action (Button 1)
+  // 7. Asynchronous Queue Action (Button 1)
   async function handleQueueGeneration() {
     showToast({
       pct: 35,
@@ -288,7 +388,7 @@
       pct: 65,
       title: '<span>⚡</span> CaesarAI Queueing',
       msg: `Discovered ${fields.length} form inputs`,
-      sub: 'Dispatching non-blocking background job...',
+      sub: 'Dispatching non-blocking background job to agy...',
     });
 
     try {
@@ -330,7 +430,7 @@
     }
   }
 
-  // 6. Instant Autofill Action (Button 2)
+  // 8. Instant Autofill Action (Button 2)
   async function handleInstantAutofill() {
     showToast({
       pct: 30,
@@ -355,7 +455,7 @@
 
       const data = await res.json();
 
-      if (!data.found || (!data.actions?.length && !data.answers?.length)) {
+      if (!data.found) {
         showToast({
           pct: 100,
           title: '<span>⚠️</span> No Pre-Generated Answers',
@@ -370,19 +470,35 @@
       showToast({
         pct: 75,
         title: '<span>🎯</span> CaesarAI Instant Fill',
-        msg: `Injecting ${data.actions.length} pre-generated actions...`,
+        msg: `Injecting saved actions...`,
         sub: 'Filling form fields & attaching Master CV PDF...',
       });
 
-      const count = executeActions(data.actions, data.cvBase64, data.cvFilename);
+      let count = executeActions(data.actions || [], data.cvBase64, data.cvFilename);
 
-      showToast({
-        pct: 100,
-        title: '<span>✅</span> Instant Autofill Applied!',
-        msg: `Successfully filled ${count} fields & attached CV!`,
-        sub: '💡 Human Review: Verify answers before clicking Submit.',
-        autoDismissMs: 7000,
-      });
+      // Intelligent Fallback: if very few fields matched, fill standard profile fields
+      if (data.profile) {
+        count = fillStandardFields(data.profile, count);
+      }
+
+      if (count > 0) {
+        showToast({
+          pct: 100,
+          title: '<span>✅</span> Instant Autofill Applied!',
+          msg: `Successfully filled ${count} fields & attached CV!`,
+          sub: '💡 Human Review: Verify answers before clicking Submit.',
+          autoDismissMs: 7000,
+        });
+      } else {
+        showToast({
+          pct: 100,
+          title: '<span>⚠️</span> 0 Fields Filled',
+          msg: 'No matching fields found on this page.',
+          sub: 'Click "1. Queue AI Generation (agy)" to inspect and generate answers for this specific form!',
+          isErr: true,
+          autoDismissMs: 8000,
+        });
+      }
 
       return { success: true, count };
     } catch (err) {
@@ -399,7 +515,7 @@
     }
   }
 
-  // 7. Listen for messages from popup or background worker
+  // 9. Listen for messages from popup or background worker
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'caesar_queue_generation') {
       handleQueueGeneration().then(sendResponse);
