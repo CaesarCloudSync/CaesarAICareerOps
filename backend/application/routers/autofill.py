@@ -70,37 +70,154 @@ async def resolve_live_async(payload: ResolveLiveRequest):
     Receives scraped form fields from browser, creates a real job_id in AutofillBatchTracker,
     spawns background agy reasoning task, and sets status to 'Application Generated' when complete.
     """
-    import re
-    detected_company = payload.company or ""
-    detected_role = payload.role or ""
+def extract_ats_job_key(u: str) -> str:
+    """Extracts a normalized ATS job identifier from URLs to match canonical postings."""
+    if not u:
+        return ""
+    clean = u.strip().lower().split("?")[0].split("#")[0].rstrip("/")
+    if clean.endswith("/application"):
+        clean = clean[:-12]
+    
+    # Ashby: jobs.ashbyhq.com/<company>/<uuid>
+    m = re.search(r"jobs\.ashbyhq\.com/([^/]+)/([a-f0-9\-]+)", clean)
+    if m:
+        return f"ashby:{m.group(1)}:{m.group(2)}"
+        
+    # Greenhouse: greenhouse.io/<company>/jobs/<id>
+    m = re.search(r"greenhouse\.io/([^/]+)/jobs/(\d+)", clean)
+    if m:
+        return f"greenhouse:{m.group(1)}:{m.group(2)}"
+
+    # Lever: jobs.lever.co/<company>/<id>
+    m = re.search(r"jobs\.lever\.co/([^/]+)/([a-f0-9\-]+)", clean)
+    if m:
+        return f"lever:{m.group(1)}:{m.group(2)}"
+
+    # Workday: <company>.wd*.myworkdayjobs.com/.../job/.../<id>
+    m = re.search(r"([a-z0-9\-]+)\.wd\d*\.myworkdayjobs\.com/.*?/job/.*?/([^/?#]+)", clean)
+    if m:
+        return f"workday:{m.group(1)}:{m.group(2)}"
+
+    # SmartRecruiters: jobs.smartrecruiters.com/<company>/<id>
+    m = re.search(r"jobs\.smartrecruiters\.com/([^/]+)/([a-f0-9\-]+)", clean)
+    if m:
+        return f"smartrecruiters:{m.group(1)}:{m.group(2)}"
+
+    # Rippling: ats.rippling.com/<company>/jobs/<id>
+    m = re.search(r"ats\.rippling\.com/([^/]+)/jobs/([a-f0-9\-]+)", clean)
+    if m:
+        return f"rippling:{m.group(1)}:{m.group(2)}"
+
+    return clean
+
+
+def _clean_job_url(u: str) -> str:
+    if not u:
+        return ""
+    clean = u.strip().lower().rstrip("/")
+    return clean.split("?")[0].split("#")[0]
+
+
+def _is_url_match(u1: str, u2: str) -> bool:
+    k1 = extract_ats_job_key(u1)
+    k2 = extract_ats_job_key(u2)
+    if k1 and k2 and k1 == k2:
+        return True
+    c1 = _clean_job_url(u1)
+    c2 = _clean_job_url(u2)
+    if not c1 or not c2:
+        return False
+    return c1 == c2 or (len(c1) > 15 and c1 in c2) or (len(c2) > 15 and c2 in c1)
+
+
+def extract_company_and_role_from_context(url: str, title: str) -> tuple[str, str]:
+    """Robustly detects company and role using ATS URL structure (domain + job ID) and page title."""
+    company = ""
+    role = ""
+
+    # 1. First check URL for ATS company domain/slug
+    if url:
+        m_ashby = re.search(r"jobs\.ashbyhq\.com/([^/]+)", url, re.I)
+        if m_ashby:
+            company = m_ashby.group(1).replace("-", " ").title()
+        else:
+            m_gh = re.search(r"greenhouse\.io/([^/]+)", url, re.I)
+            if m_gh:
+                company = m_gh.group(1).replace("-", " ").title()
+            else:
+                m_lever = re.search(r"jobs\.lever\.co/([^/]+)", url, re.I)
+                if m_lever:
+                    company = m_lever.group(1).replace("-", " ").title()
+                else:
+                    m_wd = re.search(r"([a-z0-9\-]+)\.wd\d*\.myworkdayjobs\.com", url, re.I)
+                    if m_wd:
+                        company = m_wd.group(1).replace("-", " ").title()
+                    else:
+                        m_sr = re.search(r"jobs\.smartrecruiters\.com/([^/]+)", url, re.I)
+                        if m_sr:
+                            company = m_sr.group(1).replace("-", " ").title()
+                        else:
+                            m_rip = re.search(r"ats\.rippling\.com/([^/]+)", url, re.I)
+                            if m_rip:
+                                company = m_rip.group(1).replace("-", " ").title()
+
+    # 2. Check title for "@ Company" (Ashby standard: "Role @ Company")
+    if title:
+        clean = re.sub(r"\s*-\s*Careers.*$", "", title, flags=re.IGNORECASE).strip()
+        if " @ " in clean:
+            parts = clean.split(" @ ")
+            role = parts[0].strip()
+            if not company:
+                company = parts[1].strip()
+        elif " at " in clean:
+            parts = clean.split(" at ")
+            role = parts[0].strip()
+            if not company:
+                company = parts[1].strip()
+        else:
+            for sep in [" — ", " - ", " | "]:
+                if sep in clean:
+                    parts = clean.split(sep, 1)
+                    if not company:
+                        company = parts[0].strip()
+                    if not role:
+                        role = parts[1].strip()
+                    break
+
+    return company or "Target Company", role or "Software Engineer"
+
+
+@router.post("/resolve-live-async")
+async def resolve_live_async(payload: ResolveLiveRequest):
+    """
+    Decoupled Async Live Autofill:
+    Receives scraped form fields from browser, creates a real job_id in AutofillBatchTracker,
+    spawns background agy reasoning task, and sets status to 'Application Generated' when complete.
+    """
     url = payload.url or ""
     page_title = payload.page_title or ""
 
-    if not detected_company or not detected_role:
-        clean_title = re.sub(r"\s*-\s*Careers.*$", "", page_title, flags=re.IGNORECASE)
-        for sep in [" — ", " - ", " | ", " at "]:
-            if sep in clean_title:
-                parts = clean_title.split(sep, 1)
-                if not detected_company:
-                    detected_company = parts[0].strip()
-                if not detected_role:
-                    detected_role = parts[1].strip()
-                break
-        detected_company = detected_company or "Target Company"
-        detected_role = detected_role or "Software Engineer"
+    inferred_comp, inferred_role = extract_company_and_role_from_context(url, page_title)
+    detected_company = payload.company or inferred_comp
+    detected_role = payload.role or inferred_role
 
     # Find or create application with status 'Application in progress'
-    norm_url = url.strip().lower()
     norm_comp = detected_company.strip().lower()
     target_app_id = 0
 
     with Session(engine) as session:
         for a in session.exec(select(Application)).all():
-            matches_url = norm_url and norm_url.startswith("http") and (a.url or "").strip().lower() == norm_url
-            matches_comp = norm_comp and (a.company or "").strip().lower() == norm_comp
+            matches_url = _is_url_match(url, a.url or "")
+            matches_comp = norm_comp and (
+                norm_comp == (a.company or "").strip().lower()
+                or norm_comp in (a.company or "").strip().lower()
+                or (a.company or "").strip().lower() in norm_comp
+            )
             if matches_url or matches_comp:
                 target_app_id = a.id
                 a.status = "Application in progress"
+                if not a.url and url:
+                    a.url = url
                 session.add(a)
                 session.commit()
                 break
@@ -143,21 +260,6 @@ async def resolve_live_async(payload: ResolveLiveRequest):
     }
 
 
-def _clean_job_url(u: str) -> str:
-    if not u:
-        return ""
-    clean = u.strip().lower().rstrip("/")
-    return clean.split("?")[0].split("#")[0]
-
-
-def _is_url_match(u1: str, u2: str) -> bool:
-    c1 = _clean_job_url(u1)
-    c2 = _clean_job_url(u2)
-    if not c1 or not c2:
-        return False
-    return c1 == c2 or (len(c1) > 15 and c1 in c2) or (len(c2) > 15 and c2 in c1)
-
-
 @router.get("/check-status")
 async def check_autofill_status(
     url: Optional[str] = "",
@@ -168,19 +270,12 @@ async def check_autofill_status(
     Checks if an application exists for the active tab URL/company,
     and whether AI answers and DOM actions are already generated and ready for instant autofill.
     """
-    norm_comp = (company or "").strip().lower()
-
-    if not norm_comp and title:
-        clean_title = re.sub(r"\s*-\s*Careers.*$", "", title, flags=re.IGNORECASE)
-        for sep in [" — ", " - ", " | ", " at "]:
-            if sep in clean_title:
-                parts = clean_title.split(sep, 1)
-                norm_comp = parts[0].strip().lower()
-                break
+    inferred_comp, _ = extract_company_and_role_from_context(url or "", title or "")
+    norm_comp = (company or inferred_comp or "").strip().lower()
 
     with Session(engine) as session:
         for a in session.exec(select(Application)).all():
-            matches_url = _is_url_match(url, a.url or "")
+            matches_url = _is_url_match(url or "", a.url or "")
             matches_comp = norm_comp and (
                 norm_comp == (a.company or "").strip().lower()
                 or norm_comp in (a.company or "").strip().lower()
@@ -213,6 +308,14 @@ async def check_autofill_status(
                     "actions_count": actions_count,
                     "answers_count": answers_count,
                 }
+
+    return {
+        "exists": False,
+        "status": None,
+        "has_generated": False,
+        "actions_count": 0,
+        "answers_count": 0,
+    }
 
     return {
         "exists": False,

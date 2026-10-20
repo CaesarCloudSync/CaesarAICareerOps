@@ -419,6 +419,7 @@ Do NOT output any conversational text or markdown code fences outside the JSON. 
         company: str = "",
         role: str = "",
         page_title: str = "",
+        app_id: int = 0,
     ) -> Dict[str, Any]:
         """
         Resolves live DOM elements scraped directly by the user's browser:
@@ -527,19 +528,26 @@ Return ONLY JSON. No conversational text or markdown code fences outside JSON.
         except Exception as e:
             print(f"[AutofillService] agy resolve_live_dom error: {e}")
 
-        # Automatic SQLite Persistence with status = 'Application in progress'
+        # Automatic Database Persistence with status = 'Application Generated'
         try:
             norm_comp = (detected_company or "").strip().lower()
             norm_url = (url or "").strip().lower()
 
             with Session(engine) as session:
                 target_app = None
-                for a in session.exec(select(Application)).all():
-                    matches_url = norm_url and norm_url.startswith("http") and (a.url or "").strip().lower() == norm_url
-                    matches_comp = norm_comp and (a.company or "").strip().lower() == norm_comp
-                    if matches_url or matches_comp:
-                        target_app = a
-                        break
+                if app_id:
+                    target_app = session.get(Application, app_id)
+
+                if not target_app:
+                    for a in session.exec(select(Application)).all():
+                        matches_url = norm_url and norm_url.startswith("http") and (
+                            (a.url or "").strip().lower() == norm_url
+                            or (url and a.url and url.split("?")[0].rstrip("/").replace("/application", "") == a.url.split("?")[0].rstrip("/").replace("/application", ""))
+                        )
+                        matches_comp = norm_comp and (a.company or "").strip().lower() == norm_comp
+                        if matches_url or matches_comp:
+                            target_app = a
+                            break
 
                 stored_payload = {
                     "answers": answers,
@@ -559,8 +567,8 @@ Return ONLY JSON. No conversational text or markdown code fences outside JSON.
                     session.commit()
                 else:
                     new_app = Application(
-                        company=detected_company,
-                        role=detected_role,
+                        company=detected_company or "Target Company",
+                        role=detected_role or "Software Engineer",
                         url=url or "",
                         status="Application Generated",
                         score=0.0,
@@ -571,7 +579,7 @@ Return ONLY JSON. No conversational text or markdown code fences outside JSON.
                     session.add(new_app)
                     session.commit()
         except Exception as ex:
-            print(f"[AutofillService] SQLite persistence error in resolve_live_dom: {ex}")
+            print(f"[AutofillService] Database persistence error in resolve_live_dom: {ex}")
 
         return {
             "status": "success",
@@ -667,20 +675,33 @@ Return ONLY JSON. No conversational text or markdown code fences outside JSON.
         job.update_progress(1, target_name, "Contextual AI reasoning with agy on live form fields...")
 
         try:
+            target_app_id = payload.get("app_id", 0)
             res = await self.resolve_live_dom(
                 fields=payload.get("fields", []),
                 url=payload.get("url", ""),
                 company=payload.get("company", ""),
                 role=payload.get("role", ""),
                 page_title=payload.get("page_title", ""),
+                app_id=target_app_id,
             )
 
             actions = res.get("actions", [])
             answers = res.get("answers", [])
             has_cov = res.get("has_cover_letter", False)
 
+            if target_app_id:
+                try:
+                    with Session(engine) as session:
+                        db_app = session.get(Application, target_app_id)
+                        if db_app:
+                            db_app.status = "Application Generated"
+                            session.add(db_app)
+                            session.commit()
+                except Exception as db_err:
+                    print(f"[AutofillService] Explicit status update error: {db_err}")
+
             job.record_result(
-                app_id=payload.get("app_id", 0),
+                app_id=target_app_id,
                 target=target_name,
                 success=True,
                 questions_count=len(answers),
