@@ -254,6 +254,36 @@ export default function GranularProgressCard({
           </div>
         </div>
       )}
+
+      {/* Dedicated Completion Hero Banner */}
+      {isCompleted && (
+        <div className="mt-3 p-3 rounded-lg bg-emerald-950/70 border border-emerald-600/60 text-emerald-100 flex items-start gap-3 shadow-md shadow-emerald-950/50">
+          <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
+          <div className="space-y-1 flex-1 min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs font-bold text-white">Pipeline Execution Completed</span>
+              {(job.result?.stats?.jobs_collected > 0 || (job.detail && job.detail.match(/\+(\d+)\s*roles/))) && (
+                <span className="px-2 py-0.5 rounded-full text-[11px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                  +{job.result?.stats?.jobs_collected || job.detail.match(/\+(\d+)\s*roles/)[1]} New Roles Collected
+                </span>
+              )}
+              {job.result?.stats?.companies_probed > 0 && (
+                <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-sky-500/20 text-sky-300 border border-sky-500/30">
+                  {job.result.stats.companies_probed} Portals Probed
+                </span>
+              )}
+              {job.result?.stats?.evaluated_count > 0 && (
+                <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-violet-500/20 text-violet-300 border border-violet-500/30">
+                  {job.result.stats.evaluated_count} Roles Evaluated
+                </span>
+              )}
+            </div>
+            <p className="text-[11px] font-mono text-emerald-200/90 leading-relaxed break-words">
+              {job.detail || job.result?.message || 'Workflow finished successfully.'}
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

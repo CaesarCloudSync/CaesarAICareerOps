@@ -160,6 +160,12 @@ class SchedulerService:
 
         summary_parts = []
         overall_status = "success"
+        stats = {
+            "jobs_collected": 0,
+            "companies_probed": 0,
+            "dead_purged": 0,
+            "evaluated_count": 0,
+        }
 
         try:
             # ─────────────────────────────────────────────────────────────
@@ -184,6 +190,8 @@ class SchedulerService:
                     newly_discovered_roles = scan_res.get("roles", [])
                     added_count = len(newly_discovered_roles)
                     probed_count = scan_res.get("total_companies_probed", 0)
+                    stats["jobs_collected"] = added_count
+                    stats["companies_probed"] = probed_count
                     summary_parts.append(f"Scan: +{added_count} roles ({probed_count} companies probed)")
                 else:
                     summary_parts.append("Scan: Skipped")
@@ -229,6 +237,7 @@ class SchedulerService:
                         except Exception as e:
                             print(f"[Scheduler] Liveness check error on {url}: {e}")
                         await asyncio.sleep(0.05)
+                    stats["dead_purged"] = dead_count
                     summary_parts.append(f"Liveness: {total_live_check - dead_count} live ({dead_count} dead purged)")
 
                 # Stage 3: Auto-Evaluation (Streamed role by role)
@@ -268,6 +277,7 @@ class SchedulerService:
                             except Exception as e:
                                 job.add_feed_line(f"❌ Evaluation error: {e}")
                             await asyncio.sleep(0.2)
+                        stats["evaluated_count"] = eval_success
                         summary_parts.append(f"Eval: {eval_success}/{total_to_eval} evaluated (>= {eval_min_score}%)")
                     else:
                         summary_parts.append(f"Eval: 0 roles met score threshold (>= {eval_min_score}%)")
@@ -372,6 +382,7 @@ class SchedulerService:
                         substep="2.3",
                         substep_name="2.3 Purging Inactive Postings"
                     )
+                    stats["dead_purged"] = dead_purged
                     summary_parts.append(f"Liveness: {total_checked - dead_purged} verified live ({dead_purged} dead purged)")
                 else:
                     summary_parts.append("Liveness: Skipped")
@@ -448,6 +459,7 @@ class SchedulerService:
                             substep="3.3",
                             substep_name="3.3 Sync Applications & Tracker"
                         )
+                        stats["evaluated_count"] = eval_success
                         summary_parts.append(f"Eval: {eval_success}/{total_to_eval} backlog roles evaluated")
                     else:
                         summary_parts.append("Eval: 0 backlog roles pending evaluation")
@@ -465,7 +477,7 @@ class SchedulerService:
 
             if job.status == "running":
                 if overall_status == "success":
-                    job.complete({"message": final_summary})
+                    job.complete({"message": final_summary, "summary": final_summary, "stats": stats})
                 else:
                     job.fail(final_summary)
 

@@ -19,7 +19,8 @@ import {
   CheckCircle2,
   XCircle,
   AlertCircle,
-  Loader2
+  Loader2,
+  X
 } from 'lucide-react';
 import PipelineProgressCard from './PipelineProgressCard';
 import GranularProgressCard from './GranularProgressCard';
@@ -62,9 +63,29 @@ export default function ScheduleManager() {
   const [runningScheduleId, setRunningScheduleId] = useState(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingSchedule, setEditingSchedule] = useState(null);
+  const [completionPrompt, setCompletionPrompt] = useState(null);
+  const [justCompletedIds, setJustCompletedIds] = useState(new Set());
+  const prevSchedulesRef = useRef({});
 
   // Form State
   const clientTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/London';
+
+  const parseSummaryStats = (summary) => {
+    if (!summary) return null;
+    const collectedMatch = summary.match(/(?:Scan|Discovered):\s*\+?(\d+)\s*roles/i);
+    const probedMatch = summary.match(/(\d+)\s*companies\s*probed/i);
+    const livenessMatch = summary.match(/Liveness:\s*(\d+)\s*(?:verified\s*)?live/i);
+    const deadMatch = summary.match(/(\d+)\s*dead\s*purged/i);
+    const evalMatch = summary.match(/Eval:\s*(\d+(?:\/\d+)?)/i);
+
+    return {
+      collected: collectedMatch ? parseInt(collectedMatch[1], 10) : null,
+      probed: probedMatch ? parseInt(probedMatch[1], 10) : null,
+      live: livenessMatch ? parseInt(livenessMatch[1], 10) : null,
+      dead: deadMatch ? parseInt(deadMatch[1], 10) : null,
+      evaluated: evalMatch ? evalMatch[1] : null,
+    };
+  };
 
   const [formData, setFormData] = useState({
     name: '',
@@ -105,6 +126,50 @@ export default function ScheduleManager() {
       const res = await fetch('/api/schedules');
       if (res.ok) {
         const data = await res.json();
+
+        // Detect newly finished runs and surface a prominent completion prompt banner
+        data.forEach((sch) => {
+          const prev = prevSchedulesRef.current[sch.id];
+          const wasRunning = prev && (prev.last_status === 'running' || prev.progress?.status === 'running' || runningScheduleId === sch.id);
+          const isNowDone = sch.last_status === 'success' || sch.progress?.status === 'completed';
+
+          if (wasRunning && isNowDone && sch.last_result_summary) {
+            const stats = parseSummaryStats(sch.last_result_summary);
+            setJustCompletedIds((prevSet) => new Set([...prevSet, sch.id]));
+
+            let badgeText = '';
+            if (stats?.collected !== null && stats?.collected !== undefined) {
+              badgeText = `+${stats.collected} Jobs Collected`;
+            } else if (stats?.evaluated) {
+              badgeText = `${stats.evaluated} Evaluated`;
+            } else if (stats?.live) {
+              badgeText = `${stats.live} Live Verified`;
+            }
+
+            setCompletionPrompt({
+              id: sch.id,
+              name: sch.name,
+              target_area: sch.target_area,
+              summary: sch.last_result_summary,
+              stats,
+              badgeText,
+              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            });
+
+            // Keep completed card in view for 12s then fade out
+            setTimeout(() => {
+              setJustCompletedIds((prevSet) => {
+                const nextSet = new Set(prevSet);
+                nextSet.delete(sch.id);
+                return nextSet;
+              });
+            }, 12000);
+          }
+        });
+
+        const newMap = {};
+        data.forEach((sch) => { newMap[sch.id] = sch; });
+        prevSchedulesRef.current = newMap;
         setSchedules(data);
       }
     } catch (err) {
@@ -367,6 +432,43 @@ export default function ScheduleManager() {
         </div>
       </div>
 
+      {/* Prominent Completion Prompt Banner */}
+      {completionPrompt && (
+        <div className="p-4 rounded-xl bg-gradient-to-r from-emerald-950/90 via-slate-900/90 to-emerald-950/90 border border-emerald-500/50 shadow-xl shadow-emerald-950/50 flex items-start justify-between gap-4 animate-fade-in backdrop-blur">
+          <div className="flex items-start gap-3.5">
+            <div className="p-2.5 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shrink-0">
+              <Sparkles className="w-5 h-5 text-emerald-400" />
+            </div>
+            <div className="space-y-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm font-bold text-white tracking-wide">
+                  Schedule Run Finished: {completionPrompt.name}
+                </span>
+                {completionPrompt.badgeText && (
+                  <span className="px-2.5 py-0.5 rounded-full text-xs font-mono font-bold bg-emerald-500/30 text-emerald-200 border border-emerald-400/50 shadow-sm">
+                    {completionPrompt.badgeText}
+                  </span>
+                )}
+                <span className="text-[10px] text-slate-400 font-mono">
+                  at {completionPrompt.timestamp}
+                </span>
+              </div>
+              <p className="text-xs text-emerald-200/90 font-mono leading-relaxed">
+                {completionPrompt.summary}
+              </p>
+            </div>
+          </div>
+
+          <button
+            onClick={() => setCompletionPrompt(null)}
+            className="p-1 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors shrink-0"
+            title="Dismiss notification"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {/* Schedules Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {filteredSchedules.map((sch) => {
@@ -412,13 +514,13 @@ export default function ScheduleManager() {
                 </div>
 
                 {/* Active Granular Progress Card matching Pipeline Inbox */}
-                {(isRunning || sch.progress?.status === 'running') && (
+                {(isRunning || sch.progress?.status === 'running' || justCompletedIds.has(sch.id)) && (
                   <GranularProgressCard
                     className="mt-3.5"
                     job={{
                       ...sch.progress,
                       target_area: sch.target_area,
-                      status: sch.progress?.status || (isRunning ? 'running' : 'idle'),
+                      status: sch.progress?.status || (isRunning ? 'running' : justCompletedIds.has(sch.id) ? 'completed' : 'idle'),
                     }}
                     onCancel={() => handleCancelSchedule(sch.id)}
                     cancelLabel="Cancel Schedule Run"
@@ -473,13 +575,50 @@ export default function ScheduleManager() {
                 )}
 
                 {/* Last Result & Next Run */}
-                <div className="mt-4 pt-3 border-t border-slate-800/70 space-y-1.5 text-xs text-slate-400">
-                  {sch.last_result_summary && (
-                    <div className="flex items-start gap-1.5 text-[11px] text-slate-300 bg-slate-950/50 p-2 rounded border border-slate-800">
-                      <Info className="w-3.5 h-3.5 text-indigo-400 shrink-0 mt-0.5" />
-                      <span className="line-clamp-2">{sch.last_result_summary}</span>
-                    </div>
-                  )}
+                <div className="mt-4 pt-3 border-t border-slate-800/70 space-y-2 text-xs text-slate-400">
+                  {sch.last_result_summary && (() => {
+                    const stats = parseSummaryStats(sch.last_result_summary);
+                    return (
+                      <div className="bg-slate-950/70 p-3 rounded-lg border border-slate-800 space-y-2">
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                            <span>Last Execution Outcome:</span>
+                          </span>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            {stats?.collected !== null && stats?.collected !== undefined && (
+                              <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                                +{stats.collected} Jobs Collected
+                              </span>
+                            )}
+                            {stats?.probed !== null && stats?.probed !== undefined && (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-sky-500/20 text-sky-300 border border-sky-500/30">
+                                {stats.probed} Portals Probed
+                              </span>
+                            )}
+                            {stats?.live !== null && stats?.live !== undefined && (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-teal-500/20 text-teal-300 border border-teal-500/30">
+                                {stats.live} Live
+                              </span>
+                            )}
+                            {stats?.dead !== null && stats?.dead !== undefined && stats.dead > 0 && (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                                -{stats.dead} Purged
+                              </span>
+                            )}
+                            {stats?.evaluated && (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-violet-500/20 text-violet-300 border border-violet-500/30">
+                                {stats.evaluated} Evaluated
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="text-[11px] text-slate-300 font-mono leading-relaxed">
+                          {sch.last_result_summary}
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                   <div className="flex items-center justify-between text-[11px] pt-1">
                     <span>Last run: <strong className="text-slate-300">{sch.last_run_at ? new Date(sch.last_run_at).toLocaleString() : 'Never'}</strong></span>
