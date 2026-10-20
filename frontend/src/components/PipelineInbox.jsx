@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import PipelineProgressCard from './PipelineProgressCard';
 import GranularProgressCard from './GranularProgressCard';
+import ConfirmModal from './ConfirmModal';
 
 const STEP_SUBSTEPS = {
   1: [
@@ -72,6 +73,18 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
   const [activeEvalJobId, setActiveEvalJobId] = useState(null);
   const [activeEvalJob, setActiveEvalJob] = useState(null);
   const [isEvaluating, setIsEvaluating] = useState(false);
+  const [confirmConfig, setConfirmConfig] = useState({
+    isOpen: false,
+    title: '',
+    message: '',
+    confirmLabel: 'Yes, Delete',
+    confirmVariant: 'danger',
+    onConfirm: () => {},
+  });
+
+  const closeConfirm = () => {
+    setConfirmConfig((prev) => ({ ...prev, isOpen: false }));
+  };
 
   const getUrlFromItem = (item) => {
     if (!item) return '';
@@ -298,79 +311,86 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
 
   const [deleting, setDeleting] = useState(false);
 
-  const handleDeleteSelected = async () => {
+  const handleDeleteSelected = () => {
     if (selectedUrls.size === 0) return;
     const count = selectedUrls.size;
-    if (
-      !window.confirm(
-        `Are you sure you want to delete ${count} selected role(s) from inbox, TSV scan history, and all occurrences?`
-      )
-    ) {
-      return;
-    }
-
-    setDeleting(true);
-    try {
-      const res = await fetch('/api/pipeline/delete-batch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ urls: Array.from(selectedUrls) }),
-      });
-      if (!res.ok) {
-        throw new Error(`Server returned HTTP ${res.status}`);
-      }
-      const data = await res.json();
-      setActionMessage(`🗑️ ${data.message || `Deleted ${count} item(s) from all occurrences.`}`);
-      setSelectedUrls(new Set());
-      await fetchLatestDiscovered();
-      onRefresh?.();
-      setTimeout(() => setActionMessage(''), 6000);
-    } catch (err) {
-      console.error('Failed to delete selected items:', err);
-      setActionMessage(`❌ Failed to delete: ${err.message}`);
-    } finally {
-      setDeleting(false);
-    }
+    setConfirmConfig({
+      isOpen: true,
+      title: `Delete ${count} Selected Role${count > 1 ? 's' : ''}`,
+      message: `Are you sure you want to delete ${count} selected role(s) from your inbox, scan history, and all occurrences? This action cannot be undone.`,
+      confirmLabel: 'Yes, Delete Selected',
+      confirmVariant: 'danger',
+      onConfirm: async () => {
+        closeConfirm();
+        setDeleting(true);
+        try {
+          const res = await fetch('/api/pipeline/delete-batch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ urls: Array.from(selectedUrls) }),
+          });
+          if (!res.ok) {
+            throw new Error(`Server returned HTTP ${res.status}`);
+          }
+          const data = await res.json();
+          setActionMessage(`🗑️ ${data.message || `Deleted ${count} item(s) from all occurrences.`}`);
+          setSelectedUrls(new Set());
+          await fetchLatestDiscovered();
+          onRefresh?.();
+          setTimeout(() => setActionMessage(''), 6000);
+        } catch (err) {
+          console.error('Failed to delete selected items:', err);
+          setActionMessage(`❌ Failed to delete: ${err.message}`);
+        } finally {
+          setDeleting(false);
+        }
+      },
+    });
   };
 
-  const handleDeleteSingle = async (target) => {
+  const handleDeleteSingle = (target) => {
     if (!target) return;
     const url = getUrlFromItem(target) || target;
-    if (
-      !window.confirm(
-        'Delete this role from inbox, TSV scan history, and all occurrences?'
-      )
-    ) {
-      return;
-    }
+    const parts = target.split('|');
+    const label = parts.length >= 3 ? `${parts[1].trim()} — ${parts[2].trim()}` : url;
 
-    setDeleting(true);
-    try {
-      const res = await fetch('/api/pipeline/delete-batch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ urls: [url, target] }),
-      });
-      if (!res.ok) {
-        throw new Error(`Server returned HTTP ${res.status}`);
-      }
-      const data = await res.json();
-      setActionMessage(`🗑️ ${data.message || 'Deleted item from all occurrences.'}`);
-      setSelectedUrls((prev) => {
-        const next = new Set(prev);
-        next.delete(url);
-        next.delete(target);
-        return next;
-      });
-      await fetchLatestDiscovered();
-      onRefresh?.();
-      setTimeout(() => setActionMessage(''), 5000);
-    } catch (err) {
-      console.error('Failed to delete item:', err);
-      setActionMessage(`❌ Failed to delete: ${err.message}`);
-    } finally {
-      setDeleting(false);
-    }
+    setConfirmConfig({
+      isOpen: true,
+      title: 'Delete Role',
+      message: `Are you sure you want to delete "${label}" from your inbox, scan history, and all occurrences?`,
+      confirmLabel: 'Yes, Delete',
+      confirmVariant: 'danger',
+      onConfirm: async () => {
+        closeConfirm();
+        setDeleting(true);
+        try {
+          const res = await fetch('/api/pipeline/delete-batch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ urls: [url, target] }),
+          });
+          if (!res.ok) {
+            throw new Error(`Server returned HTTP ${res.status}`);
+          }
+          const data = await res.json();
+          setActionMessage(`🗑️ ${data.message || 'Deleted item from all occurrences.'}`);
+          setSelectedUrls((prev) => {
+            const next = new Set(prev);
+            next.delete(url);
+            next.delete(target);
+            return next;
+          });
+          await fetchLatestDiscovered();
+          onRefresh?.();
+          setTimeout(() => setActionMessage(''), 5000);
+        } catch (err) {
+          console.error('Failed to delete item:', err);
+          setActionMessage(`❌ Failed to delete: ${err.message}`);
+        } finally {
+          setDeleting(false);
+        }
+      },
+    });
   };
 
 
@@ -500,26 +520,36 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
     }
   };
 
-  const handlePurgeForeign = async () => {
-    setPurging(true);
-    setActionMessage('');
-    try {
-      const res = await fetch('/api/settings/purge-foreign', {
-        method: 'POST',
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setActionMessage(`🧹 ${data.message}`);
-        onRefresh?.();
-      } else {
-        setActionMessage('❌ Failed to purge items.');
-      }
-    } catch (err) {
-      setActionMessage(`❌ Error: ${err.message}`);
-    } finally {
-      setPurging(false);
-      setTimeout(() => setActionMessage(''), 5000);
-    }
+  const handlePurgeForeign = () => {
+    setConfirmConfig({
+      isOpen: true,
+      title: 'Purge Non-UK Postings',
+      message: 'Are you sure you want to purge non-UK postings from your inbox? Any jobs with foreign locations will be permanently removed.',
+      confirmLabel: 'Yes, Purge Non-UK',
+      confirmVariant: 'warning',
+      onConfirm: async () => {
+        closeConfirm();
+        setPurging(true);
+        setActionMessage('');
+        try {
+          const res = await fetch('/api/settings/purge-foreign', {
+            method: 'POST',
+          });
+          const data = await res.json();
+          if (res.ok) {
+            setActionMessage(`🧹 ${data.message}`);
+            onRefresh?.();
+          } else {
+            setActionMessage('❌ Failed to purge items.');
+          }
+        } catch (err) {
+          setActionMessage(`❌ Error: ${err.message}`);
+        } finally {
+          setPurging(false);
+          setTimeout(() => setActionMessage(''), 5000);
+        }
+      },
+    });
   };
 
   const handleVerifyInboxLiveness = async () => {
@@ -544,29 +574,36 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
     }
   };
 
-  const handleResetPipeline = async () => {
-    if (!window.confirm('Are you sure you want to reset the pipeline inbox? This will clear all pending items, purge scan history, and remove all generated evaluations.')) {
-      return;
-    }
-    setResetting(true);
-    setActionMessage('');
-    try {
-      const res = await fetch('/api/settings/reset-pipeline', {
-        method: 'POST',
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setActionMessage(`🔄 ${data.message}`);
-        onRefresh?.();
-      } else {
-        setActionMessage('❌ Failed to reset pipeline.');
-      }
-    } catch (err) {
-      setActionMessage(`❌ Error: ${err.message}`);
-    } finally {
-      setResetting(false);
-      setTimeout(() => setActionMessage(''), 5000);
-    }
+  const handleResetPipeline = () => {
+    setConfirmConfig({
+      isOpen: true,
+      title: 'Reset Pipeline Inbox',
+      message: 'Are you sure you want to reset the pipeline inbox? This will clear all pending items, purge scan history, and remove all generated evaluations. This action cannot be undone.',
+      confirmLabel: 'Yes, Reset Pipeline',
+      confirmVariant: 'danger',
+      onConfirm: async () => {
+        closeConfirm();
+        setResetting(true);
+        setActionMessage('');
+        try {
+          const res = await fetch('/api/settings/reset-pipeline', {
+            method: 'POST',
+          });
+          const data = await res.json();
+          if (res.ok) {
+            setActionMessage(`🔄 ${data.message}`);
+            onRefresh?.();
+          } else {
+            setActionMessage('❌ Failed to reset pipeline.');
+          }
+        } catch (err) {
+          setActionMessage(`❌ Error: ${err.message}`);
+        } finally {
+          setResetting(false);
+          setTimeout(() => setActionMessage(''), 5000);
+        }
+      },
+    });
   };
 
   const handleDiscover = async (useCV = true) => {
@@ -1218,6 +1255,16 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
           )}
         </div>
       </div>
+
+      <ConfirmModal
+        isOpen={confirmConfig.isOpen}
+        title={confirmConfig.title}
+        message={confirmConfig.message}
+        confirmLabel={confirmConfig.confirmLabel}
+        confirmVariant={confirmConfig.confirmVariant}
+        onConfirm={confirmConfig.onConfirm}
+        onClose={closeConfirm}
+      />
     </div>
   </div>
 );

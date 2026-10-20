@@ -29,6 +29,7 @@ import {
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import ConfirmModal from './ConfirmModal';
 
 function parseReportMetadata(content, defaultTitle = '') {
   const meta = {
@@ -189,6 +190,18 @@ export default function ReportsViewer({ reports = [], pdfs = [], onRefresh }) {
   const [copied, setCopied] = useState(false);
   const [reportSearch, setReportSearch] = useState('');
   const [reportListFilter, setReportListFilter] = useState('');
+  const [confirmConfig, setConfirmConfig] = useState({
+    isOpen: false,
+    title: '',
+    message: '',
+    confirmLabel: 'Yes, Delete',
+    confirmVariant: 'danger',
+    onConfirm: () => {},
+  });
+
+  const closeConfirm = () => {
+    setConfirmConfig((prev) => ({ ...prev, isOpen: false }));
+  };
 
   useEffect(() => {
     if (selectedReport && !reports.some((r) => r.filename === selectedReport.filename)) {
@@ -224,51 +237,61 @@ export default function ReportsViewer({ reports = [], pdfs = [], onRefresh }) {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const handleDeleteReport = async (filename) => {
-    if (!window.confirm(`Delete evaluation report "${filename}"?`)) {
-      return;
-    }
-    setDeleting(true);
-    try {
-      const res = await fetch(`/api/reports/${encodeURIComponent(filename)}`, {
-        method: 'DELETE',
-      });
-      if (res.ok) {
-        onRefresh?.();
-      } else {
-        alert('Failed to delete report.');
-      }
-    } catch (err) {
-      alert(`Error deleting report: ${err.message}`);
-    } finally {
-      setDeleting(false);
-    }
+  const handleDeleteReport = (filename) => {
+    setConfirmConfig({
+      isOpen: true,
+      title: 'Delete Evaluation Report',
+      message: `Are you sure you want to delete the evaluation report "${filename}"? This action cannot be undone.`,
+      confirmLabel: 'Yes, Delete Report',
+      confirmVariant: 'danger',
+      onConfirm: async () => {
+        closeConfirm();
+        setDeleting(true);
+        try {
+          const res = await fetch(`/api/reports/${encodeURIComponent(filename)}`, {
+            method: 'DELETE',
+          });
+          if (res.ok) {
+            onRefresh?.();
+          } else {
+            alert('Failed to delete report.');
+          }
+        } catch (err) {
+          alert(`Error deleting report: ${err.message}`);
+        } finally {
+          setDeleting(false);
+        }
+      },
+    });
   };
 
-  const handleDeleteAllReports = async () => {
-    if (
-      !window.confirm(
-        `Are you sure you want to delete ALL ${reports.length} evaluation reports and generated PDFs? This action cannot be undone.`
-      )
-    ) {
-      return;
-    }
-    setDeleting(true);
-    try {
-      const res = await fetch('/api/reports', {
-        method: 'DELETE',
-      });
-      if (res.ok) {
-        setSelectedReport(null);
-        onRefresh?.();
-      } else {
-        alert('Failed to delete all reports.');
-      }
-    } catch (err) {
-      alert(`Error deleting reports: ${err.message}`);
-    } finally {
-      setDeleting(false);
-    }
+  const handleDeleteAllReports = () => {
+    setConfirmConfig({
+      isOpen: true,
+      title: 'Delete All Reports',
+      message: `Are you sure you want to delete ALL ${reports.length} evaluation reports and generated PDFs? This action cannot be undone.`,
+      confirmLabel: 'Yes, Delete All Reports',
+      confirmVariant: 'danger',
+      onConfirm: async () => {
+        closeConfirm();
+        setDeleting(true);
+        try {
+          const res = await fetch('/api/reports', {
+            method: 'DELETE',
+          });
+          if (res.ok) {
+            setSelectedReport(null);
+            onRefresh?.();
+          } else {
+            alert('Failed to delete all reports.');
+          }
+        } catch (err) {
+          alert(`Error deleting reports: ${err.message}`);
+        } finally {
+          setDeleting(false);
+        }
+      },
+    });
   };
 
   const handleGeneratePdf = async (filename) => {
@@ -857,6 +880,16 @@ export default function ReportsViewer({ reports = [], pdfs = [], onRefresh }) {
           )}
         </div>
       </div>
+
+      <ConfirmModal
+        isOpen={confirmConfig.isOpen}
+        title={confirmConfig.title}
+        message={confirmConfig.message}
+        confirmLabel={confirmConfig.confirmLabel}
+        confirmVariant={confirmConfig.confirmVariant}
+        onConfirm={confirmConfig.onConfirm}
+        onClose={closeConfirm}
+      />
     </div>
   );
 }

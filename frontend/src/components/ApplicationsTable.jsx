@@ -12,6 +12,7 @@ import {
   Zap,
 } from 'lucide-react';
 import PipelineProgressCard from './PipelineProgressCard';
+import ConfirmModal from './ConfirmModal';
 
 export default function ApplicationsTable({ applications = [], onStatusChange, onViewReport, onRefresh }) {
   const [search, setSearch] = useState('');
@@ -20,7 +21,21 @@ export default function ApplicationsTable({ applications = [], onStatusChange, o
   const [activeEvalJob, setActiveEvalJob] = useState(null);
   const [isEvaluating, setIsEvaluating] = useState(false);
   const [selectedAppIds, setSelectedAppIds] = useState(new Set());
+  const [confirmConfig, setConfirmConfig] = useState({
+    isOpen: false,
+    title: '',
+    message: '',
+    confirmLabel: 'Yes, Delete',
+    confirmVariant: 'danger',
+    onConfirm: () => {},
+  });
   const lastCompletedCountRef = useRef(0);
+
+  const closeConfirm = () => {
+    setConfirmConfig((prev) => ({ ...prev, isOpen: false }));
+  };
+
+  const cleanRole = (role) => (role || '').replace(/\s+evaluation$/i, '').trim();
 
   // 1. Refresh resilience: Check if an evaluation job is already running on mount
   useEffect(() => {
@@ -149,40 +164,55 @@ export default function ApplicationsTable({ applications = [], onStatusChange, o
 
   const statusOptions = ['Evaluated', 'Applied', 'Interviewing', 'Offer', 'Rejected', 'Archived'];
 
-  const handleDeleteApplication = async (id, company, role) => {
-    if (!window.confirm(`Delete application for "${company} - ${role}"? This will also remove its evaluation report.`)) {
-      return;
-    }
-    try {
-      const res = await fetch(`/api/applications/${id}`, {
-        method: 'DELETE',
-      });
-      if (res.ok) {
-        onRefresh?.();
-      } else {
-        alert('Failed to delete application.');
-      }
-    } catch (err) {
-      alert(`Error deleting application: ${err.message}`);
-    }
+  const handleDeleteApplication = (id, company, role) => {
+    const roleClean = cleanRole(role);
+    setConfirmConfig({
+      isOpen: true,
+      title: 'Delete Application',
+      message: `Are you sure you want to delete the application for "${company} — ${roleClean}"? This will also remove its evaluation report.`,
+      confirmLabel: 'Yes, Delete',
+      confirmVariant: 'danger',
+      onConfirm: async () => {
+        closeConfirm();
+        try {
+          const res = await fetch(`/api/applications/${id}`, {
+            method: 'DELETE',
+          });
+          if (res.ok) {
+            onRefresh?.();
+          } else {
+            alert('Failed to delete application.');
+          }
+        } catch (err) {
+          alert(`Error deleting application: ${err.message}`);
+        }
+      },
+    });
   };
 
-  const handleDeleteAllApplications = async () => {
-    if (!window.confirm(`Are you sure you want to delete ALL ${applications.length} applications and their evaluation reports? This action cannot be undone.`)) {
-      return;
-    }
-    try {
-      const res = await fetch('/api/applications', {
-        method: 'DELETE',
-      });
-      if (res.ok) {
-        onRefresh?.();
-      } else {
-        alert('Failed to delete applications.');
-      }
-    } catch (err) {
-      alert(`Error deleting applications: ${err.message}`);
-    }
+  const handleDeleteAllApplications = () => {
+    setConfirmConfig({
+      isOpen: true,
+      title: 'Delete All Applications',
+      message: `Are you sure you want to delete ALL ${applications.length} application(s) and their evaluation reports? This action cannot be undone.`,
+      confirmLabel: 'Yes, Delete All',
+      confirmVariant: 'danger',
+      onConfirm: async () => {
+        closeConfirm();
+        try {
+          const res = await fetch('/api/applications', {
+            method: 'DELETE',
+          });
+          if (res.ok) {
+            onRefresh?.();
+          } else {
+            alert('Failed to delete applications.');
+          }
+        } catch (err) {
+          alert(`Error deleting applications: ${err.message}`);
+        }
+      },
+    });
   };
 
   const handleReEvaluate = async (app) => {
@@ -293,22 +323,29 @@ export default function ApplicationsTable({ applications = [], onStatusChange, o
     }
   };
 
-  const handleDeleteSelected = async () => {
+  const handleDeleteSelected = () => {
     if (selectedAppIds.size === 0) return;
     const count = selectedAppIds.size;
-    if (!window.confirm(`Are you sure you want to delete ${count} selected application(s) and their reports?`)) {
-      return;
-    }
-    try {
-      const ids = Array.from(selectedAppIds);
-      for (const id of ids) {
-        await fetch(`/api/applications/${id}`, { method: 'DELETE' });
-      }
-      setSelectedAppIds(new Set());
-      onRefresh?.();
-    } catch (err) {
-      alert(`Failed to delete selected applications: ${err.message}`);
-    }
+    setConfirmConfig({
+      isOpen: true,
+      title: `Delete ${count} Selected Application${count > 1 ? 's' : ''}`,
+      message: `Are you sure you want to delete ${count} selected application(s) and their reports? This action cannot be undone.`,
+      confirmLabel: 'Yes, Delete Selected',
+      confirmVariant: 'danger',
+      onConfirm: async () => {
+        closeConfirm();
+        try {
+          const ids = Array.from(selectedAppIds);
+          for (const id of ids) {
+            await fetch(`/api/applications/${id}`, { method: 'DELETE' });
+          }
+          setSelectedAppIds(new Set());
+          onRefresh?.();
+        } catch (err) {
+          alert(`Failed to delete selected applications: ${err.message}`);
+        }
+      },
+    });
   };
 
   const isAllSelected = filtered.length > 0 && filtered.every((app) => selectedAppIds.has(app.id));
@@ -356,11 +393,11 @@ export default function ApplicationsTable({ applications = [], onStatusChange, o
           {applications.length > 0 && (
             <button
               onClick={handleDeleteAllApplications}
-              title="Delete All Applications"
+              title="Delete Applications"
               className="px-2.5 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/30 text-xs font-medium flex items-center gap-1.5 transition-colors shrink-0"
             >
               <Trash2 className="w-3.5 h-3.5 text-red-400" />
-              <span>Clear Tracker</span>
+              <span>Delete Applications</span>
             </button>
           )}
           <div className="relative w-full sm:w-64">
@@ -492,7 +529,7 @@ export default function ApplicationsTable({ applications = [], onStatusChange, o
                     </td>
                     <td className="py-3 px-4 font-mono text-slate-500">{app.num}</td>
                     <td className="py-3 px-4 font-semibold text-slate-200">{app.company}</td>
-                    <td className="py-3 px-4 text-slate-300 max-w-xs truncate">{app.role}</td>
+                    <td className="py-3 px-4 text-slate-300 max-w-xs truncate">{cleanRole(app.role)}</td>
                     <td className="py-3 px-4">
                       <span className={`px-2 py-0.5 rounded border text-[11px] font-mono font-bold ${getScoreBadge(app.score)}`}>
                         {app.score}/5.0
@@ -561,6 +598,16 @@ export default function ApplicationsTable({ applications = [], onStatusChange, o
           </tbody>
         </table>
       </div>
+
+      <ConfirmModal
+        isOpen={confirmConfig.isOpen}
+        title={confirmConfig.title}
+        message={confirmConfig.message}
+        confirmLabel={confirmConfig.confirmLabel}
+        confirmVariant={confirmConfig.confirmVariant}
+        onConfirm={confirmConfig.onConfirm}
+        onClose={closeConfirm}
+      />
     </div>
   );
 }

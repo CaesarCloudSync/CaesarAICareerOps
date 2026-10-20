@@ -181,7 +181,8 @@ class CareerOpsEvaluatorService:
             heading_clean = first_heading.lstrip("#").replace("Evaluation Report:", "").replace("Evaluation:", "").strip()
             parts = re.split(r"[-—–:]", heading_clean, maxsplit=1)
             company = parts[0].strip() if len(parts) > 0 else "Unknown"
-            role = parts[1].strip() if len(parts) > 1 else heading_clean
+            raw_role = parts[1].strip() if len(parts) > 1 else heading_clean
+            role = re.sub(r"\s+evaluation(?:\s+report)?$", "", raw_role, flags=re.IGNORECASE).strip()
 
             score_match = re.search(r"(\d+(?:\.\d+)?)\s*/\s*5", output_text)
             score = float(score_match.group(1)) if score_match else 4.0

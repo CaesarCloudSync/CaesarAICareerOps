@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import PipelineProgressCard from './PipelineProgressCard';
 import GranularProgressCard from './GranularProgressCard';
+import ConfirmModal from './ConfirmModal';
 
 const SUGGESTIONS = [
   {
@@ -66,6 +67,18 @@ export default function ScheduleManager() {
   const [completionPrompt, setCompletionPrompt] = useState(null);
   const [justCompletedIds, setJustCompletedIds] = useState(new Set());
   const prevSchedulesRef = useRef({});
+  const [confirmConfig, setConfirmConfig] = useState({
+    isOpen: false,
+    title: '',
+    message: '',
+    confirmLabel: 'Yes, Delete',
+    confirmVariant: 'danger',
+    onConfirm: () => {},
+  });
+
+  const closeConfirm = () => {
+    setConfirmConfig((prev) => ({ ...prev, isOpen: false }));
+  };
 
   // Form State
   const clientTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/London';
@@ -288,14 +301,25 @@ export default function ScheduleManager() {
     }
   };
 
-  const handleDelete = async (id) => {
-    if (!window.confirm('Are you sure you want to delete this schedule?')) return;
-    try {
-      const res = await fetch(`/api/schedules/${id}`, { method: 'DELETE' });
-      if (res.ok) loadSchedules();
-    } catch (err) {
-      console.error('Failed to delete schedule', err);
-    }
+  const handleDelete = (id) => {
+    const targetSchedule = schedules.find((s) => s.id === id);
+    const schedName = targetSchedule ? targetSchedule.name : 'this schedule';
+    setConfirmConfig({
+      isOpen: true,
+      title: 'Delete Schedule',
+      message: `Are you sure you want to delete "${schedName}"? This scheduled pipeline will be removed permanently.`,
+      confirmLabel: 'Yes, Delete Schedule',
+      confirmVariant: 'danger',
+      onConfirm: async () => {
+        closeConfirm();
+        try {
+          const res = await fetch(`/api/schedules/${id}`, { method: 'DELETE' });
+          if (res.ok) loadSchedules();
+        } catch (err) {
+          console.error('Failed to delete schedule', err);
+        }
+      },
+    });
   };
 
   const handleRunNow = async (id) => {
@@ -1047,6 +1071,16 @@ export default function ScheduleManager() {
           </div>
         </div>
       )}
+
+      <ConfirmModal
+        isOpen={confirmConfig.isOpen}
+        title={confirmConfig.title}
+        message={confirmConfig.message}
+        confirmLabel={confirmConfig.confirmLabel}
+        confirmVariant={confirmConfig.confirmVariant}
+        onConfirm={confirmConfig.onConfirm}
+        onClose={closeConfirm}
+      />
     </div>
   );
 }

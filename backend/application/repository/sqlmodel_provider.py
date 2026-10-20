@@ -179,7 +179,7 @@ class SQLModelRepository(BaseRepository):
             app = Application(
                 num=num_str,
                 company=app_data.company,
-                role=app_data.role,
+                role=re.sub(r"\s+evaluation(?:\s+report)?$", "", app_data.role or "", flags=re.IGNORECASE).strip(),
                 score=app_data.score,
                 status=app_data.status,
                 date_applied=today_str,
