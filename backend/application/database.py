@@ -25,6 +25,12 @@ def init_database() -> None:
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
     SQLModel.metadata.create_all(engine)
+    try:
+        with engine.begin() as conn:
+            from sqlalchemy import text
+            conn.execute(text("ALTER TABLE scheduletask ADD COLUMN IF NOT EXISTS client_timezone VARCHAR(64) NULL;"))
+    except Exception:
+        pass
 
 
 def get_db_session():

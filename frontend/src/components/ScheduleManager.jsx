@@ -63,6 +63,8 @@ export default function ScheduleManager() {
   const [editingSchedule, setEditingSchedule] = useState(null);
 
   // Form State
+  const clientTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/London';
+
   const [formData, setFormData] = useState({
     name: '',
     target_area: 'new_jobs',
@@ -79,8 +81,22 @@ export default function ScheduleManager() {
     interval_hours: 12,
     time_of_day: '09:00',
     days_of_week: '1,2,3,4,5',
+    client_timezone: clientTimezone,
     is_active: true,
   });
+
+  const formatNextRun = (sch) => {
+    if (!sch.is_active || !sch.next_run_at) return 'Paused';
+    const d = new Date(sch.next_run_at);
+    const now = new Date();
+    const isToday = d.toDateString() === now.toDateString();
+    const timeStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    if (isToday) return `Today at ${timeStr}`;
+    const tomorrow = new Date(now);
+    tomorrow.setDate(now.getDate() + 1);
+    if (d.toDateString() === tomorrow.toDateString()) return `Tomorrow at ${timeStr}`;
+    return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} at ${timeStr}`;
+  };
 
   const loadSchedules = async (showLoading = false) => {
     if (showLoading) setLoading(true);
@@ -126,6 +142,7 @@ export default function ScheduleManager() {
       interval_hours: 12,
       time_of_day: '09:00',
       days_of_week: '1,2,3,4,5',
+      client_timezone: clientTimezone,
       is_active: true,
     });
     setIsModalOpen(true);
@@ -149,6 +166,7 @@ export default function ScheduleManager() {
       interval_hours: sch.interval_hours || 12,
       time_of_day: sch.time_of_day || '09:00',
       days_of_week: sch.days_of_week || '1,2,3,4,5',
+      client_timezone: sch.client_timezone || clientTimezone,
       is_active: sch.is_active,
     });
     setIsModalOpen(true);
@@ -156,12 +174,16 @@ export default function ScheduleManager() {
 
   const handleSave = async (e) => {
     e.preventDefault();
+    const payload = {
+      ...formData,
+      client_timezone: formData.client_timezone || clientTimezone,
+    };
     try {
       if (editingSchedule) {
         const res = await fetch(`/api/schedules/${editingSchedule.id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(formData),
+          body: JSON.stringify(payload),
         });
         if (res.ok) {
           setIsModalOpen(false);
@@ -171,7 +193,7 @@ export default function ScheduleManager() {
         const res = await fetch('/api/schedules', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(formData),
+          body: JSON.stringify(payload),
         });
         if (res.ok) {
           setIsModalOpen(false);
@@ -451,7 +473,7 @@ export default function ScheduleManager() {
 
                   <div className="flex items-center justify-between text-[11px] pt-1">
                     <span>Last run: <strong className="text-slate-300">{sch.last_run_at ? new Date(sch.last_run_at).toLocaleString() : 'Never'}</strong></span>
-                    <span>Next run: <strong className="text-indigo-300">{sch.is_active && sch.next_run_at ? new Date(sch.next_run_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Paused'}</strong></span>
+                    <span>Next run: <strong className="text-indigo-300">{formatNextRun(sch)}</strong></span>
                   </div>
                 </div>
               </div>

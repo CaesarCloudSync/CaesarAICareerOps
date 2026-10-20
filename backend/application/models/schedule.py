@@ -30,6 +30,7 @@ class ScheduleBase(SQLModel):
     interval_hours: Optional[int] = Field(default=12)
     time_of_day: Optional[str] = Field(default="09:00")  # HH:MM
     days_of_week: Optional[str] = Field(default="1,2,3,4,5")  # 1=Mon, 7=Sun
+    client_timezone: Optional[str] = Field(default=None)  # e.g. "Europe/London"
 
     # State & Execution Tracking
     is_active: bool = Field(default=True)
@@ -62,6 +63,7 @@ class ScheduleCreateRequest(BaseModel):
     interval_hours: Optional[int] = 12
     time_of_day: Optional[str] = "09:00"
     days_of_week: Optional[str] = "1,2,3,4,5"
+    client_timezone: Optional[str] = None
     is_active: bool = True
 
 
@@ -81,6 +83,7 @@ class ScheduleUpdateRequest(BaseModel):
     interval_hours: Optional[int] = None
     time_of_day: Optional[str] = None
     days_of_week: Optional[str] = None
+    client_timezone: Optional[str] = None
     is_active: Optional[bool] = None
 
 

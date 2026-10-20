@@ -15,17 +15,21 @@ from backend.application.dependencies import get_career_repository
 
 
 def compute_next_run(task: ScheduleTask, base_time: Optional[datetime] = None) -> datetime:
-    """Calculates the next execution timestamp for a schedule task."""
-    now = base_time or datetime.now(timezone.utc)
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=timezone.utc)
+    """
+    Calculates the next execution timestamp for a schedule task in UTC.
+    For daily and weekday schedules, time_of_day is interpreted in the user's
+    local wall-clock timezone (client_timezone or system local timezone).
+    """
+    now_utc = base_time or datetime.now(timezone.utc)
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=timezone.utc)
 
     if task.frequency_type == "hourly":
-        return now + timedelta(hours=1)
+        return now_utc + timedelta(hours=1)
 
     elif task.frequency_type == "every_hours":
         hours = max(1, task.interval_hours or 12)
-        return now + timedelta(hours=hours)
+        return now_utc + timedelta(hours=hours)
 
     elif task.frequency_type in ("daily", "weekdays"):
         target_hour = 9
@@ -38,8 +42,22 @@ def compute_next_run(task: ScheduleTask, base_time: Optional[datetime] = None) -
             except (ValueError, IndexError):
                 target_hour, target_minute = 9, 0
 
-        candidate = now.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
-        if candidate <= now:
+        # Resolve user's wall-clock timezone
+        local_tz = None
+        if getattr(task, "client_timezone", None):
+            try:
+                from zoneinfo import ZoneInfo
+                local_tz = ZoneInfo(task.client_timezone)
+            except Exception:
+                local_tz = None
+
+        if local_tz is None:
+            local_tz = datetime.now().astimezone().tzinfo or timezone.utc
+
+        # Evaluate candidate in the local wall-clock timezone
+        local_now = now_utc.astimezone(local_tz)
+        candidate = local_now.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
+        if candidate <= local_now:
             candidate += timedelta(days=1)
 
         if task.frequency_type == "weekdays":
@@ -47,9 +65,10 @@ def compute_next_run(task: ScheduleTask, base_time: Optional[datetime] = None) -
             while candidate.weekday() >= 5:  # 5=Sat, 6=Sun
                 candidate += timedelta(days=1)
 
-        return candidate
+        # Return UTC datetime so database and scheduler daemon comparisons are uniformly UTC
+        return candidate.astimezone(timezone.utc)
 
-    return now + timedelta(hours=12)
+    return now_utc + timedelta(hours=12)
 
 
 class SchedulerService:
