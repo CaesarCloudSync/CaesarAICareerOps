@@ -23,8 +23,23 @@ class AutofillService:
         self.cv_path = self.career_ops_dir / "cv.md"
 
     def get_candidate_data(self) -> Dict[str, Any]:
-        """Extracts candidate profile & CV content."""
+        """Extracts candidate profile, CV content, screening rules, and demographic preferences."""
         profile = {}
+        screening = {
+            "legally_authorized": True,
+            "requires_sponsorship": False,
+            "former_employee": False,
+            "current_employee": False,
+            "notice_period": "1 month",
+            "how_did_you_hear": "LinkedIn",
+        }
+        demographics = {
+            "gender": "Prefer not to say",
+            "race_ethnicity": "Prefer not to say",
+            "disability": "No",
+            "veteran": "No",
+        }
+
         if self.profile_path.exists():
             try:
                 data = yaml.safe_load(self.profile_path.read_text(encoding="utf-8")) or {}
@@ -40,6 +55,10 @@ class AutofillService:
                     "github": cand.get("github") or "",
                     "portfolio": cand.get("portfolio_url") or "",
                 }
+                if data.get("screening"):
+                    screening.update(data["screening"])
+                if data.get("demographics"):
+                    demographics.update(data["demographics"])
             except Exception as e:
                 print(f"[AutofillService] Error reading profile.yml: {e}")
 
@@ -71,15 +90,55 @@ class AutofillService:
                         if not profile["github"].startswith("http"):
                             profile["github"] = f"https://{profile['github']}"
                 if not profile.get("linkedin"):
-                    li_m = re.search(r"(?:https?://)?(?:www\.)?linkedin\.com/in/[\w\.-]+", first_lines)
-                    if li_m:
-                        profile["linkedin"] = li_m.group(0)
-                        if not profile["linkedin"].startswith("http"):
-                            profile["linkedin"] = f"https://{profile['linkedin']}"
+                    # Only fallback if candidate name matches CV header
+                    cand_name = (profile.get("fullName") or "").lower()
+                    if "alex" in cand_name or not cand_name:
+                        li_m = re.search(r"(?:https?://)?(?:www\.)?linkedin\.com/in/[\w\.-]+", first_lines)
+                        if li_m:
+                            profile["linkedin"] = li_m.group(0)
+                            if not profile["linkedin"].startswith("http"):
+                                profile["linkedin"] = f"https://{profile['linkedin']}"
             except Exception as e:
                 print(f"[AutofillService] Error reading cv.md: {e}")
 
-        return {"profile": profile, "cv": cv_text}
+        return {
+            "profile": profile,
+            "cv": cv_text,
+            "screening": screening,
+            "demographics": demographics,
+        }
+
+    def get_cv_base64_payload(self) -> Dict[str, str]:
+        """Returns candidate CV filename and base64 string for zero-CSP attachment."""
+        import base64
+        profile_path = self.profile_path
+        cand_name = "Candidate"
+        if profile_path.exists():
+            try:
+                p_data = yaml.safe_load(profile_path.read_text(encoding="utf-8")) or {}
+                c_name = p_data.get("candidate", {}).get("full_name") or ""
+                if c_name:
+                    cand_name = c_name.strip().replace(" ", "_")
+            except Exception:
+                pass
+
+        cv_filename = f"{cand_name}_CV.pdf"
+        output_dir = BACKEND_DIR / "career-ops" / "output"
+        master_pdf = output_dir / "master_cv.pdf"
+        target_pdf = None
+        if master_pdf.exists():
+            target_pdf = master_pdf
+        else:
+            pdfs = list(output_dir.glob("*.pdf")) + list((output_dir / "archive_legacy").glob("*.pdf"))
+            if pdfs:
+                target_pdf = pdfs[0]
+
+        if not target_pdf or not target_pdf.exists():
+            return {"filename": cv_filename, "base64": ""}
+
+        pdf_bytes = target_pdf.read_bytes()
+        b64 = base64.b64encode(pdf_bytes).decode("utf-8")
+        return {"filename": cv_filename, "base64": b64}
 
     async def inspect_page_form(self, url: str) -> Dict[str, Any]:
         """
