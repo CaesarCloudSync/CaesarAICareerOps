@@ -1,10 +1,11 @@
 import React from 'react';
-import { Briefcase, Target, Send, Users, Award, Inbox, Sparkles } from 'lucide-react';
+import { Briefcase, Target, Send, Users, Award, Inbox, Sparkles, FileEdit } from 'lucide-react';
 
 export default function StatsOverview({ stats, onSelectTab }) {
   const cards = [
     { label: 'Inbox Queue', value: stats.pipeline_inbox_count || 0, icon: Inbox, color: 'text-rose-400', border: 'border-rose-500/20', tab: 'pipeline' },
     { label: 'Applications (Tracked)', value: stats.total_applications || 0, icon: Briefcase, color: 'text-indigo-400', border: 'border-indigo-500/20', tab: 'tracker' },
+    { label: 'Applying', value: stats.applying || 0, icon: FileEdit, color: 'text-amber-400', border: 'border-amber-500/20', tab: 'tracker' },
     { label: 'Evaluations', value: stats.total_reports || 0, icon: Sparkles, color: 'text-blue-400', border: 'border-blue-500/20', tab: 'reports' },
     { label: 'High Fit Matches (≥4.0)', value: stats.high_score_roles || 0, icon: Target, color: 'text-emerald-400', border: 'border-emerald-500/20', tab: 'tracker' },
     { label: 'Applied', value: stats.applied || 0, icon: Send, color: 'text-cyan-400', border: 'border-cyan-500/20', tab: 'tracker' },
@@ -13,7 +14,7 @@ export default function StatsOverview({ stats, onSelectTab }) {
   ];
 
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-3 mb-6">
+    <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3 mb-6">
       {cards.map((c, i) => {
         const Icon = c.icon;
         const isClickable = Boolean(onSelectTab && c.tab);

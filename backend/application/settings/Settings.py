@@ -17,7 +17,7 @@ class CORSSettings(BaseModel):
         "http://127.0.0.1:8000",
         "http://localhost:8000",
     ]
-    allow_origin_regex: str = r"https://.*\.run\.app|https://.*\.vercel\.app"
+    allow_origin_regex: str = r".*"
 
 
 class StorageSettings(BaseModel):

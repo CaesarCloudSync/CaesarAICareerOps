@@ -655,6 +655,17 @@ class SQLModelRepository(BaseRepository):
     async def get_stats(self) -> DashboardStats:
         with Session(engine) as session:
             total_apps = session.exec(select(func.count(Application.id))).one()
+            applying = session.exec(
+                select(func.count(Application.id)).where(
+                    func.lower(Application.status).in_([
+                        "application in progress",
+                        "applying",
+                        "in progress",
+                        "in-progress",
+                        "drafting",
+                    ])
+                )
+            ).one()
             high_score = session.exec(select(func.count(Application.id)).where(Application.score >= 4.0)).one()
             applied = session.exec(select(func.count(Application.id)).where(func.lower(Application.status) == "applied")).one()
             interviews = session.exec(select(func.count(Application.id)).where(func.lower(Application.status).contains("interview"))).one()
@@ -666,6 +677,7 @@ class SQLModelRepository(BaseRepository):
 
         return DashboardStats(
             total_applications=total_apps,
+            applying=applying,
             high_score_roles=high_score,
             applied=applied,
             interviews=interviews,

@@ -20,10 +20,12 @@ import {
   Play,
   X,
   Check,
+  Bookmark,
 } from 'lucide-react';
 import PipelineProgressCard from './PipelineProgressCard';
 import GranularProgressCard from './GranularProgressCard';
 import ConfirmModal from './ConfirmModal';
+import AutofillModal from './AutofillModal';
 
 const STEP_SUBSTEPS = {
   1: [
@@ -81,9 +83,72 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
     confirmVariant: 'danger',
     onConfirm: () => {},
   });
+  const [autofillModalConfig, setAutofillModalConfig] = useState({
+    isOpen: false,
+    data: {},
+  });
 
   const closeConfirm = () => {
     setConfirmConfig((prev) => ({ ...prev, isOpen: false }));
+  };
+
+  const handleApplyFromPipeline = async (roleOrItem) => {
+    let url = '';
+    let company = 'Target Company';
+    let roleTitle = 'Software Engineer';
+    let rawLine = '';
+
+    if (typeof roleOrItem === 'string') {
+      rawLine = roleOrItem;
+      url = getUrlFromItem(roleOrItem);
+      const parts = roleOrItem.split('|').map((p) => p.trim());
+      if (parts.length > 1) company = parts[1];
+      if (parts.length > 2) roleTitle = parts[2];
+    } else if (roleOrItem && typeof roleOrItem === 'object') {
+      url = roleOrItem.url || getUrlFromItem(roleOrItem.raw_line);
+      company = roleOrItem.company || 'Target Company';
+      roleTitle = roleOrItem.title || 'Software Engineer';
+      rawLine = roleOrItem.raw_line || '';
+    }
+
+    try {
+      const res = await fetch('/api/autofill/apply-from-pipeline', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url,
+          company,
+          role: roleTitle,
+          raw_line: rawLine,
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        onRefresh?.();
+        setAutofillModalConfig({
+          isOpen: true,
+          data: {
+            url,
+            company,
+            role: roleTitle,
+            profile: data.autofill?.profile,
+            answers: data.autofill?.answers,
+          },
+        });
+      } else {
+        setAutofillModalConfig({
+          isOpen: true,
+          data: { url, company, role: roleTitle },
+        });
+      }
+    } catch (err) {
+      console.error('Error in handleApplyFromPipeline:', err);
+      setAutofillModalConfig({
+        isOpen: true,
+        data: { url, company, role: roleTitle },
+      });
+    }
   };
 
   const getUrlFromItem = (item) => {
@@ -811,6 +876,23 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            {/* Universal Autofill Bookmarklet button */}
+            <button
+              type="button"
+              onClick={() => setAutofillModalConfig({
+                isOpen: true,
+                data: {
+                  company: 'Universal',
+                  role: 'All Job Boards',
+                }
+              })}
+              className="px-3 py-1.5 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/30 text-indigo-300 text-xs font-semibold flex items-center gap-1.5 transition-all hover:scale-[1.02] active:scale-[0.98]"
+              title="Setup 1-Click Universal Autofill Bookmarklet (Ashby, Greenhouse, Lever)"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+              <span>⚡ Universal Autofill</span>
+            </button>
+
             {/* Reset button */}
             <button
               onClick={handleResetPipeline}
@@ -1054,6 +1136,15 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
                       )}
                       <button
                         type="button"
+                        onClick={() => handleApplyFromPipeline(role)}
+                        className="px-2 py-0.5 rounded bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 text-emerald-300 text-[11px] font-medium flex items-center gap-1 transition-all hover:scale-[1.02] active:scale-[0.98]"
+                        title="Apply & Autofill: Moves role to Applications Tracker (Application in progress) and generates agy answers"
+                      >
+                        <Sparkles className="w-3 h-3 text-emerald-400" />
+                        <span>Apply</span>
+                      </button>
+                      <button
+                        type="button"
                         disabled={isEvaluating}
                         onClick={() => runBatchEvaluation([role.url])}
                         className="px-2 py-0.5 rounded bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/30 text-indigo-300 text-[11px] font-medium flex items-center gap-1 transition-all disabled:opacity-40"
@@ -1227,6 +1318,15 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
                       </a>
                     )}
                     <button
+                      type="button"
+                      onClick={() => handleApplyFromPipeline(item)}
+                      className="px-2.5 py-1.5 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 text-emerald-300 text-xs font-semibold flex items-center gap-1 transition-all hover:scale-[1.02] active:scale-[0.98]"
+                      title="Apply & Autofill: Moves role to Applications Tracker (Application in progress) and generates agy answers"
+                    >
+                      <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Apply</span>
+                    </button>
+                    <button
                       disabled={isEvaluating}
                       onClick={() => runBatchEvaluation([url || item])}
                       className="px-2.5 py-1.5 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/30 text-indigo-300 text-xs font-medium flex items-center gap-1 transition-all disabled:opacity-40"
@@ -1264,6 +1364,12 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
         confirmVariant={confirmConfig.confirmVariant}
         onConfirm={confirmConfig.onConfirm}
         onClose={closeConfirm}
+      />
+
+      <AutofillModal
+        isOpen={autofillModalConfig.isOpen}
+        onClose={() => setAutofillModalConfig({ isOpen: false, data: {} })}
+        initialData={autofillModalConfig.data}
       />
     </div>
   </div>

@@ -10,9 +10,12 @@ import {
   CheckSquare,
   Square,
   Zap,
+  Sparkles,
+  Bookmark,
 } from 'lucide-react';
 import PipelineProgressCard from './PipelineProgressCard';
 import ConfirmModal from './ConfirmModal';
+import AutofillModal from './AutofillModal';
 
 export default function ApplicationsTable({ applications = [], onStatusChange, onViewReport, onRefresh }) {
   const [search, setSearch] = useState('');
@@ -21,6 +24,10 @@ export default function ApplicationsTable({ applications = [], onStatusChange, o
   const [activeEvalJob, setActiveEvalJob] = useState(null);
   const [isEvaluating, setIsEvaluating] = useState(false);
   const [selectedAppIds, setSelectedAppIds] = useState(new Set());
+  const [autofillModalConfig, setAutofillModalConfig] = useState({
+    isOpen: false,
+    data: {},
+  });
   const [confirmConfig, setConfirmConfig] = useState({
     isOpen: false,
     title: '',
@@ -162,7 +169,7 @@ export default function ApplicationsTable({ applications = [], onStatusChange, o
     return 'bg-slate-800 text-slate-400 border-slate-700';
   };
 
-  const statusOptions = ['Evaluated', 'Applied', 'Interviewing', 'Offer', 'Rejected', 'Archived'];
+  const statusOptions = ['Application in progress', 'Evaluated', 'Applied', 'Interviewing', 'Offer', 'Rejected', 'Archived'];
 
   const handleDeleteApplication = (id, company, role) => {
     const roleClean = cleanRole(role);
@@ -390,6 +397,22 @@ export default function ApplicationsTable({ applications = [], onStatusChange, o
           <p className="text-xs text-slate-400">Track stages, fit scores, and generated reports</p>
         </div>
         <div className="flex items-center gap-2 w-full sm:w-auto">
+          <button
+            type="button"
+            onClick={() => setAutofillModalConfig({
+              isOpen: true,
+              data: {
+                company: 'Universal',
+                role: 'All Job Boards',
+              }
+            })}
+            title="Setup 1-Click Universal Autofill Bookmarklet"
+            className="px-2.5 py-1.5 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 text-xs font-semibold flex items-center gap-1.5 transition-colors shrink-0"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+            <span>⚡ Universal Autofill</span>
+          </button>
+
           {applications.length > 0 && (
             <button
               onClick={handleDeleteAllApplications}
@@ -550,6 +573,23 @@ export default function ApplicationsTable({ applications = [], onStatusChange, o
                     <td className="py-3 px-4 text-right">
                       <div className="flex justify-end items-center gap-1.5">
                         <button
+                          type="button"
+                          onClick={() => setAutofillModalConfig({
+                            isOpen: true,
+                            data: {
+                              url: app.url,
+                              company: app.company,
+                              role: cleanRole(app.role),
+                            }
+                          })}
+                          title="Auto-Fill Application with agy"
+                          className="px-2 py-1 rounded bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 text-emerald-300 hover:text-white text-xs flex items-center gap-1 transition-all hover:scale-[1.02] active:scale-[0.98]"
+                        >
+                          <Sparkles className="w-3 h-3 text-emerald-400" />
+                          <span>Autofill</span>
+                        </button>
+
+                        <button
                           onClick={() => handleReEvaluate(app)}
                           disabled={isEvaluating}
                           title="Re-evaluate role against current Master CV & Profile"
@@ -607,6 +647,12 @@ export default function ApplicationsTable({ applications = [], onStatusChange, o
         confirmVariant={confirmConfig.confirmVariant}
         onConfirm={confirmConfig.onConfirm}
         onClose={closeConfirm}
+      />
+
+      <AutofillModal
+        isOpen={autofillModalConfig.isOpen}
+        onClose={() => setAutofillModalConfig({ isOpen: false, data: {} })}
+        initialData={autofillModalConfig.data}
       />
     </div>
   );

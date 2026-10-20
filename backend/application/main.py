@@ -17,6 +17,7 @@ from backend.application.routers import (
     auth_router,
     settings_router,
     schedules_router,
+    autofill_router,
 )
 from backend.application.services.scheduler_service import scheduler_service
 import asyncio
@@ -58,6 +59,7 @@ app.include_router(pdfs_router)
 app.include_router(auth_router)
 app.include_router(settings_router)
 app.include_router(schedules_router)
+app.include_router(autofill_router)
 
 # Mount generated PDF output directory
 career_ops_output = BACKEND_DIR / "career-ops" / "output"

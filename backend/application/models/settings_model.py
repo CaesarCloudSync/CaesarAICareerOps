@@ -22,6 +22,7 @@ class ScanRequest(SQLModel):
 
 class DashboardStats(SQLModel):
     total_applications: int = 0
+    applying: int = 0
     high_score_roles: int = 0
     applied: int = 0
     interviews: int = 0
