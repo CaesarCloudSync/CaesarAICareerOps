@@ -234,7 +234,7 @@ class NaturalDiscoveryService:
         # Validation passed: atomically commit change
         tmp_file.replace(PORTALS_YML)
 
-    async def probe_ats_boards(self, companies: List[str]) -> int:
+    async def probe_ats_boards(self, companies: List[str], job: Optional[Any] = None) -> int:
         """Step 3: Calls discover-ats.mjs with --write to automatically expand company boards."""
         if not companies:
             return 0
@@ -259,14 +259,55 @@ class NaturalDiscoveryService:
                 to_probe.append(c)
 
         if not to_probe:
+            if job:
+                msg = f"All {len(companies)} target companies already registered in live portal directory. Proceeding to crawler."
+                job.add_feed_line(msg)
+                job.update(
+                    2,
+                    "Probing ATS Boards & Portals",
+                    msg,
+                    substep="2.3",
+                    substep_name="2.3 Probing 50+ Live ATS Feeds",
+                )
             return 0
+
+        total_to_probe = len(to_probe)
+        if job:
+            init_msg = f"[discover-ats.mjs] Probing {total_to_probe} live employer ATS endpoints (Greenhouse/Ashby/Lever/Workday)..."
+            job.add_feed_line(init_msg)
+            job.update(
+                2,
+                "Probing ATS Boards & Portals",
+                init_msg,
+                substep="2.3",
+                substep_name=f"2.3 Probing {total_to_probe} Live ATS Feeds",
+            )
 
         # Probe in batches of up to 25 companies to keep CLI args clean and stream writes
         batch_size = 25
         total_exit_code = 0
-        for i in range(0, len(to_probe), batch_size):
+        total_batches = (total_to_probe + batch_size - 1) // batch_size
+        start_time = time.time()
+        last_line_time = [time.time()]
+
+        for b_idx, i in enumerate(range(0, total_to_probe, batch_size), start=1):
             batch = to_probe[i : i + batch_size]
             clean_companies = [c.strip() for c in batch if c.strip()]
+            if not clean_companies:
+                continue
+
+            batch_preview = ", ".join(clean_companies[:3]) + (f" +{len(clean_companies)-3} more" if len(clean_companies) > 3 else "")
+            status_msg = f"Probing batch {b_idx}/{total_batches} ({len(clean_companies)} companies: {batch_preview})..."
+            if job:
+                job.add_feed_line(f"[discover-ats.mjs] {status_msg}")
+                job.update(
+                    2,
+                    "Probing ATS Boards & Portals",
+                    status_msg,
+                    substep="2.3",
+                    substep_name=f"2.3 Probing {total_to_probe} Live ATS Feeds",
+                )
+
             cmd = ["node", "discover-ats.mjs"] + clean_companies + ["--write"]
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -274,10 +315,61 @@ class NaturalDiscoveryService:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
-            stdout, stderr = await proc.communicate()
+            if job:
+                job._process = proc
+
+            async def _batch_heartbeat():
+                phases = [
+                    "Querying Greenhouse job boards...",
+                    "Checking Ashby API endpoints...",
+                    "Probing Lever & Workday portals...",
+                    "Resolving careers page redirects...",
+                ]
+                h_idx = 0
+                while True:
+                    await asyncio.sleep(2.5)
+                    now = time.time()
+                    if now - last_line_time[0] >= 2.3:
+                        elapsed = int(now - start_time)
+                        phase = phases[h_idx % len(phases)]
+                        h_idx += 1
+                        hb_msg = f"⏳ [ATS Probe: {total_to_probe} companies] Batch {b_idx}/{total_batches} — {phase} ({elapsed}s elapsed)"
+                        if job:
+                            job.add_feed_line(hb_msg)
+                            job.update(
+                                2,
+                                "Probing ATS Boards & Portals",
+                                hb_msg,
+                                substep="2.3",
+                                substep_name=f"2.3 Probing {total_to_probe} Live ATS Feeds",
+                            )
+
+            hb_task = asyncio.create_task(_batch_heartbeat())
+            try:
+                stdout, stderr = await proc.communicate()
+            finally:
+                hb_task.cancel()
+                try:
+                    await hb_task
+                except asyncio.CancelledError:
+                    pass
+
+            last_line_time[0] = time.time()
             if proc.returncode != 0:
                 print(f"[Warning] discover-ats.mjs returned code {proc.returncode}: {stderr.decode('utf-8', errors='replace')[:300]}")
                 total_exit_code = proc.returncode
+            else:
+                try:
+                    import json
+                    out_text = stdout.decode("utf-8", errors="replace").strip()
+                    parsed_out = json.loads(out_text)
+                    resolved_count = parsed_out.get("metadata", {}).get("resolved", 0)
+                    fresh_count = parsed_out.get("metadata", {}).get("freshWritten", 0)
+                    summary = f"Batch {b_idx}/{total_batches} complete: {resolved_count} portals verified ({fresh_count} newly written to portals.yml)"
+                    if job:
+                        job.add_feed_line(f"✓ [discover-ats.mjs] {summary}")
+                except Exception:
+                    pass
 
         return total_exit_code
 
@@ -296,6 +388,21 @@ class NaturalDiscoveryService:
         captured_stderr = []
         start_time = time.time()
         last_line_time = [time.time()]
+
+        companies_count = [None]
+        summary_header = ["Scanning UK employer boards..."]
+
+        # Pre-seed count from portals.yml if possible
+        try:
+            if PORTALS_YML.exists():
+                with open(PORTALS_YML, "r", encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                approx_count = len(cfg.get("tracked_companies", []))
+                if approx_count > 0:
+                    companies_count[0] = str(approx_count)
+                    summary_header[0] = f"Scanning {approx_count} companies"
+        except Exception:
+            pass
 
         def _is_feed_worthy(text: str) -> bool:
             """Filters out raw CLI noise, maintenance warnings, and websearch dorks from UI feed."""
@@ -339,14 +446,24 @@ class NaturalDiscoveryService:
                     last_line_time[0] = time.time()
                     captured_stdout.append(decoded)
                     print(f"[scan.mjs] {decoded}", flush=True)
+
+                    # Extract number of companies if line matches "Scanning X companies"
+                    match = re.search(r"Scanning\s+(\d+)\s+companies", decoded)
+                    if match:
+                        companies_count[0] = match.group(1)
+                        summary_header[0] = f"Scanning {companies_count[0]} companies"
+
                     if job and _is_feed_worthy(decoded):
                         job.add_feed_line(decoded)
+                        status_detail = decoded
+                        if companies_count[0] and "Scanning" not in decoded:
+                            status_detail = f"[{summary_header[0]}] {decoded}"
                         job.update(
                             3,
                             "Crawling ATS Boards & Staging",
-                            decoded,
+                            status_detail,
                             substep="3.1",
-                            substep_name="Multi-Board Parallel Crawl",
+                            substep_name=f"3.1 Multi-Board Crawl ({summary_header[0]})" if companies_count[0] else "3.1 Multi-Board Parallel Crawl",
                         )
 
         async def _read_stderr():
@@ -374,7 +491,8 @@ class NaturalDiscoveryService:
                     elapsed = int(now - start_time)
                     phase = phases[tick_idx % len(phases)]
                     tick_idx += 1
-                    msg = f"⏳ [Active Crawl] {phase} ({elapsed}s elapsed)"
+                    co_prefix = f" [{summary_header[0]}]" if companies_count[0] else ""
+                    msg = f"⏳ [Active Crawl{co_prefix}] {phase} ({elapsed}s elapsed)"
                     if job:
                         job.add_feed_line(msg)
                         job.update(
@@ -382,7 +500,7 @@ class NaturalDiscoveryService:
                             "Crawling ATS Boards & Staging",
                             msg,
                             substep="3.1",
-                            substep_name="Multi-Board Parallel Crawl",
+                            substep_name=f"3.1 Multi-Board Crawl ({summary_header[0]})" if companies_count[0] else "3.1 Multi-Board Parallel Crawl",
                         )
 
         heartbeat_task = asyncio.create_task(_heartbeat())
@@ -589,7 +707,7 @@ class NaturalDiscoveryService:
                     substep="2.3",
                     substep_name="Probing Live ATS Feeds",
                 )
-            await self.probe_ats_boards(target_companies)
+            await self.probe_ats_boards(target_companies, job=job)
 
         if job:
             job.update(
