@@ -2,6 +2,7 @@ import re
 import json
 import asyncio
 from datetime import date
+from urllib.parse import urlparse
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel, Field
@@ -139,6 +140,10 @@ def extract_company_and_role_from_context(url: str, title: str) -> tuple[str, st
         clean = re.sub(r"\s*\|\s*Lever\s*$", "", clean, flags=re.IGNORECASE)
         clean = re.sub(r"\s*\|\s*Ashby\s*$", "", clean, flags=re.IGNORECASE)
 
+        # Clean common generic title prefixes (e.g. "Easy apply - ", "Job Application for ")
+        clean = re.sub(r"^(?:Easy apply|Job Application|Application for|Apply for)\s*[-:–—]\s*", "", clean, flags=re.IGNORECASE).strip()
+        clean = re.sub(r"^(?:Application for|Apply for)\s+", "", clean, flags=re.IGNORECASE).strip()
+
         if " @ " in clean:
             parts = clean.split(" @ ")
             if not role:
@@ -153,11 +158,14 @@ def extract_company_and_role_from_context(url: str, title: str) -> tuple[str, st
                 company = parts[1].strip()
         elif " - " in clean:
             parts = clean.split(" - ")
+            cand_role = parts[0].strip()
+            if cand_role.lower() in ("easy apply", "apply", "job application", "application", "careers") and len(parts) > 1:
+                cand_role = parts[1].strip()
             if not role:
-                role = parts[0].strip()
+                role = cand_role
             if not company:
                 company = parts[-1].strip()
-        elif not role and clean.lower() not in ("smartrecruiters", "smartrecruiters.com", "oneclick-ui", "job application", "application"):
+        elif not role and clean.lower() not in ("smartrecruiters", "smartrecruiters.com", "oneclick-ui", "job application", "application", "easy apply"):
             role = clean
 
     # Fallback company from URL domain if still empty
