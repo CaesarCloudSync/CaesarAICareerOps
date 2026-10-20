@@ -1,10 +1,108 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Search, ExternalLink, FileText, CheckCircle2, Trash2, RotateCcw, Loader2 } from 'lucide-react';
+import PipelineProgressCard from './PipelineProgressCard';
 
 export default function ApplicationsTable({ applications = [], onStatusChange, onViewReport, onRefresh }) {
   const [search, setSearch] = useState('');
   const [reEvaluatingId, setReEvaluatingId] = useState(null);
-  const [reEvalStatusMessage, setReEvalStatusMessage] = useState('');
+  const [activeEvalJobId, setActiveEvalJobId] = useState(null);
+  const [activeEvalJob, setActiveEvalJob] = useState(null);
+  const [isEvaluating, setIsEvaluating] = useState(false);
+  const lastCompletedCountRef = useRef(0);
+
+  // 1. Refresh resilience: Check if an evaluation job is already running on mount
+  useEffect(() => {
+    let isMounted = true;
+    const checkActiveJob = async () => {
+      try {
+        const res = await fetch('/api/evaluate/job/active');
+        if (res.ok) {
+          const data = await res.json();
+          if (data.active && data.job && isMounted) {
+            setActiveEvalJob(data.job);
+            setActiveEvalJobId(data.job.job_id);
+            setIsEvaluating(true);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to check active evaluation job:', err);
+      }
+    };
+    checkActiveJob();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  // 2. Evaluation Status Polling: Polls live progress, elapsed seconds & target every 1000ms
+  useEffect(() => {
+    if (!activeEvalJobId || !isEvaluating) return;
+
+    let isCancelled = false;
+    const pollStatus = async () => {
+      try {
+        const res = await fetch(`/api/evaluate/job/${activeEvalJobId}`);
+        if (!res.ok) {
+          if (res.status === 404) {
+            setIsEvaluating(false);
+            setReEvaluatingId(null);
+          }
+          return;
+        }
+        const data = await res.json();
+        const job = data.job;
+        if (!isCancelled && job) {
+          setActiveEvalJob(job);
+
+          // Real-time synchronization when individual evaluation completes
+          if (job.completed_count > (lastCompletedCountRef.current || 0)) {
+            lastCompletedCountRef.current = job.completed_count;
+            onRefresh?.();
+          }
+
+          if (job.status === 'completed') {
+            setIsEvaluating(false);
+            setReEvaluatingId(null);
+            onRefresh?.();
+            setTimeout(() => {
+              setActiveEvalJob((prev) => (prev?.status === 'completed' ? null : prev));
+            }, 8000);
+          } else if (job.status === 'cancelled') {
+            setIsEvaluating(false);
+            setReEvaluatingId(null);
+            onRefresh?.();
+            setTimeout(() => {
+              setActiveEvalJob((prev) => (prev?.status === 'cancelled' ? null : prev));
+            }, 6000);
+          } else if (job.status === 'failed') {
+            setIsEvaluating(false);
+            setReEvaluatingId(null);
+            setTimeout(() => {
+              setActiveEvalJob((prev) => (prev?.status === 'failed' ? null : prev));
+            }, 8000);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to poll evaluation job in tracker:', err);
+      }
+    };
+
+    pollStatus();
+    const interval = setInterval(pollStatus, 1000);
+    return () => {
+      isCancelled = true;
+      clearInterval(interval);
+    };
+  }, [activeEvalJobId, isEvaluating, onRefresh]);
+
+  const handleCancelEvalJob = async () => {
+    if (!activeEvalJobId) return;
+    try {
+      await fetch(`/api/evaluate/job/${activeEvalJobId}/cancel`, { method: 'POST' });
+    } catch (err) {
+      console.error('Failed to cancel evaluation job:', err);
+    }
+  };
 
   const filtered = applications.filter((app) =>
     (app.company || '').toLowerCase().includes(search.toLowerCase()) ||
@@ -58,40 +156,77 @@ export default function ApplicationsTable({ applications = [], onStatusChange, o
   };
 
   const handleReEvaluate = async (app) => {
+    lastCompletedCountRef.current = 0;
     setReEvaluatingId(app.id);
-    setReEvalStatusMessage(`Re-evaluating ${app.company} — ${app.role} against your current Master CV...`);
+    const jdTarget = app.url || `${app.company} — ${app.role}`;
     try {
-      const jdTarget = app.url || `${app.company} — ${app.role}`;
-      const res = await fetch('/api/evaluate', {
+      const res = await fetch('/api/evaluate/batch-async', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jd_input: jdTarget, engine: 'agy' }),
+        body: JSON.stringify({
+          targets: [jdTarget],
+          mode: 'single',
+          engine: 'agy',
+        }),
       });
-      if (res.ok) {
-        setReEvalStatusMessage(`✓ Successfully re-evaluated ${app.company} with updated fit score & report!`);
-        await onRefresh?.();
-      } else {
+      if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
-        alert(`Re-evaluation failed: ${errData.detail || 'Unknown error'}`);
+        throw new Error(errData.detail || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      if (data.job_id) {
+        setActiveEvalJobId(data.job_id);
+        setActiveEvalJob(data.job || {
+          job_id: data.job_id,
+          status: 'running',
+          total: 1,
+          current_index: 1,
+          current_target: `${app.company} — ${app.role}`,
+          completed_count: 0,
+          failed_count: 0,
+          elapsed_seconds: 0,
+          detail: `Re-evaluating ${app.company} — ${app.role} against your Master CV...`,
+        });
+        setIsEvaluating(true);
       }
     } catch (err) {
-      alert(`Re-evaluation error: ${err.message}`);
-    } finally {
+      alert(`Re-evaluation failed: ${err.message}`);
       setReEvaluatingId(null);
-      setTimeout(() => setReEvalStatusMessage(''), 5000);
     }
   };
 
   return (
     <div className="bg-slate-900/50 border border-slate-800 rounded-xl overflow-hidden backdrop-blur">
-      {reEvalStatusMessage && (
-        <div className="px-4 py-2.5 bg-violet-950/60 border-b border-violet-800/60 text-xs font-mono text-violet-200 flex items-center gap-2 animate-in fade-in">
-          {reEvaluatingId ? (
-            <Loader2 className="w-4 h-4 text-violet-400 animate-spin shrink-0" />
-          ) : (
-            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-          )}
-          <span>{reEvalStatusMessage}</span>
+      {/* Active Evaluation Progress Card (Matching Scheduler & Inbox with zero duplication) */}
+      {activeEvalJob && (
+        <div className="p-4 border-b border-slate-800/80 bg-slate-950/40">
+          <PipelineProgressCard
+            title={
+              activeEvalJob.status === 'completed'
+                ? 'Re-evaluation Complete'
+                : activeEvalJob.status === 'cancelled'
+                ? 'Re-evaluation Cancelled'
+                : activeEvalJob.status === 'failed'
+                ? 'Re-evaluation Failed'
+                : activeEvalJob.total === 1
+                ? 'Re-evaluating Application Role...'
+                : `Batch Evaluating Role ${activeEvalJob.current_index || 1} of ${activeEvalJob.total}`
+            }
+            status={activeEvalJob.status}
+            elapsedSeconds={activeEvalJob.elapsed_seconds || 0}
+            percent={
+              activeEvalJob.status === 'completed'
+                ? 100
+                : activeEvalJob.total === 1
+                ? Math.min(95, Math.max(15, (activeEvalJob.elapsed_seconds || 1) * 5))
+                : Math.round(((activeEvalJob.current_index || 0) / (activeEvalJob.total || 1)) * 100)
+            }
+            badge="Master CV Re-eval"
+            tag={activeEvalJob.job_id ? `Job: ${activeEvalJob.job_id}` : undefined}
+            currentTarget={activeEvalJob.current_target}
+            detail={activeEvalJob.detail || 'Re-evaluating against your updated Master CV...'}
+            onCancel={handleCancelEvalJob}
+          />
         </div>
       )}
       <div className="p-4 border-b border-slate-800/80 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
@@ -168,19 +303,30 @@ export default function ApplicationsTable({ applications = [], onStatusChange, o
                   <td className="py-3 px-4 font-mono text-slate-400">{app.date_applied || '—'}</td>
                   <td className="py-3 px-4 text-right">
                     <div className="flex justify-end items-center gap-1.5">
-                      <button
-                        onClick={() => handleReEvaluate(app)}
-                        disabled={reEvaluatingId === app.id}
-                        title="Re-evaluate role against current Master CV & Profile"
-                        className="px-2 py-1 rounded bg-violet-600/20 hover:bg-violet-600/30 border border-violet-500/30 text-violet-300 hover:text-white text-xs flex items-center gap-1 transition-all disabled:opacity-50"
-                      >
-                        {reEvaluatingId === app.id ? (
-                          <Loader2 className="w-3 h-3 text-violet-400 animate-spin" />
-                        ) : (
-                          <RotateCcw className="w-3 h-3 text-violet-400" />
-                        )}
-                        <span>{reEvaluatingId === app.id ? 'Evaluating...' : 'Re-eval'}</span>
-                      </button>
+                      {(() => {
+                        const isThisRowActive =
+                          reEvaluatingId === app.id ||
+                          (isEvaluating &&
+                            activeEvalJob?.status === 'running' &&
+                            (activeEvalJob.current_target?.includes(app.company) ||
+                              (app.url && activeEvalJob.current_target?.includes(app.url))));
+
+                        return (
+                          <button
+                            onClick={() => handleReEvaluate(app)}
+                            disabled={isEvaluating}
+                            title="Re-evaluate role against current Master CV & Profile"
+                            className="px-2 py-1 rounded bg-violet-600/20 hover:bg-violet-600/30 border border-violet-500/30 text-violet-300 hover:text-white text-xs flex items-center gap-1 transition-all disabled:opacity-50"
+                          >
+                            {isThisRowActive ? (
+                              <Loader2 className="w-3 h-3 text-violet-400 animate-spin" />
+                            ) : (
+                              <RotateCcw className="w-3 h-3 text-violet-400" />
+                            )}
+                            <span>{isThisRowActive ? 'Evaluating...' : 'Re-eval'}</span>
+                          </button>
+                        );
+                      })()}
 
                       {app.report_path && (
                         <button
