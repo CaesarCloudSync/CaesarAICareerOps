@@ -69,32 +69,101 @@ async def resolve_live(payload: ResolveLiveRequest):
 
 
 def extract_company_and_role_from_context(url: str, title: str) -> tuple[str, str]:
-    """Clean company and role extraction using URL domain and page title."""
+    """Clean company and role extraction using URL domain, ATS structure, and page title."""
     company = ""
     role = ""
 
-    # Check title for "@ Company" (standard: "Role @ Company")
+    # 1. SmartRecruiters specialized extraction
+    if url and "smartrecruiters.com" in url.lower():
+        p = urlparse(url)
+        path_parts = [part for part in p.path.strip("/").split("/") if part]
+        # Format 1: /oneclick-ui/company/<Company>/publication/<id>
+        if "oneclick-ui" in path_parts and "company" in path_parts:
+            try:
+                comp_idx = path_parts.index("company") + 1
+                if comp_idx < len(path_parts):
+                    company = path_parts[comp_idx].replace("-", " ").title()
+            except Exception:
+                pass
+            if "publication" in path_parts:
+                try:
+                    pub_idx = path_parts.index("publication") + 1
+                    if pub_idx < len(path_parts):
+                        pub_id = path_parts[pub_idx]
+                        import urllib.request
+                        api_url = f"https://api.smartrecruiters.com/v1/companies/{company}/postings/{pub_id}"
+                        req = urllib.request.Request(api_url, headers={"User-Agent": "CaesarAI/1.0"})
+                        with urllib.request.urlopen(req, timeout=1.8) as resp:
+                            data = json.loads(resp.read().decode())
+                            if data.get("name"):
+                                role = data["name"]
+                            if data.get("company", {}).get("name"):
+                                company = data["company"]["name"]
+                except Exception:
+                    pass
+        # Format 2: /<Company>/<job-id>-<role-slug>
+        elif path_parts:
+            company = path_parts[0].replace("-", " ").title()
+            if len(path_parts) > 1 and "-" in path_parts[1]:
+                slug = "-".join(path_parts[1].split("-")[1:])
+                if slug:
+                    role = slug.replace("-", " ").title()
+
+    # 2. Greenhouse specialized extraction: job-boards.greenhouse.io/<company>/jobs/<id>
+    elif url and "greenhouse.io" in url.lower():
+        p = urlparse(url)
+        path_parts = [part for part in p.path.strip("/").split("/") if part]
+        if path_parts:
+            company = path_parts[0].replace("-", " ").title()
+
+    # 3. Ashby specialized extraction: jobs.ashbyhq.com/<company>/<id>
+    elif url and "ashbyhq.com" in url.lower():
+        p = urlparse(url)
+        path_parts = [part for part in p.path.strip("/").split("/") if part]
+        if path_parts:
+            company = path_parts[0].replace("-", " ").title()
+
+    # 4. Lever specialized extraction: jobs.lever.co/<company>/<id>
+    elif url and "lever.co" in url.lower():
+        p = urlparse(url)
+        path_parts = [part for part in p.path.strip("/").split("/") if part]
+        if path_parts:
+            company = path_parts[0].replace("-", " ").title()
+
+    # Check title for "@ Company" (standard: "Role @ Company" or "Role at Company")
     if title:
         clean = title.strip()
+        # Clean common generic title suffixes
+        clean = re.sub(r"\s*\|\s*SmartRecruiters\s*$", "", clean, flags=re.IGNORECASE)
+        clean = re.sub(r"\s*\|\s*Greenhouse\s*$", "", clean, flags=re.IGNORECASE)
+        clean = re.sub(r"\s*\|\s*Lever\s*$", "", clean, flags=re.IGNORECASE)
+        clean = re.sub(r"\s*\|\s*Ashby\s*$", "", clean, flags=re.IGNORECASE)
+
         if " @ " in clean:
             parts = clean.split(" @ ")
-            role = parts[0].strip()
-            company = parts[1].strip()
+            if not role:
+                role = parts[0].strip()
+            if not company:
+                company = parts[1].strip()
         elif " at " in clean:
             parts = clean.split(" at ")
-            role = parts[0].strip()
-            company = parts[1].strip()
+            if not role:
+                role = parts[0].strip()
+            if not company:
+                company = parts[1].strip()
         elif " - " in clean:
             parts = clean.split(" - ")
-            role = parts[0].strip()
-            company = parts[-1].strip()
-        else:
+            if not role:
+                role = parts[0].strip()
+            if not company:
+                company = parts[-1].strip()
+        elif not role and clean.lower() not in ("smartrecruiters", "smartrecruiters.com", "oneclick-ui", "job application", "application"):
             role = clean
 
     # Fallback company from URL domain if still empty
     if not company and url:
         p = urlparse(url)
-        parts = [part for part in p.path.strip("/").split("/") if part]
+        parts = [part for part in p.path.strip("/").split("/") if part and part.lower() not in ("oneclick-ui", "jobs", "company", "publication", "application", "apply")]
         if parts:
             company = parts[0].replace("-", " ").title()
 
@@ -377,32 +446,38 @@ async def generate_async(payload: AutofillGenerateRequest):
     """
     Starts an asynchronous background autofill job for a single application,
     tracked via a unique job_id in AutofillBatchTracker (identical to evaluation tracking).
+    Sets status immediately to 'Generating Application with agy'.
     """
     target_app_id = payload.app_id
 
-    # If no app_id provided, look up or create the application in SQLite
-    if not target_app_id:
-        with Session(engine) as session:
+    with Session(engine) as session:
+        target_app = None
+        if target_app_id:
+            target_app = session.get(Application, target_app_id)
+        if not target_app:
             target_app = find_matching_application(
                 session,
                 url=payload.url or "",
                 company=payload.company or "",
                 role=payload.role or "",
             )
-            if target_app:
-                target_app_id = target_app.id
-            else:
-                new_app = Application(
-                    company=payload.company or "Target Company",
-                    role=payload.role or "Software Engineer",
-                    url=payload.url or "",
-                    status="Generating Application with agy",
-                    date_applied=date.today().isoformat(),
-                )
-                session.add(new_app)
-                session.commit()
-                session.refresh(new_app)
-                target_app_id = new_app.id
+        if target_app:
+            target_app_id = target_app.id
+            target_app.status = "Generating Application with agy"
+            session.add(target_app)
+            session.commit()
+        else:
+            new_app = Application(
+                company=payload.company or "Target Company",
+                role=payload.role or "Software Engineer",
+                url=payload.url or "",
+                status="Generating Application with agy",
+                date_applied=date.today().isoformat(),
+            )
+            session.add(new_app)
+            session.commit()
+            session.refresh(new_app)
+            target_app_id = new_app.id
 
     job = autofill_tracker.create_job(app_ids=[target_app_id])
     target_name = f"{payload.company or 'Target Company'} — {payload.role or 'Software Engineer'}"
@@ -423,7 +498,7 @@ async def start_batch_autofill(payload: BatchAutofillRequest):
     """
     Starts an asynchronous batch autofill job:
     Iterates over target applications, inspects form HTML, prompts `agy`,
-    and stores answers INCREMENTALLY to SQLite.
+    and sets status to 'Generating Application with agy' during execution.
     """
     target_ids = []
     with Session(engine) as session:
@@ -435,6 +510,14 @@ async def start_batch_autofill(payload: BatchAutofillRequest):
 
     if not target_ids:
         raise HTTPException(status_code=400, detail="No applications selected for batch autofill")
+
+    with Session(engine) as session:
+        for tid in target_ids:
+            a = session.get(Application, tid)
+            if a:
+                a.status = "Generating Application with agy"
+                session.add(a)
+        session.commit()
 
     job = autofill_tracker.create_job(app_ids=target_ids)
     asyncio.create_task(autofill_service.run_batch_autofill(job.job_id))

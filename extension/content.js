@@ -118,6 +118,13 @@
         if (l) lbl = l.innerText;
       } catch (e) {}
     }
+    if (!lbl && el.getAttribute('aria-labelledby')) {
+      try {
+        const labelledBy = el.getAttribute('aria-labelledby');
+        const lEl = document.getElementById(labelledBy);
+        if (lEl) lbl = lEl.innerText;
+      } catch (e) {}
+    }
     if (!lbl) {
       const p = el.closest('label');
       if (p) lbl = p.innerText;
@@ -126,7 +133,7 @@
       let cur = el.parentElement;
       for (let i = 0; i < 4; i++) {
         if (!cur) break;
-        const found = cur.querySelector('label, [class*="label" i], [class*="legend" i], [class*="question" i], [class*="title" i]');
+        const found = cur.querySelector('label, [class*="label" i], [class*="legend" i], [class*="question" i], [class*="title" i], [data-test*="label" i]');
         if (found && found.innerText && found.innerText.length < 300) {
           lbl = found.innerText;
           break;
@@ -134,7 +141,7 @@
         cur = cur.parentElement;
       }
     }
-    return (lbl || el.placeholder || el.getAttribute('aria-label') || '').trim().replace(/\s+/g, ' ');
+    return (lbl || el.getAttribute('aria-label') || el.placeholder || el.name || '').trim().replace(/\s+/g, ' ');
   }
 
   function attachCvPdf(b64, fn) {
@@ -191,7 +198,23 @@
   function extractFormFields() {
     const fields = [];
     const processedRadios = new Set();
-    const els = Array.from(document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]), textarea, select'));
+    const inputSelector = 'input:not([type="hidden"]):not([type="submit"]):not([type="button"]), textarea, select, [contenteditable="true"], [role="textbox"], [role="combobox"]';
+    const els = Array.from(document.querySelectorAll(inputSelector));
+
+    // Also scan accessible child iframes (common in SmartRecruiters, Greenhouse, etc.)
+    try {
+      document.querySelectorAll('iframe').forEach((iframe) => {
+        try {
+          const iDoc = iframe.contentDocument || iframe.contentWindow?.document;
+          if (iDoc) {
+            const iEls = Array.from(iDoc.querySelectorAll(inputSelector));
+            els.push(...iEls);
+          }
+        } catch (e) {
+          // Cross-origin iframe
+        }
+      });
+    } catch (e) {}
 
     els.forEach((el, index) => {
       const id = el.id || '';
@@ -412,13 +435,35 @@
   // 7. Asynchronous Queue Action (Button 1)
   async function handleQueueGeneration() {
     showToast({
-      pct: 35,
+      pct: 30,
       title: '<span>⚡</span> CaesarAI Queueing',
-      msg: '🔍 Extracting live form elements...',
-      sub: 'Preparing DOM fields for background agy reasoning...',
+      msg: '🔍 Detecting application form elements...',
+      sub: 'Scanning live inputs, custom controls, and embedded iframes...',
     });
 
-    const fields = extractFormFields();
+    let fields = extractFormFields();
+
+    // If 0 fields found initially, wait up to 2.5s for dynamic SPA forms (SmartRecruiters, Workday, Lever)
+    if (fields.length === 0) {
+      for (let i = 0; i < 5; i++) {
+        await new Promise((r) => setTimeout(r, 500));
+        fields = extractFormFields();
+        if (fields.length > 0) break;
+      }
+    }
+
+    if (fields.length === 0) {
+      showToast({
+        pct: 100,
+        title: '<span>⚠️</span> No Form Inputs Found',
+        msg: 'Could not find interactive form fields on this page.',
+        sub: 'Please make sure you are on the actual application form (click "Apply" if needed).',
+        isErr: true,
+        autoDismissMs: 7000,
+      });
+      return { success: false, error: 'No fields detected on page' };
+    }
+
     showToast({
       pct: 65,
       title: '<span>⚡</span> CaesarAI Queueing',

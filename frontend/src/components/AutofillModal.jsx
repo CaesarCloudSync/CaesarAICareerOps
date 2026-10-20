@@ -33,7 +33,6 @@ export default function AutofillModal({
 }) {
   const [loading, setLoading] = useState(false);
   const [singleJobProgress, setSingleJobProgress] = useState(null);
-  const [markedInProgress, setMarkedInProgress] = useState(false);
   const [savingAnswers, setSavingAnswers] = useState(false);
   const [savedAnswersSuccess, setSavedAnswersSuccess] = useState(false);
   const [profile, setProfile] = useState({});
@@ -54,32 +53,10 @@ export default function AutofillModal({
   const url = initialData.url || '';
 
   // Initialize modal state on open:
-  // 1. Automatically update application to "Application in progress"
-  // 2. Fetch CV base64, candidate profile, and saved answers/cover letter
+  // Pure inspection/review step — does NOT mutate DB or set 'Application in progress'.
+  // Fetches CV base64, candidate profile, and any pre-existing saved answers/cover letter.
   useEffect(() => {
     if (!isOpen) return;
-
-    // Automatically set application as "Application in progress" in the background
-    if (company || role || url) {
-      fetch('/api/applications', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          company: company || 'Target Company',
-          role: role || 'Target Role',
-          status: 'Application in progress',
-          url: url || '',
-          date_applied: new Date().toISOString().split('T')[0],
-        }),
-      })
-        .then((res) => {
-          if (res.ok) {
-            setMarkedInProgress(true);
-            onApplicationCreated?.();
-          }
-        })
-        .catch((err) => console.error('Failed to auto-set application in progress:', err));
-    }
 
     // Fetch candidate CV base64 for reliable zero-CSP upload
     fetch('/api/autofill/cv-base64')
@@ -672,14 +649,19 @@ export default function AutofillModal({
               <div>
                 <h2 className="text-base sm:text-lg font-bold text-white tracking-wide flex items-center gap-2">
                   <span>Application Auto-Fill & Tailoring</span>
-                  {markedInProgress ? (
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-amber-500/15 border border-amber-500/30 text-amber-400 font-semibold flex items-center gap-1">
-                      <Check className="w-3 h-3 text-amber-400" />
-                      Application in progress
+                  {singleJobProgress?.status === 'running' ? (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-amber-500/15 border border-amber-500/30 text-amber-300 font-semibold flex items-center gap-1 animate-pulse">
+                      <Sparkles className="w-3 h-3 text-amber-400" />
+                      Generating Application with agy
+                    </span>
+                  ) : (answers && answers.length > 0) || hasCoverLetter ? (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-purple-500/15 border border-purple-500/30 text-purple-300 font-semibold flex items-center gap-1">
+                      <Check className="w-3 h-3 text-purple-400" />
+                      Application Generated
                     </span>
                   ) : (
                     <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-slate-800 border border-slate-700 text-slate-400 font-semibold">
-                      Drafting
+                      Form Review
                     </span>
                   )}
                 </h2>
@@ -1056,14 +1038,6 @@ export default function AutofillModal({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {/* Automatic status indicator */}
-            <div
-              className="px-3 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs font-semibold flex items-center gap-1.5 shadow-sm"
-              title="Application status automatically set to 'Application in progress'"
-            >
-              <Clock className="w-3.5 h-3.5 text-amber-400" />
-              <span>Application in progress</span>
-            </div>
 
             {/* Manual Generate with agy button */}
             <button

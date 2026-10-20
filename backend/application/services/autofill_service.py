@@ -19,24 +19,51 @@ from backend.application.services.autofill_tracker import autofill_tracker
 
 
 def normalize_job_url(u: str) -> str:
-    """Simple domain + path matching (strips query parameters, trailing slashes, /application, /apply)."""
+    """
+    Normalizes a job URL while preserving the entire identity of the job:
+    Keeps the full path and essential job identification parameters (e.g. gh_jid, job_id, id).
+    Only strips non-essential marketing tracking params (utm_*, ref, dcr_ci) and trailing slashes.
+    """
     if not u:
         return ""
-    p = urlparse(u.strip().lower())
+    clean = u.strip()
+    p = urlparse(clean)
+    netloc = p.netloc.lower()
     path = p.path.rstrip("/")
-    if path.endswith("/application"):
-        path = path[:-12]
-    elif path.endswith("/apply"):
-        path = path[:-6]
-    return f"{p.netloc}{path}"
+
+    # Parse query parameters to keep essential job IDs while dropping analytics noise
+    if p.query:
+        from urllib.parse import parse_qsl, urlencode
+        pairs = parse_qsl(p.query)
+        filtered = [
+            (k, v) for k, v in pairs
+            if not k.lower().startswith("utm_") and k.lower() not in ("ref", "source", "dcr_ci", "referer", "referrer", "fbclid", "gclid")
+        ]
+        if filtered:
+            q_str = urlencode(filtered)
+            return f"{netloc}{path}?{q_str}"
+
+    return f"{netloc}{path}"
 
 
 def _is_url_match(u1: str, u2: str) -> bool:
+    if not u1 or not u2:
+        return False
+    raw1 = u1.strip().lower()
+    raw2 = u2.strip().lower()
+    # 1. Exact raw whole URL match
+    if raw1 == raw2:
+        return True
+    # 2. Normalized full URL match
     n1 = normalize_job_url(u1)
     n2 = normalize_job_url(u2)
-    if not n1 or not n2:
-        return False
-    return n1 == n2 or n1 in n2 or n2 in n1
+    if n1 and n2:
+        if n1 == n2:
+            return True
+        # Check if one URL contains the other (e.g. embed form vs direct job URL)
+        if n1 in n2 or n2 in n1:
+            return True
+    return False
 
 
 def find_matching_application(
@@ -47,13 +74,13 @@ def find_matching_application(
 ) -> Optional[Application]:
     """
     Finds the best matching application in the database with strict priority:
-    1. Exact or normalized URL match (highest priority, avoids collisions for multi-role companies)
+    1. Exact or whole URL match (highest priority, primary classification key)
     2. Exact Company + Role match (when both provided)
     3. Company match (fallback, only if URL is blank or candidate application has no URL set)
     """
     all_apps = session.exec(select(Application)).all()
 
-    # 1. Match by URL first
+    # 1. Match by whole URL first
     if url and url.startswith("http"):
         for a in all_apps:
             if a.url and _is_url_match(url, a.url):
@@ -669,6 +696,35 @@ Return ONLY JSON. No conversational text or markdown code fences outside JSON.
         answers = []
         cover_letter = None
 
+        def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
+            if not text:
+                return None
+            stripped = re.sub(r"^```(?:json)?\s*", "", text.strip(), flags=re.MULTILINE)
+            stripped = re.sub(r"```\s*$", "", stripped, flags=re.MULTILINE).strip()
+            try:
+                d = json.loads(stripped)
+                if isinstance(d, dict):
+                    return d
+            except Exception:
+                pass
+            start = stripped.find("{")
+            end = stripped.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                snippet = stripped[start:end+1]
+                try:
+                    d = json.loads(snippet)
+                    if isinstance(d, dict):
+                        return d
+                except Exception:
+                    cleaned = re.sub(r",\s*([\}\]])", r"\1", snippet)
+                    try:
+                        d = json.loads(cleaned)
+                        if isinstance(d, dict):
+                            return d
+                    except Exception:
+                        pass
+            return None
+
         try:
             proc = await asyncio.create_subprocess_exec(
                 "agy", "-p", prompt, "--dangerously-skip-permissions", "--disable-slash-commands", "--effort", "medium",
@@ -679,16 +735,10 @@ Return ONLY JSON. No conversational text or markdown code fences outside JSON.
             stdout, stderr = await proc.communicate()
             raw = stdout.decode("utf-8", errors="replace").strip()
 
-            cleaned = raw
-            if "```" in cleaned:
-                cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.MULTILINE)
-                cleaned = re.sub(r"```\s*$", "", cleaned, flags=re.MULTILINE).strip()
-
-            json_match = re.search(r"\{.*\}", cleaned, re.DOTALL)
-            if json_match:
-                parsed = json.loads(json_match.group(0))
-                actions = parsed.get("actions", [])
-                answers = parsed.get("answers", [])
+            parsed = _extract_json_object(raw)
+            if parsed:
+                actions = parsed.get("actions", []) or []
+                answers = parsed.get("answers", []) or []
                 cover_letter = parsed.get("cover_letter")
                 if parsed.get("company"):
                     detected_company = parsed["company"]
@@ -696,6 +746,80 @@ Return ONLY JSON. No conversational text or markdown code fences outside JSON.
                     detected_role = parsed["role"]
         except Exception as e:
             print(f"[AutofillService] agy resolve_live_dom error: {e}")
+
+        # Deterministic Fallback Augmentation:
+        # Guarantees standard candidate fields (Name, Email, Phone, LinkedIn, GitHub, City, etc.)
+        # are ALWAYS resolved into actions even if agy only answered essay questions or was brief.
+        existing_action_ids = set()
+        for a in actions:
+            if a.get("id"):
+                existing_action_ids.add(str(a.get("id")).lower())
+            if a.get("selector"):
+                existing_action_ids.add(str(a.get("selector")).lower())
+            if a.get("caesar_id"):
+                existing_action_ids.add(str(a.get("caesar_id")).lower())
+
+        full_name = profile.get("fullName", "")
+        first_name = profile.get("firstName") or (full_name.split()[0] if full_name else "")
+        last_name = profile.get("lastName") or (" ".join(full_name.split()[1:]) if full_name else "")
+        email = profile.get("email", "")
+        phone = profile.get("phone", "")
+        linkedin = profile.get("linkedin", "")
+        github = profile.get("github", "")
+        portfolio = profile.get("portfolio", "")
+        location = profile.get("location", "")
+
+        for field in fields:
+            fid = str(field.get("id") or "").strip()
+            selector = str(field.get("selector") or "").strip()
+            cid = str(field.get("caesar_id") or "").strip()
+
+            if (fid and fid.lower() in existing_action_ids) or \
+               (selector and selector.lower() in existing_action_ids) or \
+               (cid and cid.lower() in existing_action_ids):
+                continue
+
+            lbl = (field.get("label") or "").lower()
+            name = (field.get("name") or "").lower()
+            ph = (field.get("placeholder") or "").lower()
+            combined = f"{lbl} {name} {fid.lower()} {ph}"
+
+            val = None
+            if any(k in combined for k in ["first_name", "firstname", "first name", "given name", "fname"]):
+                val = first_name
+            elif any(k in combined for k in ["last_name", "lastname", "last name", "family name", "surname", "lname"]):
+                val = last_name
+            elif any(k in combined for k in ["full_name", "fullname", "full name", "candidate_name", "your name", "applicant name"]):
+                val = full_name
+            elif any(k in combined for k in ["email", "e-mail"]):
+                val = email
+            elif any(k in combined for k in ["phone", "mobile", "telephone", "phone number"]):
+                val = phone
+            elif any(k in combined for k in ["linkedin", "linkedin url", "linkedin profile"]):
+                val = linkedin
+            elif any(k in combined for k in ["github", "github url", "github profile"]):
+                val = github
+            elif any(k in combined for k in ["website", "portfolio", "personal website", "portfolio url"]):
+                val = portfolio
+            elif any(k in combined for k in ["city", "location", "address"]):
+                val = location
+
+            if val:
+                act = {
+                    "id": fid,
+                    "selector": selector or (f"#{fid}" if fid else f"[data-caesar-id='{cid}']"),
+                    "type": "fill",
+                    "value": val,
+                }
+                if cid:
+                    act["caesar_id"] = cid
+                actions.append(act)
+                if fid:
+                    existing_action_ids.add(fid.lower())
+                if selector:
+                    existing_action_ids.add(selector.lower())
+                if cid:
+                    existing_action_ids.add(cid.lower())
 
         return {
             "status": "success",
@@ -796,10 +920,11 @@ Return ONLY JSON. No conversational text or markdown code fences outside JSON.
             company = payload.get("company", "")
             role = payload.get("role", "")
             page_title = payload.get("page_title", "")
+            raw_fields = payload.get("fields", [])
 
-            # 1. Execute agy without any intermediate DB writes
+            # 1. Execute agy and deterministic augmentation without any intermediate DB writes
             res = await self.resolve_live_dom(
-                fields=payload.get("fields", []),
+                fields=raw_fields,
                 url=url,
                 company=company,
                 role=role,
@@ -814,8 +939,11 @@ Return ONLY JSON. No conversational text or markdown code fences outside JSON.
             detected_company = res.get("company") or company
             detected_role = res.get("role") or role
 
-            if not actions and not answers:
-                raise ValueError("Contextual reasoning completed but produced no actions or answers.")
+            if not actions and not answers and not cover_letter:
+                if not raw_fields:
+                    raise ValueError("No form fields detected on this page. Please ensure the application form is open and finished loading before queueing.")
+                # If fields were provided, we still have candidate profile and CV ready
+                actions = []
 
             # 2. ALL IN ONE GO: Single atomic database transaction updating all fields and status
             stored_payload = {
