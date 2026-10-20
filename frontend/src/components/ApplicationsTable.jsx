@@ -71,9 +71,13 @@ export default function ApplicationsTable({ applications = [], onStatusChange, o
         if (autofillRes && autofillRes.ok) {
           const aData = await autofillRes.json();
           if (aData.active && aData.job && isMounted) {
-            setActiveAutofillJob(aData.job);
-            setActiveAutofillJobId(aData.job.job_id);
-            setIsAutofilling(true);
+            if (aData.job.total === 1) {
+              setSingleAutofillJob(aData.job);
+            } else {
+              setActiveAutofillJob(aData.job);
+              setActiveAutofillJobId(aData.job.job_id);
+              setIsAutofilling(true);
+            }
           }
         }
       } catch (err) {
@@ -142,6 +146,37 @@ export default function ApplicationsTable({ applications = [], onStatusChange, o
       clearInterval(interval);
     };
   }, [activeAutofillJobId, isAutofilling, onRefresh]);
+
+  // 1c. Single Job Autofill Status Polling: Keeps main page updated in real time
+  useEffect(() => {
+    if (!singleAutofillJob?.job_id || singleAutofillJob?.status !== 'running') return;
+
+    let isCancelled = false;
+    const pollSingleStatus = async () => {
+      try {
+        const res = await fetch(`/api/autofill/job/${singleAutofillJob.job_id}`);
+        if (!res.ok) return;
+        const job = await res.json();
+        if (!isCancelled && job) {
+          setSingleAutofillJob(job);
+          if (job.status === 'completed' || job.status === 'cancelled' || job.status === 'failed') {
+            onRefresh?.();
+            setTimeout(() => {
+              setSingleAutofillJob((prev) => (prev?.status === job.status ? null : prev));
+            }, 6000);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to poll single autofill job in table:', err);
+      }
+    };
+
+    const interval = setInterval(pollSingleStatus, 1000);
+    return () => {
+      isCancelled = true;
+      clearInterval(interval);
+    };
+  }, [singleAutofillJob?.job_id, singleAutofillJob?.status, onRefresh]);
 
   // 2. Evaluation Status Polling: Polls live progress, elapsed seconds & target every 1000ms
   useEffect(() => {
@@ -475,6 +510,15 @@ export default function ApplicationsTable({ applications = [], onStatusChange, o
     }
   };
 
+  const handleCancelSingleAutofillJob = async () => {
+    if (!singleAutofillJob?.job_id) return;
+    try {
+      await fetch(`/api/autofill/job/${singleAutofillJob.job_id}/cancel`, { method: 'POST' });
+    } catch (err) {
+      console.error('Failed to cancel single autofill job:', err);
+    }
+  };
+
   const isAllSelected = filtered.length > 0 && filtered.every((app) => selectedAppIds.has(app.id));
 
   return (
@@ -545,14 +589,29 @@ export default function ApplicationsTable({ applications = [], onStatusChange, o
       {singleAutofillJob && (
         <div className="p-4 border-b border-indigo-500/30 bg-indigo-950/20">
           <PipelineProgressCard
-            title={singleAutofillJob.title}
+            title={
+              singleAutofillJob.status === 'completed'
+                ? 'AI Autofill Complete'
+                : singleAutofillJob.status === 'cancelled'
+                ? 'AI Autofill Cancelled'
+                : singleAutofillJob.status === 'failed'
+                ? 'AI Autofill Failed'
+                : 'Generating Tailored Answers with agy...'
+            }
             status={singleAutofillJob.status}
-            elapsedSeconds={singleAutofillJob.elapsedSeconds || 0}
-            percent={singleAutofillJob.percent || 0}
-            badge={singleAutofillJob.badge || "AI Autofill (agy)"}
-            tag={singleAutofillJob.tag || "Single Job"}
-            currentTarget={singleAutofillJob.currentTarget}
-            detail={singleAutofillJob.detail}
+            elapsedSeconds={singleAutofillJob.elapsed_seconds ?? singleAutofillJob.elapsedSeconds ?? 0}
+            percent={
+              singleAutofillJob.status === 'completed'
+                ? 100
+                : singleAutofillJob.status === 'cancelled' || singleAutofillJob.status === 'failed'
+                ? 100
+                : Math.min(95, Math.max(15, Math.round((singleAutofillJob.elapsed_seconds || 1) * 6)))
+            }
+            badge="AI Autofill (agy)"
+            tag={singleAutofillJob.job_id ? `Job: ${singleAutofillJob.job_id}` : 'Single Job'}
+            currentTarget={singleAutofillJob.current_target || singleAutofillJob.currentTarget}
+            detail={singleAutofillJob.detail || 'Inspecting form HTML and drafting tailored answers with agy...'}
+            onCancel={handleCancelSingleAutofillJob}
           />
         </div>
       )}

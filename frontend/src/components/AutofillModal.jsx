@@ -144,106 +144,121 @@ export default function AutofillModal({
     }
   }, [isOpen, initialData, company, role, url]);
 
-  // Manually generate answers with agy CLI (inspecting live form)
+  const [activeJobId, setActiveJobId] = useState(null);
+
+  // Poll live progress of async autofill job (emulating evaluation tracking)
+  useEffect(() => {
+    if (!activeJobId) return;
+    let isCancelled = false;
+
+    const pollStatus = async () => {
+      try {
+        const res = await fetch(`/api/autofill/job/${activeJobId}`);
+        if (!res.ok) {
+          if (res.status === 404) {
+            setActiveJobId(null);
+            setLoading(false);
+          }
+          return;
+        }
+        const job = await res.json();
+        if (!isCancelled && job) {
+          setSingleJobProgress(job);
+          onProgressUpdate?.(job);
+
+          if (job.status === 'completed') {
+            setActiveJobId(null);
+            setLoading(false);
+            onApplicationCreated?.();
+
+            // Fetch saved answers from SQLite
+            fetch(`/api/autofill/saved-answers?company=${encodeURIComponent(company)}&role=${encodeURIComponent(role)}&url=${encodeURIComponent(url)}`)
+              .then((r) => (r.ok ? r.json() : null))
+              .then((saved) => {
+                if (saved && saved.found) {
+                  if (saved.answers && saved.answers.length > 0) setAnswers(saved.answers);
+                  if (saved.cover_letter) {
+                    setCoverLetter(saved.cover_letter);
+                    setHasCoverLetter(true);
+                  }
+                  setActiveTab('answers');
+                }
+              })
+              .catch(() => {});
+
+            setTimeout(() => {
+              setSingleJobProgress((prev) => (prev?.status === 'completed' ? null : prev));
+              onProgressUpdate?.(null);
+            }, 6000);
+          } else if (job.status === 'cancelled' || job.status === 'failed') {
+            setActiveJobId(null);
+            setLoading(false);
+            setTimeout(() => {
+              setSingleJobProgress(null);
+              onProgressUpdate?.(null);
+            }, 6000);
+          }
+        }
+      } catch (err) {
+        console.error('Error polling autofill job:', err);
+      }
+    };
+
+    pollStatus();
+    const interval = setInterval(pollStatus, 1000);
+    return () => {
+      isCancelled = true;
+      clearInterval(interval);
+    };
+  }, [activeJobId, company, role, url, onApplicationCreated, onProgressUpdate]);
+
+  // Cancel currently running autofill job
+  const handleCancelJob = async () => {
+    if (!activeJobId) return;
+    try {
+      await fetch(`/api/autofill/job/${activeJobId}/cancel`, { method: 'POST' });
+    } catch (err) {
+      console.error('Failed to cancel autofill job:', err);
+    }
+  };
+
+  // Launch async autofill job tracked by real backend job_id
   const handleGenerateAnswers = async () => {
     setLoading(true);
-    let elapsed = 0;
-    const initialProgress = {
-      title: `Drafting Answers for ${company || 'Target Company'} — ${role || 'Role'}`,
-      status: 'running',
-      elapsedSeconds: 0,
-      percent: 15,
-      badge: 'AI Autofill (agy)',
-      tag: 'Single Job',
-      currentTarget: `${company || 'Target Company'} — ${role || 'Role'}`,
-      detail: 'Inspecting application form HTML and drafting tailored answers with agy...',
-    };
-    setSingleJobProgress(initialProgress);
-    onProgressUpdate?.(initialProgress);
-
-    const timer = setInterval(() => {
-      elapsed += 1;
-      const currentPct = Math.min(92, 15 + elapsed * 5);
-      const updated = {
-        title: `Drafting Answers for ${company || 'Target Company'} — ${role || 'Role'}`,
-        status: 'running',
-        elapsedSeconds: elapsed,
-        percent: currentPct,
-        badge: 'AI Autofill (agy)',
-        tag: 'Single Job',
-        currentTarget: `${company || 'Target Company'} — ${role || 'Role'}`,
-        detail: 'Inspecting application form HTML and drafting tailored answers with agy...',
-      };
-      setSingleJobProgress(updated);
-      onProgressUpdate?.(updated);
-    }, 1000);
-
     try {
-      const res = await fetch('/api/autofill/generate', {
+      const res = await fetch('/api/autofill/generate-async', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          app_id: initialData?.id,
           url,
           company,
           role,
         }),
       });
-      clearInterval(timer);
-      if (res.ok) {
-        const data = await res.json();
-        if (data.profile) setProfile(data.profile);
-        if (data.answers) setAnswers(data.answers);
-        if (data.cover_letter) {
-          setCoverLetter(data.cover_letter);
-          setHasCoverLetter(true);
-        }
-        if ((data.answers && data.answers.length > 0) || data.cover_letter) {
-          setActiveTab('answers');
-        }
-
-        const completedProgress = {
-          title: `Answers Generated for ${company || 'Target Company'}`,
-          status: 'completed',
-          elapsedSeconds: elapsed,
-          percent: 100,
-          badge: 'AI Autofill (agy)',
-          tag: 'Single Job',
-          currentTarget: `${company || 'Target Company'} — ${role || 'Role'}`,
-          detail: `Done! ${data.answers?.length || 0} tailored answers & ${data.cover_letter ? 'cover letter' : 'profile fields'} drafted.`,
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.detail || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      if (data.job_id) {
+        setActiveJobId(data.job_id);
+        const initialJob = data.job || {
+          job_id: data.job_id,
+          status: 'running',
+          total: 1,
+          current_index: 1,
+          current_target: `${company || 'Target Company'} — ${role || 'Role'}`,
+          elapsed_seconds: 0,
+          detail: 'Inspecting application form HTML and drafting tailored answers with agy...',
         };
-        setSingleJobProgress(completedProgress);
-        onProgressUpdate?.(completedProgress);
-        onApplicationCreated?.();
-
-        setTimeout(() => {
-          setSingleJobProgress(null);
-          onProgressUpdate?.(null);
-        }, 5000);
-      } else {
-        throw new Error('HTTP ' + res.status);
+        setSingleJobProgress(initialJob);
+        onProgressUpdate?.(initialJob);
       }
     } catch (err) {
-      clearInterval(timer);
-      console.error('Failed to generate autofill answers with agy:', err);
-      const failedProgress = {
-        title: `Failed to Generate Answers`,
-        status: 'failed',
-        elapsedSeconds: elapsed,
-        percent: 100,
-        badge: 'AI Autofill (agy)',
-        tag: 'Single Job',
-        currentTarget: `${company || 'Target Company'} — ${role || 'Role'}`,
-        detail: `Error: ${err.message || 'Could not draft answers with agy.'}`,
-      };
-      setSingleJobProgress(failedProgress);
-      onProgressUpdate?.(failedProgress);
-
-      setTimeout(() => {
-        setSingleJobProgress(null);
-        onProgressUpdate?.(null);
-      }, 6000);
-    } finally {
+      console.error('Failed to start async autofill job:', err);
       setLoading(false);
+      alert(`Autofill generation failed: ${err.message}`);
     }
   };
 
@@ -684,14 +699,29 @@ export default function AutofillModal({
         {singleJobProgress && (
           <div className="pt-3 pb-1 shrink-0">
             <PipelineProgressCard
-              title={singleJobProgress.title}
+              title={
+                singleJobProgress.status === 'completed'
+                  ? 'AI Autofill Complete'
+                  : singleJobProgress.status === 'cancelled'
+                  ? 'AI Autofill Cancelled'
+                  : singleJobProgress.status === 'failed'
+                  ? 'AI Autofill Failed'
+                  : 'Generating Tailored Answers with agy...'
+              }
               status={singleJobProgress.status}
-              elapsedSeconds={singleJobProgress.elapsedSeconds || 0}
-              percent={singleJobProgress.percent || 0}
-              badge={singleJobProgress.badge || 'AI Autofill (agy)'}
-              tag={singleJobProgress.tag || 'Single Job'}
-              currentTarget={singleJobProgress.currentTarget}
-              detail={singleJobProgress.detail}
+              elapsedSeconds={singleJobProgress.elapsed_seconds ?? singleJobProgress.elapsedSeconds ?? 0}
+              percent={
+                singleJobProgress.status === 'completed'
+                  ? 100
+                  : singleJobProgress.status === 'cancelled' || singleJobProgress.status === 'failed'
+                  ? 100
+                  : Math.min(95, Math.max(15, Math.round((singleJobProgress.elapsed_seconds || 1) * 6)))
+              }
+              badge="AI Autofill (agy)"
+              tag={singleJobProgress.job_id ? `Job: ${singleJobProgress.job_id}` : 'Single Job'}
+              currentTarget={singleJobProgress.current_target || singleJobProgress.currentTarget}
+              detail={singleJobProgress.detail || 'Inspecting form HTML and drafting tailored answers with agy...'}
+              onCancel={handleCancelJob}
             />
           </div>
         )}

@@ -1,5 +1,6 @@
 import json
 import asyncio
+from datetime import date
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel, Field
@@ -16,6 +17,7 @@ router = APIRouter(prefix="/api/autofill", tags=["Autofill"])
 
 
 class AutofillGenerateRequest(BaseModel):
+    app_id: Optional[int] = None
     url: Optional[str] = ""
     company: Optional[str] = ""
     role: Optional[str] = ""
@@ -104,6 +106,53 @@ async def generate_answers(payload: AutofillGenerateRequest):
             print(f"[AutofillRouter] Error persisting answers: {e}")
 
     return result
+
+
+@router.post("/generate-async")
+async def generate_async(payload: AutofillGenerateRequest):
+    """
+    Starts an asynchronous background autofill job for a single application,
+    tracked via a unique job_id in AutofillBatchTracker (identical to evaluation tracking).
+    """
+    target_app_id = payload.app_id
+
+    # If no app_id provided, look up or create the application in SQLite
+    if not target_app_id:
+        norm_url = (payload.url or "").strip().lower()
+        norm_comp = (payload.company or "").strip().lower()
+        with Session(engine) as session:
+            for a in session.exec(select(Application)).all():
+                matches_url = norm_url and norm_url.startswith("http") and (a.url or "").strip().lower() == norm_url
+                matches_comp = norm_comp and (a.company or "").strip().lower() == norm_comp
+                if matches_url or matches_comp:
+                    target_app_id = a.id
+                    break
+
+            if not target_app_id:
+                new_app = Application(
+                    company=payload.company or "Target Company",
+                    role=payload.role or "Software Engineer",
+                    url=payload.url or "",
+                    status="Application in progress",
+                    date_applied=date.today().isoformat(),
+                )
+                session.add(new_app)
+                session.commit()
+                session.refresh(new_app)
+                target_app_id = new_app.id
+
+    job = autofill_tracker.create_job(app_ids=[target_app_id])
+    target_name = f"{payload.company or 'Target Company'} — {payload.role or 'Software Engineer'}"
+    job.current_target = target_name
+    job.detail = f"Inspecting application form & drafting tailored answers for {target_name} with agy..."
+
+    asyncio.create_task(autofill_service.run_batch_autofill(job.job_id))
+
+    return {
+        "status": "started",
+        "job_id": job.job_id,
+        "job": job.to_dict(),
+    }
 
 
 @router.post("/batch")
