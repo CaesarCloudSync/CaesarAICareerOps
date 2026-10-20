@@ -144,11 +144,34 @@
     return (lbl || el.getAttribute('aria-label') || el.placeholder || el.name || '').trim().replace(/\s+/g, ' ');
   }
 
+  function getAllDocuments() {
+    const docs = [document];
+    try {
+      document.querySelectorAll('iframe').forEach((iframe) => {
+        try {
+          const iDoc = iframe.contentDocument || iframe.contentWindow?.document;
+          if (iDoc && !docs.includes(iDoc)) {
+            docs.push(iDoc);
+          }
+        } catch (e) {
+          // Cross-origin iframe
+        }
+      });
+    } catch (e) {}
+    return docs;
+  }
+
   function attachCvPdf(b64, fn) {
     if (!b64) return false;
     try {
-      const fileInp = document.getElementById('_systemfield_resume') ||
-                      document.querySelector('input[type="file"][id*="resume" i], input[type="file"][name*="resume" i], input[type="file"][id*="cv" i], input[type="file"][name*="cv" i], input[type="file"]');
+      let fileInp = null;
+      for (const doc of getAllDocuments()) {
+        try {
+          fileInp = doc.getElementById('_systemfield_resume') ||
+                    doc.querySelector('input[type="file"][id*="resume" i], input[type="file"][name*="resume" i], input[type="file"][id*="cv" i], input[type="file"][name*="cv" i], input[type="file"]');
+          if (fileInp) break;
+        } catch (e) {}
+      }
       if (!fileInp || (fileInp.files && fileInp.files.length > 0)) return false;
       const byteChars = atob(b64);
       const byteNums = new Array(byteChars.length);
@@ -172,8 +195,14 @@
   function attachCoverLetterPdf(b64, fn) {
     if (!b64) return false;
     try {
-      const fileInp = document.getElementById('_systemfield_cover_letter') ||
-                      document.querySelector('input[type="file"][id*="cover" i], input[type="file"][name*="cover" i], input[type="file"][aria-label*="cover" i], input[type="file"][data-qa*="cover" i]');
+      let fileInp = null;
+      for (const doc of getAllDocuments()) {
+        try {
+          fileInp = doc.getElementById('_systemfield_cover_letter') ||
+                    doc.querySelector('input[type="file"][id*="cover" i], input[type="file"][name*="cover" i], input[type="file"][aria-label*="cover" i], input[type="file"][data-qa*="cover" i]');
+          if (fileInp) break;
+        } catch (e) {}
+      }
       if (!fileInp || (fileInp.files && fileInp.files.length > 0)) return false;
       const byteChars = atob(b64);
       const byteNums = new Array(byteChars.length);
@@ -199,22 +228,14 @@
     const fields = [];
     const processedRadios = new Set();
     const inputSelector = 'input:not([type="hidden"]):not([type="submit"]):not([type="button"]), textarea, select, [contenteditable="true"], [role="textbox"], [role="combobox"]';
-    const els = Array.from(document.querySelectorAll(inputSelector));
+    const els = [];
 
-    // Also scan accessible child iframes (common in SmartRecruiters, Greenhouse, etc.)
-    try {
-      document.querySelectorAll('iframe').forEach((iframe) => {
-        try {
-          const iDoc = iframe.contentDocument || iframe.contentWindow?.document;
-          if (iDoc) {
-            const iEls = Array.from(iDoc.querySelectorAll(inputSelector));
-            els.push(...iEls);
-          }
-        } catch (e) {
-          // Cross-origin iframe
-        }
-      });
-    } catch (e) {}
+    getAllDocuments().forEach((doc) => {
+      try {
+        const found = Array.from(doc.querySelectorAll(inputSelector));
+        els.push(...found);
+      } catch (e) {}
+    });
 
     els.forEach((el, index) => {
       const id = el.id || '';
@@ -270,60 +291,62 @@
   function findElementForAction(act) {
     if (!act) return null;
     let el = null;
-    if (act.id) {
-      try { el = document.getElementById(act.id); } catch (e) {}
-    }
-    if (!el && act.caesar_id) {
-      try { el = document.querySelector(`[data-caesar-id="${act.caesar_id}"]`); } catch (e) {}
-    }
-    if (!el && act.selector) {
-      try { el = document.querySelector(act.selector); } catch (e) {}
-    }
-    if (!el && act.name) {
-      try { el = document.querySelector(`[name="${CSS.escape(act.name)}"]`); } catch (e) {}
+    const docs = getAllDocuments();
+
+    for (const doc of docs) {
+      try {
+        if (act.id) el = doc.getElementById(act.id);
+        if (!el && act.caesar_id) el = doc.querySelector(`[data-caesar-id="${act.caesar_id}"]`);
+        if (!el && act.selector) el = doc.querySelector(act.selector);
+        if (!el && act.name) el = doc.querySelector(`[name="${CSS.escape(act.name)}"]`);
+        if (el) return el;
+      } catch (e) {}
     }
 
     // Match by associated label text
     const labelText = (act.label || act.question || '').trim().toLowerCase();
-    if (!el && labelText && labelText.length > 2) {
-      const allLabels = Array.from(document.querySelectorAll('label, [class*="label" i], [class*="question" i], [class*="title" i]'));
-      for (const l of allLabels) {
-        const txt = (l.innerText || '').trim().toLowerCase();
-        if (txt && (txt.includes(labelText) || labelText.includes(txt))) {
-          if (l.htmlFor) {
-            el = document.getElementById(l.htmlFor);
-            if (el) break;
-          }
-          el = l.querySelector('input:not([type="hidden"]):not([type="file"]), textarea, select');
-          if (el) break;
-          let cur = l.parentElement;
-          for (let i = 0; i < 3; i++) {
-            if (!cur) break;
-            const found = cur.querySelector('input:not([type="hidden"]):not([type="file"]), textarea, select');
-            if (found) {
-              el = found;
-              break;
+    if (labelText && labelText.length > 2) {
+      for (const doc of docs) {
+        try {
+          const allLabels = Array.from(doc.querySelectorAll('label, [class*="label" i], [class*="question" i], [class*="title" i]'));
+          for (const l of allLabels) {
+            const txt = (l.innerText || '').trim().toLowerCase();
+            if (txt && (txt.includes(labelText) || labelText.includes(txt))) {
+              if (l.htmlFor) {
+                el = doc.getElementById(l.htmlFor);
+                if (el) return el;
+              }
+              el = l.querySelector('input:not([type="hidden"]):not([type="file"]), textarea, select');
+              if (el) return el;
+              let cur = l.parentElement;
+              for (let i = 0; i < 3; i++) {
+                if (!cur) break;
+                const found = cur.querySelector('input:not([type="hidden"]):not([type="file"]), textarea, select');
+                if (found) return found;
+                cur = cur.parentElement;
+              }
             }
-            cur = cur.parentElement;
           }
-          if (el) break;
-        }
+        } catch (e) {}
       }
     }
 
     // Match by placeholder text
     const placeholderText = (act.placeholder || '').trim().toLowerCase();
-    if (!el && placeholderText && placeholderText.length > 2) {
-      const inputs = Array.from(document.querySelectorAll('input, textarea'));
-      for (const inp of inputs) {
-        if (inp.placeholder && inp.placeholder.trim().toLowerCase().includes(placeholderText)) {
-          el = inp;
-          break;
-        }
+    if (placeholderText && placeholderText.length > 2) {
+      for (const doc of docs) {
+        try {
+          const inputs = Array.from(doc.querySelectorAll('input, textarea'));
+          for (const inp of inputs) {
+            if (inp.placeholder && inp.placeholder.trim().toLowerCase().includes(placeholderText)) {
+              return inp;
+            }
+          }
+        } catch (e) {}
       }
     }
 
-    return el;
+    return null;
   }
 
   // 5. Intelligent Fallback for Standard Candidate Profile Fields
@@ -343,7 +366,13 @@
       { keys: ['location', 'city', 'address', 'residence'], val: profile.location },
     ];
 
-    const inputs = Array.from(document.querySelectorAll('input:not([type="hidden"]):not([type="file"]):not([type="submit"]):not([type="button"]), textarea'));
+    const inputs = [];
+    getAllDocuments().forEach((doc) => {
+      try {
+        const found = Array.from(doc.querySelectorAll('input:not([type="hidden"]):not([type="file"]):not([type="submit"]):not([type="button"]), textarea'));
+        inputs.push(...found);
+      } catch (e) {}
+    });
 
     inputs.forEach((inp) => {
       if (inp.value && inp.value.trim().length > 0) return; // Skip already filled inputs
@@ -536,11 +565,23 @@
 
       const data = await res.json();
 
+      if (data.status === 'in_progress') {
+        showToast({
+          pct: 50,
+          title: '<span>⏳</span> AI Generation In Progress',
+          msg: 'Autofill generation is actively running with agy',
+          sub: 'Please wait until status reaches "Application Generated" before instant filling.',
+          isErr: false,
+          autoDismissMs: 5000,
+        });
+        return { success: false, error: 'in_progress' };
+      }
+
       if (!data.found) {
         showToast({
           pct: 100,
           title: '<span>⚠️</span> No Pre-Generated Answers',
-          msg: 'Answers not found for this page yet',
+          msg: data.message || 'Answers not found for this page yet',
           sub: 'Click "1. Queue AI Generation (agy)" to generate them first!',
           isErr: true,
           autoDismissMs: 6500,

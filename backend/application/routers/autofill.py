@@ -264,21 +264,23 @@ async def check_autofill_status(
             answers_count = 0
             has_answers = False
 
-            # Strictly only consider ready when status is 'Application Generated' AND answers/actions exist!
-            if target_app.status == "Application Generated" and target_app.answers:
-                try:
-                    d = json.loads(target_app.answers)
-                    if isinstance(d, dict):
-                        actions_count = len(d.get("actions", [])) or d.get("actions_count", 0)
-                        answers_count = len(d.get("answers", []))
-                        has_answers = bool(actions_count or answers_count or d.get("cover_letter"))
-                    elif isinstance(d, list):
-                        answers_count = len(d)
-                        has_answers = len(d) > 0
-                except Exception:
-                    pass
-
-            is_ready = (target_app.status == "Application Generated") and (actions_count > 0 or has_answers)
+            # Consider ready when status is 'Application Generated'
+            if target_app.status == "Application Generated":
+                if target_app.answers:
+                    try:
+                        d = json.loads(target_app.answers)
+                        if isinstance(d, dict):
+                            actions_count = len(d.get("actions", [])) or d.get("actions_count", 0)
+                            answers_count = len(d.get("answers", []))
+                            has_answers = bool(actions_count or answers_count or d.get("cover_letter"))
+                        elif isinstance(d, list):
+                            answers_count = len(d)
+                            has_answers = len(d) > 0
+                    except Exception:
+                        pass
+                is_ready = True
+            else:
+                is_ready = False
 
             return {
                 "exists": True,
@@ -340,19 +342,19 @@ async def apply_saved(payload: ApplySavedRequest):
             actions = []
             answers = []
             cover_letter = None
-            if target_app.answers and target_app.status == "Application Generated":
-                try:
-                    d = json.loads(target_app.answers)
-                    if isinstance(d, dict):
-                        actions = d.get("actions", [])
-                        answers = d.get("answers", [])
-                        cover_letter = d.get("cover_letter")
-                    elif isinstance(d, list):
-                        answers = d
-                except Exception:
-                    pass
-
-            if not actions and not answers:
+            if target_app.status == "Application Generated":
+                if target_app.answers:
+                    try:
+                        d = json.loads(target_app.answers)
+                        if isinstance(d, dict):
+                            actions = d.get("actions", [])
+                            answers = d.get("answers", [])
+                            cover_letter = d.get("cover_letter")
+                        elif isinstance(d, list):
+                            answers = d
+                    except Exception:
+                        pass
+            else:
                 return {
                     "status": "not_ready",
                     "found": False,
