@@ -45,6 +45,19 @@ export default function App() {
 
   useEffect(() => {
     loadData();
+    const interval = setInterval(async () => {
+      try {
+        const [statsRes, pipeRes] = await Promise.all([
+          fetch('/api/stats'),
+          fetch('/api/pipeline'),
+        ]);
+        if (statsRes.ok) setStats(await statsRes.json());
+        if (pipeRes.ok) setPipelineItems(await pipeRes.json());
+      } catch (err) {
+        // silent background poll
+      }
+    }, 3000);
+    return () => clearInterval(interval);
   }, []);
 
   const handleStatusChange = async (company, role, newStatus) => {
