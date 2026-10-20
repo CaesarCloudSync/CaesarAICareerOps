@@ -22,6 +22,7 @@ import {
   Check,
 } from 'lucide-react';
 import PipelineProgressCard from './PipelineProgressCard';
+import GranularProgressCard from './GranularProgressCard';
 
 const STEP_SUBSTEPS = {
   1: [
@@ -744,167 +745,11 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
 
         {/* Real-time Discovery Progress Card */}
         {activeJob && (
-          <div className={`p-4 rounded-xl border transition-all ${
-            activeJob.status === 'failed'
-              ? 'bg-rose-950/30 border-rose-800/60 text-rose-200'
-              : activeJob.status === 'completed'
-              ? 'bg-emerald-950/30 border-emerald-800/60 text-emerald-200'
-              : activeJob.status === 'cancelled'
-              ? 'bg-slate-900 border-slate-700 text-slate-300'
-              : 'bg-indigo-950/40 border-indigo-700/60 text-indigo-100 shadow-lg shadow-indigo-950/50'
-          }`}>
-            {/* Header row: Step pill, Title, and Elapsed Stopwatch */}
-            <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-indigo-900/50">
-              <div className="flex items-center gap-2">
-                <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-mono font-semibold tracking-wide border flex items-center gap-1.5 ${
-                  activeJob.status === 'completed'
-                    ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300'
-                    : activeJob.status === 'failed'
-                    ? 'bg-rose-500/20 border-rose-500/40 text-rose-300'
-                    : activeJob.status === 'cancelled'
-                    ? 'bg-amber-500/20 border-amber-500/40 text-amber-300'
-                    : 'bg-indigo-500/20 border-indigo-400/40 text-indigo-300'
-                }`}>
-                  {activeJob.status === 'running' && <Loader2 className="w-3 h-3 animate-spin text-indigo-300" />}
-                  {activeJob.status === 'completed' && <CheckCircle2 className="w-3 h-3 text-emerald-400" />}
-                  {activeJob.status === 'failed' && <AlertCircle className="w-3 h-3 text-rose-400" />}
-                  {activeJob.status === 'cancelled' && <AlertCircle className="w-3 h-3 text-amber-400" />}
-                  <span>
-                    {activeJob.status === 'completed'
-                      ? 'Completed'
-                      : activeJob.status === 'failed'
-                      ? 'Failed'
-                      : activeJob.status === 'cancelled'
-                      ? 'Cancelled'
-                      : `Step ${activeJob.step || 1} of ${activeJob.total_steps || 4}`}
-                  </span>
-                </span>
-                <span className="text-xs font-semibold text-white tracking-wide">
-                  {activeJob.step_name || 'Autonomous Discovery'}
-                </span>
-              </div>
-
-              {/* Live Stopwatch & Cancel Button */}
-              <div className="flex items-center gap-2">
-                <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-slate-900/80 border border-slate-800 text-[11px] font-mono text-slate-300">
-                  <Clock className="w-3 h-3 text-indigo-400" />
-                  <span>Elapsed: {activeJob.elapsed_seconds || 0}s</span>
-                </div>
-                {activeJob.status === 'running' && (
-                  <button
-                    type="button"
-                    onClick={handleCancelDiscovery}
-                    className="px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/30 text-rose-300 text-xs font-medium flex items-center gap-1 transition-colors"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                    <span>Cancel Discovery</span>
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* Sub-step detail text */}
-            <div className="pt-2.5 pb-2 text-xs font-mono text-slate-300 flex items-center gap-2">
-              <span className="truncate">{activeJob.detail || 'Processing...'}</span>
-            </div>
-
-            {/* 4-Step Visual Progress Track */}
-            <div className="grid grid-cols-4 gap-1.5 pt-2">
-              {[
-                { step: 1, name: '1. AI Criteria' },
-                { step: 2, name: '2. Portals Probe' },
-                { step: 3, name: '3. ATS Crawl & Stage' },
-                { step: 4, name: '4. CV Scoring' },
-              ].map((st) => {
-                const isDone = activeJob.status === 'completed' || activeJob.step > st.step;
-                const isCurrent = activeJob.status === 'running' && activeJob.step === st.step;
-                return (
-                  <div key={st.step} className="space-y-1">
-                    <div
-                      className={`h-1.5 rounded-full transition-all duration-300 ${
-                        isDone
-                          ? 'bg-emerald-400'
-                          : isCurrent
-                          ? 'bg-indigo-500 animate-pulse'
-                          : 'bg-slate-800'
-                      }`}
-                    />
-                    <div className={`text-[10px] truncate ${
-                      isDone ? 'text-emerald-400 font-medium' : isCurrent ? 'text-indigo-300 font-semibold' : 'text-slate-600'
-                    }`}>
-                      {st.name}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* Sub-step Segmented Lines */}
-            <div className="mt-3 pt-2.5 border-t border-indigo-900/40 space-y-1.5">
-              <div className="flex items-center justify-between text-[11px] font-mono">
-                <span className="text-slate-400">Granular Sub-Step:</span>
-                <span className="text-indigo-300 font-medium truncate max-w-[70%] text-right">
-                  {activeJob.substep ? `[${activeJob.substep}] ` : ''}{activeJob.substep_name || 'In progress...'}
-                </span>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                {(STEP_SUBSTEPS[activeJob.step || 1] || []).map((sub) => {
-                  const currentSubNum = parseFloat(activeJob.substep || '1.1');
-                  const thisSubNum = parseFloat(sub.id);
-                  const isDone = activeJob.status === 'completed' || currentSubNum > thisSubNum;
-                  const isCurrent = activeJob.status === 'running' && activeJob.substep === sub.id;
-                  return (
-                    <div key={sub.id} className="space-y-1">
-                      <div
-                        className={`h-1 rounded-full transition-all duration-300 ${
-                          isDone
-                            ? 'bg-emerald-400'
-                            : isCurrent
-                            ? 'bg-indigo-400 animate-pulse'
-                            : 'bg-slate-800'
-                        }`}
-                      />
-                      <div
-                        className={`text-[10px] truncate flex items-center gap-1.5 ${
-                          isDone
-                            ? 'text-emerald-400 font-medium'
-                            : isCurrent
-                            ? 'text-indigo-300 font-semibold'
-                            : 'text-slate-500'
-                        }`}
-                      >
-                        <span className="font-mono">{isDone ? '✓' : isCurrent ? '◐' : '○'}</span>
-                        <span className="truncate">{sub.title}</span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Live Activity Feed for Step 3.1 Parallel Crawl */}
-            {activeJob.substep === '3.1' && activeJob.live_feed && activeJob.live_feed.length > 0 && (
-              <div className="mt-3 p-2.5 rounded-lg bg-slate-950/90 border border-slate-800 space-y-1.5 font-mono text-[10px]">
-                <div className="flex items-center gap-1.5 text-indigo-400 font-semibold pb-1 border-b border-slate-800/80">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse shrink-0" />
-                  <span>Live ATS Crawl Activity (stdout stream):</span>
-                </div>
-                <div className="space-y-0.5 max-h-24 overflow-y-auto pr-1">
-                  {activeJob.live_feed.slice(-5).map((line, lidx) => {
-                    const isLatest = lidx === activeJob.live_feed.slice(-5).length - 1;
-                    return (
-                      <div key={lidx} className="truncate flex items-center gap-1.5">
-                        <span className="text-slate-600 shrink-0">›</span>
-                        <span className={`truncate ${isLatest ? 'text-indigo-200 font-medium' : 'text-slate-400'}`}>
-                          {line}
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
+          <GranularProgressCard
+            job={activeJob}
+            onCancel={handleCancelDiscovery}
+            cancelLabel="Cancel Discovery"
+          />
         )}
       </div>
 

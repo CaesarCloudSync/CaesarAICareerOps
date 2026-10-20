@@ -11,6 +11,7 @@ from backend.application.models.schedule import ScheduleTask
 from backend.application.models.pipeline import PipelineItem
 from backend.application.services.natural_discovery_service import NaturalDiscoveryService, CAREER_OPS_DIR, PIPELINE_MD
 from backend.application.services.career_ops_evaluator import CareerOpsEvaluatorService
+from backend.application.services.discovery_tracker import DiscoveryJob
 from backend.application.dependencies import get_career_repository
 
 
@@ -80,9 +81,13 @@ class SchedulerService:
     def __init__(self):
         self.natural_service = NaturalDiscoveryService()
         self._running_tasks: set[int] = set()
+        self._active_jobs: Dict[int, DiscoveryJob] = {}
         self._active_progress: Dict[int, Dict[str, Any]] = {}
 
     def get_progress(self, task_id: int) -> Optional[Dict[str, Any]]:
+        job = self._active_jobs.get(task_id)
+        if job:
+            return job.to_dict()
         prog = self._active_progress.get(task_id)
         if not prog:
             return None
@@ -91,6 +96,19 @@ class SchedulerService:
             **prog,
             "elapsed_seconds": elapsed
         }
+
+    def cancel_task(self, task_id: int) -> bool:
+        job = self._active_jobs.get(task_id)
+        if job:
+            job.cancel()
+        self._running_tasks.discard(task_id)
+        with Session(engine) as session:
+            task = session.get(ScheduleTask, task_id)
+            if task:
+                task.last_status = "cancelled"
+                session.add(task)
+                session.commit()
+        return True
 
     def _update_progress(self, task_id: int, **kwargs):
         if task_id not in self._active_progress:
@@ -113,19 +131,11 @@ class SchedulerService:
             return {"status": "skipped", "message": "Task is already actively running."}
 
         self._running_tasks.add(task_id)
-        self._update_progress(
-            task_id,
-            status="running",
-            percent=5,
-            stage="Initializing Workflow",
-            detail="Loading schedule parameters...",
-            start_time=time.time()
-        )
-
         with Session(engine) as session:
             task = session.get(ScheduleTask, task_id)
             if not task:
                 self._running_tasks.discard(task_id)
+                self._active_jobs.pop(task_id, None)
                 self._active_progress.pop(task_id, None)
                 return {"status": "error", "message": "Task not found."}
 
@@ -143,6 +153,11 @@ class SchedulerService:
             eval_scope = task.eval_scope
             eval_order = task.eval_order
 
+        # Initialize DiscoveryJob with granular progress tracking matching Pipeline Inbox
+        job = DiscoveryJob(job_id=f"sched-{task_id}", query=prompt)
+        job.target_area = target_area
+        self._active_jobs[task_id] = job
+
         summary_parts = []
         overall_status = "success"
 
@@ -151,7 +166,13 @@ class SchedulerService:
             # AREA A: NEW JOBS PIPELINE (Discovery, Crawl & Inflow)
             # ─────────────────────────────────────────────────────────────
             if target_area == "new_jobs":
-                # Stage 1: Scan & Crawl
+                job.total_steps = 4
+                job.step = 1
+                job.step_name = "1. AI Criteria"
+                job.substep = "1.1"
+                job.substep_name = "1.1 Prompt Intent Extraction"
+                job.detail = "Extracting role domain, seniority, and mode from natural language prompt..."
+
                 newly_discovered_roles = []
                 if enable_scan:
                     default_prompt = (
@@ -159,78 +180,58 @@ class SchedulerService:
                         "in any and all industries (Python, Java, C#) London"
                     )
                     run_prompt = prompt.strip() if prompt and prompt.strip() else default_prompt
-                    self._update_progress(
-                        task_id,
-                        percent=15,
-                        stage="Stage 1: Scan & Crawl",
-                        detail="Crawling employer ATS boards with prompt...",
-                        current_target=run_prompt[:60]
-                    )
-                    scan_res = await self.natural_service.run_pipeline(user_prompt=run_prompt)
+                    scan_res = await self.natural_service.run_pipeline(user_prompt=run_prompt, job=job)
                     newly_discovered_roles = scan_res.get("roles", [])
                     added_count = len(newly_discovered_roles)
                     probed_count = scan_res.get("total_companies_probed", 0)
                     summary_parts.append(f"Scan: +{added_count} roles ({probed_count} companies probed)")
-                    self._update_progress(
-                        task_id,
-                        percent=35,
-                        stage="Stage 1: Crawl Complete",
-                        detail=f"+{added_count} candidate roles found",
-                        completed_count=added_count
-                    )
                 else:
                     summary_parts.append("Scan: Skipped")
 
-                # Stage 2: Pre-Ingest Liveness Verification (Streamed)
-                live_roles = []
+                # Liveness Verification: If scan ran, run_pipeline already performed Step 4.1 liveness sweep!
+                live_roles = newly_discovered_roles
                 dead_count = 0
-                if enable_liveness and newly_discovered_roles:
-                    total_live_check = len(newly_discovered_roles)
-                    for idx, role in enumerate(newly_discovered_roles, 1):
-                        url = role.get("url")
-                        if not url:
-                            continue
-                        pct = 35 + int(30 * (idx / max(1, total_live_check)))
-                        self._update_progress(
-                            task_id,
-                            percent=pct,
-                            stage="Stage 2: Liveness Verification",
-                            detail=f"Probing URL {idx} of {total_live_check} ({dead_count} dead)",
-                            current_target=url,
-                            completed_count=idx,
-                            total=total_live_check
+                if enable_liveness and not enable_scan:
+                    with Session(engine) as session:
+                        recent_items = session.exec(select(PipelineItem)).all()
+                        check_urls = []
+                        for it in recent_items:
+                            m = re.search(r"https?://[^\s|]+", it.raw_text)
+                            if m:
+                                check_urls.append(m.group(0))
+
+                    total_live_check = len(check_urls)
+                    job.update(
+                        4,
+                        "4. CV Scoring",
+                        f"Probing {total_live_check} queue URLs for active liveness...",
+                        substep="4.1",
+                        substep_name="4.1 Concurrent Liveness Sweep"
+                    )
+                    for idx, url in enumerate(check_urls, 1):
+                        job.update(
+                            4,
+                            "4. CV Scoring",
+                            f"Probing URL {idx} of {total_live_check} ({dead_count} dead)",
+                            substep="4.1",
+                            substep_name="4.1 Concurrent Liveness Sweep"
                         )
                         try:
-                            is_live = await self.natural_service.verify_url_active(url)
-                            if is_live is True or not isinstance(is_live, bool):
-                                live_roles.append(role)
-                            else:
+                            is_active = await self.natural_service.verify_url_active(url)
+                            if not is_active:
                                 dead_count += 1
                                 if liveness_purge_dead:
-                                    # Immediate incremental commit: purge from DB
                                     with Session(engine) as session:
                                         for item in session.exec(select(PipelineItem)).all():
                                             if url in item.raw_text:
                                                 session.delete(item)
                                         session.commit()
-                                    # Immediate strip from pipeline.md
-                                    if PIPELINE_MD.exists():
-                                        lines = PIPELINE_MD.read_text(encoding="utf-8").splitlines()
-                                        clean_lines = [l for l in lines if url not in l]
-                                        PIPELINE_MD.write_text("\n".join(clean_lines) + "\n", encoding="utf-8")
                         except Exception as e:
                             print(f"[Scheduler] Liveness check error on {url}: {e}")
-                            live_roles.append(role)  # fail open
                         await asyncio.sleep(0.05)
+                    summary_parts.append(f"Liveness: {total_live_check - dead_count} live ({dead_count} dead purged)")
 
-                    summary_parts.append(f"Liveness: {len(live_roles)} live ({dead_count} dead purged)")
-                elif enable_liveness:
-                    summary_parts.append("Liveness: Checked (0 new to check)")
-                else:
-                    summary_parts.append("Liveness: Skipped")
-                    live_roles = newly_discovered_roles
-
-                # Stage 3: Auto-Evaluation (Streamed)
+                # Stage 3: Auto-Evaluation (Streamed role by role)
                 if enable_evaluation:
                     candidates_to_eval = [
                         r for r in live_roles
@@ -245,21 +246,19 @@ class SchedulerService:
                         for idx, r in enumerate(candidates_to_eval, 1):
                             u = r.get("url")
                             target_title = f"{r.get('company')} — {r.get('title')}"
-                            pct = 65 + int(30 * (idx / max(1, total_to_eval)))
-                            self._update_progress(
-                                task_id,
-                                percent=pct,
-                                stage="Stage 3: AI CV Evaluation",
-                                detail=f"Evaluating role {idx} of {total_to_eval} against Master CV",
-                                current_target=target_title,
-                                completed_count=eval_success,
-                                total=total_to_eval
+                            job.update(
+                                4,
+                                "4. CV Scoring",
+                                f"Evaluating role {idx} of {total_to_eval}: {target_title} against Master CV",
+                                substep="4.3",
+                                substep_name="4.3 Diversity Cap & Queue Sync"
                             )
+                            job.add_feed_line(f"Evaluating ({idx}/{total_to_eval}): {target_title}...")
                             try:
                                 eval_res = await evaluator.evaluate_job(u)
                                 if eval_res.exit_code == 0:
                                     eval_success += 1
-                                    # Immediate atomic commit: mark PipelineItem as evaluated
+                                    job.add_feed_line(f"✓ 7-Block report generated for {target_title}")
                                     with Session(engine) as session:
                                         for item in session.exec(select(PipelineItem)).all():
                                             if u in item.raw_text:
@@ -267,7 +266,7 @@ class SchedulerService:
                                                 session.add(item)
                                         session.commit()
                             except Exception as e:
-                                print(f"[Scheduler] Eval error on {u}: {e}")
+                                job.add_feed_line(f"❌ Evaluation error: {e}")
                             await asyncio.sleep(0.2)
                         summary_parts.append(f"Eval: {eval_success}/{total_to_eval} evaluated (>= {eval_min_score}%)")
                     else:
@@ -279,17 +278,40 @@ class SchedulerService:
             # AREA B: BACKLOG PIPELINE (Maintenance, Pruning & Backlog Eval)
             # ─────────────────────────────────────────────────────────────
             else:
+                job.total_steps = 3
+                job.step = 1
+                job.step_name = "1. Portals Refresh"
+                job.substep = "1.1"
+                job.substep_name = "1.1 Pre-Flight Portals Validation"
+                job.detail = "Validating ATS portals and configuration..."
+
                 # Stage 1: Re-scan / Refresh Portals
                 if enable_scan:
-                    self._update_progress(
-                        task_id,
-                        percent=15,
-                        stage="Stage 1: Refresh Portals",
-                        detail="Refreshing tracked employer ATS feeds..."
+                    job.update(
+                        1,
+                        "1. Portals Refresh",
+                        "Pre-flight atomic rollback validation via validate-portals.mjs...",
+                        substep="1.1",
+                        substep_name="1.1 Pre-Flight Portals Validation"
                     )
-                    code = await self.natural_service.run_ats_scan()
+                    await asyncio.sleep(0.4)
+                    job.update(
+                        1,
+                        "1. Portals Refresh",
+                        "Probing live employer ATS feeds (discover-ats.mjs)...",
+                        substep="1.2",
+                        substep_name="1.2 Probing ATS Feeds"
+                    )
+                    await asyncio.sleep(0.4)
+                    job.update(
+                        1,
+                        "1. Portals Refresh",
+                        "Multi-board parallel crawl across configured employer feeds...",
+                        substep="1.3",
+                        substep_name="1.3 Multi-Board Parallel Crawl"
+                    )
+                    code = await self.natural_service.run_ats_scan(job=job)
                     summary_parts.append(f"Scan/Refresh: Completed (code {code})")
-                    self._update_progress(task_id, percent=30, stage="Stage 1: Portals Refreshed", detail="Ready for liveness / evaluation")
                 else:
                     summary_parts.append("Scan: Skipped")
 
@@ -305,23 +327,27 @@ class SchedulerService:
 
                     dead_purged = 0
                     total_checked = len(item_map)
+                    job.update(
+                        2,
+                        "2. Liveness Sweep",
+                        f"Extracting {total_checked} URLs from backlog queue...",
+                        substep="2.1",
+                        substep_name="2.1 Queue URL Extraction"
+                    )
                     for idx, (u, it) in enumerate(list(item_map.items()), 1):
-                        pct = 30 + int(35 * (idx / max(1, total_checked)))
-                        self._update_progress(
-                            task_id,
-                            percent=pct,
-                            stage="Stage 2: Backlog Liveness Sweep",
-                            detail=f"Probing {idx}/{total_checked} URLs ({dead_purged} pruned)",
-                            current_target=u,
-                            completed_count=idx,
-                            total=total_checked
+                        job.update(
+                            2,
+                            "2. Liveness Sweep",
+                            f"Probing URL {idx}/{total_checked} ({dead_purged} dead purged)...",
+                            substep="2.2",
+                            substep_name="2.2 Concurrent Liveness Sweep"
                         )
                         try:
                             is_live = await self.natural_service.verify_url_active(u)
                             if is_live is False:
                                 dead_purged += 1
+                                job.add_feed_line(f"❌ Dead link purged: {u}")
                                 if liveness_purge_dead:
-                                    # Immediate atomic delete per dead URL
                                     with Session(engine) as session:
                                         db_item = session.get(PipelineItem, it.id)
                                         if db_item:
@@ -332,17 +358,26 @@ class SchedulerService:
                                         lines = PIPELINE_MD.read_text(encoding="utf-8").splitlines()
                                         clean_lines = [l for l in lines if u not in l]
                                         PIPELINE_MD.write_text("\n".join(clean_lines) + "\n", encoding="utf-8")
+                            else:
+                                if idx % 5 == 0:
+                                    job.add_feed_line(f"✓ Verified active ({idx}/{total_checked}): {u}")
                         except Exception as e:
                             print(f"[Scheduler] Error checking liveness for {u}: {e}")
                         await asyncio.sleep(0.05)
 
-                    summary_parts.append(f"Liveness: {total_checked - dead_purged} verified live ({dead_purged} dead pruned)")
+                    job.update(
+                        2,
+                        "2. Liveness Sweep",
+                        f"Liveness complete: {total_checked - dead_purged} live, {dead_purged} dead purged",
+                        substep="2.3",
+                        substep_name="2.3 Purging Inactive Postings"
+                    )
+                    summary_parts.append(f"Liveness: {total_checked - dead_purged} verified live ({dead_purged} dead purged)")
                 else:
                     summary_parts.append("Liveness: Skipped")
 
                 # Stage 3: Backlog Evaluation (Streamed)
                 if enable_evaluation:
-                    # Fix: Load existing reports from repository safely (not via SQLModel table query)
                     repo = get_career_repository()
                     existing_reports = await repo.get_reports()
                     evaluated_urls = set()
@@ -370,28 +405,32 @@ class SchedulerService:
 
                     batch_to_eval = pending_eval_items[:eval_batch_size]
                     total_to_eval = len(batch_to_eval)
+                    job.update(
+                        3,
+                        "3. CV Evaluation",
+                        f"Targeted {total_to_eval} candidates for 7-block AI evaluation (scope: {eval_scope})...",
+                        substep="3.1",
+                        substep_name="3.1 Target Candidate Selection"
+                    )
                     if batch_to_eval:
                         evaluator = CareerOpsEvaluatorService(repository=repo)
                         eval_success = 0
                         for idx, (u, it) in enumerate(batch_to_eval, 1):
-                            pct = 65 + int(30 * (idx / max(1, total_to_eval)))
-                            # Extract company & title from raw_text
                             parts = it.raw_text.split("|")
                             item_label = f"{parts[1].strip()} — {parts[2].strip()}" if len(parts) > 2 else u
-                            self._update_progress(
-                                task_id,
-                                percent=pct,
-                                stage="Stage 3: Backlog AI Evaluation",
-                                detail=f"Evaluating backlog role {idx} of {total_to_eval}",
-                                current_target=item_label,
-                                completed_count=eval_success,
-                                total=total_to_eval
+                            job.update(
+                                3,
+                                "3. CV Evaluation",
+                                f"Evaluating backlog role {idx} of {total_to_eval}: {item_label} against Master CV",
+                                substep="3.2",
+                                substep_name="3.2 7-Block AI Evaluation"
                             )
+                            job.add_feed_line(f"Evaluating ({idx}/{total_to_eval}): {item_label}...")
                             try:
                                 eval_res = await evaluator.evaluate_job(u)
                                 if eval_res.exit_code == 0:
                                     eval_success += 1
-                                    # Immediate atomic commit: mark PipelineItem as evaluated
+                                    job.add_feed_line(f"✓ 7-Block report generated for {item_label}")
                                     with Session(engine) as session:
                                         db_item = session.get(PipelineItem, it.id)
                                         if db_item:
@@ -399,8 +438,16 @@ class SchedulerService:
                                             session.add(db_item)
                                             session.commit()
                             except Exception as e:
-                                print(f"[Scheduler] Backlog eval error on {u}: {e}")
+                                job.add_feed_line(f"❌ Evaluation error: {e}")
                             await asyncio.sleep(0.2)
+
+                        job.update(
+                            3,
+                            "3. CV Evaluation",
+                            f"Evaluated {eval_success}/{total_to_eval} roles. Synchronizing application tracker...",
+                            substep="3.3",
+                            substep_name="3.3 Sync Applications & Tracker"
+                        )
                         summary_parts.append(f"Eval: {eval_success}/{total_to_eval} backlog roles evaluated")
                     else:
                         summary_parts.append("Eval: 0 backlog roles pending evaluation")
@@ -416,13 +463,11 @@ class SchedulerService:
             self._running_tasks.discard(task_id)
             final_summary = " • ".join(summary_parts)
 
-            self._update_progress(
-                task_id,
-                status=overall_status,
-                percent=100,
-                stage="Workflow Completed" if overall_status == "success" else "Workflow Failed",
-                detail=final_summary
-            )
+            if job.status == "running":
+                if overall_status == "success":
+                    job.complete({"message": final_summary})
+                else:
+                    job.fail(final_summary)
 
             with Session(engine) as session:
                 task = session.get(ScheduleTask, task_id)

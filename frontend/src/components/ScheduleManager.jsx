@@ -22,6 +22,7 @@ import {
   Loader2
 } from 'lucide-react';
 import PipelineProgressCard from './PipelineProgressCard';
+import GranularProgressCard from './GranularProgressCard';
 
 const SUGGESTIONS = [
   {
@@ -115,11 +116,16 @@ export default function ScheduleManager() {
 
   useEffect(() => {
     loadSchedules(true);
+  }, []);
+
+  useEffect(() => {
+    const hasRunning = schedules.some((s) => s.progress?.status === 'running') || runningScheduleId !== null;
+    const intervalTime = hasRunning ? 1000 : 3000;
     const interval = setInterval(() => {
       loadSchedules(false);
-    }, 3000);
+    }, intervalTime);
     return () => clearInterval(interval);
-  }, []);
+  }, [schedules, runningScheduleId]);
 
   const openCreateModal = (area) => {
     const targetArea = (area === 'all' || !area) ? 'new_jobs' : area;
@@ -232,12 +238,21 @@ export default function ScheduleManager() {
     try {
       const res = await fetch(`/api/schedules/${id}/run`, { method: 'POST' });
       if (res.ok) {
-        setTimeout(loadSchedules, 2000);
+        await loadSchedules(false);
       }
     } catch (err) {
       console.error('Failed to trigger schedule run', err);
     } finally {
       setTimeout(() => setRunningScheduleId(null), 3000);
+    }
+  };
+
+  const handleCancelSchedule = async (id) => {
+    try {
+      await fetch(`/api/schedules/${id}/cancel`, { method: 'POST' });
+      await loadSchedules(false);
+    } catch (err) {
+      console.error('Failed to cancel schedule run', err);
     }
   };
 
@@ -396,22 +411,17 @@ export default function ScheduleManager() {
                   </span>
                 </div>
 
-                {/* Active Progress Card (matching main page evaluation progress card with zero duplication) */}
+                {/* Active Granular Progress Card matching Pipeline Inbox */}
                 {(isRunning || sch.progress?.status === 'running') && (
-                  <PipelineProgressCard
+                  <GranularProgressCard
                     className="mt-3.5"
-                    title={sch.progress?.stage || 'Executing Workflow Pipeline...'}
-                    status={sch.progress?.status || (isRunning ? 'running' : 'idle')}
-                    elapsedSeconds={sch.progress?.elapsed_seconds || 0}
-                    percent={sch.progress?.percent || (isRunning ? 25 : 0)}
-                    badge={
-                      sch.progress?.total > 0
-                        ? `${sch.progress.completed_count || 0} / ${sch.progress.total}`
-                        : undefined
-                    }
-                    tag={`Schedule #${sch.id}`}
-                    currentTarget={sch.progress?.current_target || sch.name}
-                    detail={sch.progress?.detail || 'Processing stages...'}
+                    job={{
+                      ...sch.progress,
+                      target_area: sch.target_area,
+                      status: sch.progress?.status || (isRunning ? 'running' : 'idle'),
+                    }}
+                    onCancel={() => handleCancelSchedule(sch.id)}
+                    cancelLabel="Cancel Schedule Run"
                   />
                 )}
 

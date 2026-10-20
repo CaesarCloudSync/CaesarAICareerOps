@@ -126,3 +126,11 @@ async def run_schedule_now(schedule_id: int, background_tasks: BackgroundTasks):
     # Launch asynchronously in background
     background_tasks.add_task(scheduler_service.execute_schedule_task, schedule_id)
     return {"status": "started", "message": f"Execution started for schedule {schedule_id}."}
+
+
+@router.post("/{schedule_id}/cancel")
+async def cancel_schedule_task(schedule_id: int):
+    """Cancels an active execution of the schedule's pipeline workflow."""
+    success = scheduler_service.cancel_task(schedule_id)
+    return {"status": "success", "message": f"Execution for schedule {schedule_id} cancelled."}
+
