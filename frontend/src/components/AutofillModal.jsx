@@ -231,26 +231,51 @@ export default function AutofillModal({
     });
 
     /* 3. Fill tailored essay questions */
-    (data.answers || []).forEach(function(ans) {
-      const qLower = (ans.question || '').toLowerCase();
-      const qClean = qLower.replace(/[^a-z0-9]/g, ' ').replace(/\\s+/g, ' ').trim();
-      const qWords = qClean.split(' ').filter(function(w) { return w.length > 3; });
+    function fillAnswersList(ansList) {
+      if (!ansList || !ansList.length) return 0;
+      let filled = 0;
+      ansList.forEach(function(ans) {
+        const qLower = (ans.question || '').toLowerCase();
+        const qClean = qLower.replace(/[^a-z0-9]/g, ' ').replace(/\\s+/g, ' ').trim();
+        const qWords = qClean.split(' ').filter(function(w) { return w.length > 3; });
 
-      document.querySelectorAll('textarea, input[type="text"]').forEach(function(inp) {
-        if (inp.value && inp.value.length > 20) return;
-        const info = getFieldInfo(inp);
-        const labelClean = info.label.replace(/[^a-z0-9]/g, ' ').replace(/\\s+/g, ' ').trim();
-        
-        let matches = 0;
-        for (let i = 0; i < qWords.length; i++) {
-          if (labelClean.includes(qWords[i])) matches++;
-        }
-        if (matches >= 2 || (qWords.length <= 2 && matches >= 1) || (qClean.length > 10 && labelClean.includes(qClean.slice(0, 20)))) {
-          fill(inp, ans.answer);
-          count++;
-        }
+        document.querySelectorAll('textarea, input[type="text"]').forEach(function(inp) {
+          if (inp.value && inp.value.length > 20) return;
+          const info = getFieldInfo(inp);
+          const labelClean = info.label.replace(/[^a-z0-9]/g, ' ').replace(/\\s+/g, ' ').trim();
+          
+          let matches = 0;
+          for (let i = 0; i < qWords.length; i++) {
+            if (labelClean.includes(qWords[i])) matches++;
+          }
+          if (matches >= 2 || (qWords.length <= 2 && matches >= 1) || (qClean.length > 10 && labelClean.includes(qClean.slice(0, 20)))) {
+            fill(inp, ans.answer);
+            count++;
+            filled++;
+          }
+        });
       });
-    });
+      return filled;
+    }
+
+    fillAnswersList(data.answers || []);
+
+    /* Also auto-read from clipboard if fresh answers were copied */
+    if (navigator.clipboard && navigator.clipboard.readText) {
+      navigator.clipboard.readText().then(function(text) {
+        if (text && text.includes('__caesar__')) {
+          try {
+            const clipData = JSON.parse(text);
+            if (clipData && clipData.answers) {
+              const extra = fillAnswersList(clipData.answers);
+              if (extra > 0) {
+                showBanner(count);
+              }
+            }
+          } catch(e) {}
+        }
+      }).catch(function(){});
+    }
 
     /* 4. Auto-attach CV PDF via local endpoint if accessible */
     const fileInp = document.querySelector('input[type="file"]:not(#_systemfield_resume), input[id="_systemfield_resume"], input[type="file"]');
@@ -274,14 +299,17 @@ export default function AutofillModal({
     }
 
     /* 5. Floating banner visual feedback */
-    const existing = document.getElementById('caesar-autofill-banner');
-    if (existing) existing.remove();
-    const banner = document.createElement('div');
-    banner.id = 'caesar-autofill-banner';
-    banner.style.cssText = 'position:fixed;top:20px;right:20px;z-index:9999999;background:#0f172a;color:#fff;padding:12px 18px;border-radius:12px;font-family:system-ui,sans-serif;font-size:13px;box-shadow:0 10px 25px rgba(0,0,0,0.5);border:1px solid #10b981;display:flex;align-items:center;gap:10px;';
-    banner.innerHTML = '<span style="font-size:18px">⚡</span> <strong>CaesarAI:</strong> Auto-filled ' + count + ' fields & profile! Review answers before submitting.';
-    document.body.appendChild(banner);
-    setTimeout(function() { banner.remove(); }, 6000);
+    function showBanner(cnt) {
+      const existing = document.getElementById('caesar-autofill-banner');
+      if (existing) existing.remove();
+      const banner = document.createElement('div');
+      banner.id = 'caesar-autofill-banner';
+      banner.style.cssText = 'position:fixed;top:20px;right:20px;z-index:9999999;background:#0f172a;color:#fff;padding:12px 18px;border-radius:12px;font-family:system-ui,sans-serif;font-size:13px;box-shadow:0 10px 25px rgba(0,0,0,0.5);border:1px solid #10b981;display:flex;align-items:center;gap:10px;';
+      banner.innerHTML = '<span style="font-size:18px">⚡</span> <strong>CaesarAI:</strong> Auto-filled ' + cnt + ' fields & profile! Review answers before submitting.';
+      document.body.appendChild(banner);
+      setTimeout(function() { banner.remove(); }, 6000);
+    }
+    showBanner(count);
   } catch(err) {
     alert('CaesarAI Autofill Error: ' + err.message);
   }
@@ -314,6 +342,18 @@ export default function AutofillModal({
   };
 
   const handleLaunchJob = () => {
+    if (answers && answers.length > 0) {
+      try {
+        navigator.clipboard.writeText(
+          JSON.stringify({
+            __caesar__: true,
+            company,
+            role,
+            answers,
+          })
+        );
+      } catch (e) {}
+    }
     if (url) {
       window.open(url, '_blank', 'noopener,noreferrer');
     }
@@ -530,7 +570,10 @@ export default function AutofillModal({
                     <span>⚡ CaesarAI Autofill</span>
                   </a>
                   <p className="text-[11px] text-slate-400 mt-2">
-                    👆 <strong>Drag the button above</strong> directly onto your browser's Bookmarks Bar. It will save as <strong>"⚡ CaesarAI Autofill"</strong>.
+                    👆 <strong>Drag the button once</strong> directly onto your browser's Bookmarks Bar. It will save as <strong>"⚡ CaesarAI Autofill"</strong>.
+                  </p>
+                  <p className="text-[11px] text-indigo-300/90 mt-1 bg-indigo-950/40 p-2 rounded-lg border border-indigo-500/20">
+                    💡 <strong>No re-dragging for new jobs!</strong> When you click <em>"Launch Application Page"</em>, your latest tailored answers automatically copy to your clipboard, allowing this one bookmark to fill new jobs every time.
                   </p>
                 </div>
               </div>
