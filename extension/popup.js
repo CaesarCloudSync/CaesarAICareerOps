@@ -23,16 +23,46 @@ document.addEventListener('DOMContentLoaded', async () => {
     pageTitle.innerText = 'Unable to read active tab';
   }
 
-  // Helper to ensure content script is injected
+  // Helper to ensure content script is injected across all frames (including cross-origin iframes)
   async function ensureContentScriptInjected(tabId) {
     try {
       await chrome.scripting.executeScript({
-        target: { tabId },
+        target: { tabId, allFrames: true },
         files: ['content.js'],
       });
     } catch (err) {
       console.warn('Could not inject content script:', err);
     }
+  }
+
+  // Helper to dispatch actions to all frames simultaneously (handles embedded ATS iframes like Greenhouse inside Elastic)
+  async function dispatchActionToTab(tabId, actionName) {
+    await ensureContentScriptInjected(tabId);
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId, allFrames: true },
+        func: (act) => {
+          if (act === 'caesar_queue_generation') {
+            if (typeof window.__caesarQueue === 'function') {
+              window.__caesarQueue();
+            }
+          } else if (act === 'caesar_instant_autofill') {
+            if (typeof window.__caesarInstant === 'function') {
+              window.__caesarInstant();
+            }
+          }
+        },
+        args: [actionName],
+      });
+    } catch (e) {
+      console.warn('executeScript dispatch fallback:', e);
+    }
+
+    try {
+      chrome.tabs.sendMessage(tabId, { action: actionName }, () => {
+        if (chrome.runtime.lastError) {}
+      });
+    } catch (e) {}
   }
 
   // 2. Check CaesarAI server health & tab application status
@@ -120,20 +150,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     btnQueue.querySelector('.btn-main').innerHTML = '<span>⏳</span> Sending DOM to agy...';
 
     try {
-      await ensureContentScriptInjected(activeTab.id);
-      chrome.tabs.sendMessage(activeTab.id, { action: 'caesar_queue_generation' }, (response) => {
-        if (chrome.runtime.lastError) {
-          console.warn('Message error:', chrome.runtime.lastError);
-        }
-        btnQueue.querySelector('.btn-main').innerHTML = '<span>✅</span> Queued in Background!';
-        btnQueue.querySelector('.btn-sub').innerText = 'Reasoning in progress. Check dashboard.';
-        appStatusBadge.className = 'app-status-tag app-status-progress';
-        appStatusBadge.innerText = 'In Progress (agy)';
-        statusDetail.innerText = 'Background job running! You can navigate away.';
-        setTimeout(() => {
-          window.close();
-        }, 1200);
-      });
+      await dispatchActionToTab(activeTab.id, 'caesar_queue_generation');
+      btnQueue.querySelector('.btn-main').innerHTML = '<span>✅</span> Queued in Background!';
+      btnQueue.querySelector('.btn-sub').innerText = 'Reasoning in progress. Check dashboard.';
+      appStatusBadge.className = 'app-status-tag app-status-progress';
+      appStatusBadge.innerText = 'In Progress (agy)';
+      statusDetail.innerText = 'Background job running! You can navigate away.';
+      setTimeout(() => {
+        window.close();
+      }, 1200);
     } catch (err) {
       console.error('Failed to queue generation:', err);
       alert(`Error queueing autofill: ${err.message}`);
@@ -148,17 +173,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     btnInstant.querySelector('.btn-main').innerHTML = '<span>🎯</span> Injecting into Form...';
 
     try {
-      await ensureContentScriptInjected(activeTab.id);
-      chrome.tabs.sendMessage(activeTab.id, { action: 'caesar_instant_autofill' }, (response) => {
-        if (chrome.runtime.lastError) {
-          console.warn('Message error:', chrome.runtime.lastError);
-        }
-        btnInstant.querySelector('.btn-main').innerHTML = '<span>✅</span> Injected Successfully!';
-        btnInstantSub.innerText = 'Fields filled & CV PDF attached';
-        setTimeout(() => {
-          window.close();
-        }, 800);
-      });
+      await dispatchActionToTab(activeTab.id, 'caesar_instant_autofill');
+      btnInstant.querySelector('.btn-main').innerHTML = '<span>✅</span> Injected Successfully!';
+      btnInstantSub.innerText = 'Fields filled & CV PDF attached';
+      setTimeout(() => {
+        window.close();
+      }, 800);
     } catch (err) {
       console.error('Failed to execute instant autofill:', err);
       alert(`Error applying saved autofill: ${err.message}`);

@@ -74,9 +74,17 @@ def extract_company_and_role_from_context(url: str, title: str) -> tuple[str, st
     company = ""
     role = ""
 
+    p = urlparse(url) if url else None
+
+    # Check for Greenhouse embed query param: for=company (e.g. job-boards.greenhouse.io/embed/job_app?for=elastic&token=8173419)
+    if p and p.query:
+        from urllib.parse import parse_qs
+        qs = parse_qs(p.query)
+        if "for" in qs and qs["for"][0]:
+            company = qs["for"][0].replace("-", " ").title()
+
     # 1. SmartRecruiters specialized extraction
-    if url and "smartrecruiters.com" in url.lower():
-        p = urlparse(url)
+    if url and "smartrecruiters.com" in url.lower() and p:
         path_parts = [part for part in p.path.strip("/").split("/") if part]
         # Format 1: /oneclick-ui/company/<Company>/publication/<id>
         if "oneclick-ui" in path_parts and "company" in path_parts:
@@ -111,38 +119,38 @@ def extract_company_and_role_from_context(url: str, title: str) -> tuple[str, st
                     role = slug.replace("-", " ").title()
 
     # 2. Greenhouse specialized extraction: job-boards.greenhouse.io/<company>/jobs/<id>
-    elif url and "greenhouse.io" in url.lower():
-        p = urlparse(url)
+    elif url and "greenhouse.io" in url.lower() and p:
         path_parts = [part for part in p.path.strip("/").split("/") if part]
-        if path_parts:
+        if path_parts and path_parts[0].lower() not in ("embed", "job-boards"):
             company = path_parts[0].replace("-", " ").title()
 
     # 3. Ashby specialized extraction: jobs.ashbyhq.com/<company>/<id>
-    elif url and "ashbyhq.com" in url.lower():
-        p = urlparse(url)
+    elif url and "ashbyhq.com" in url.lower() and p:
         path_parts = [part for part in p.path.strip("/").split("/") if part]
         if path_parts:
             company = path_parts[0].replace("-", " ").title()
 
     # 4. Lever specialized extraction: jobs.lever.co/<company>/<id>
-    elif url and "lever.co" in url.lower():
-        p = urlparse(url)
+    elif url and "lever.co" in url.lower() and p:
         path_parts = [part for part in p.path.strip("/").split("/") if part]
         if path_parts:
             company = path_parts[0].replace("-", " ").title()
 
-    # Check title for "@ Company" (standard: "Role @ Company" or "Role at Company")
+    # Parse and clean title
     if title:
         clean = title.strip()
         # Clean common generic title suffixes
-        clean = re.sub(r"\s*\|\s*SmartRecruiters\s*$", "", clean, flags=re.IGNORECASE)
-        clean = re.sub(r"\s*\|\s*Greenhouse\s*$", "", clean, flags=re.IGNORECASE)
-        clean = re.sub(r"\s*\|\s*Lever\s*$", "", clean, flags=re.IGNORECASE)
-        clean = re.sub(r"\s*\|\s*Ashby\s*$", "", clean, flags=re.IGNORECASE)
+        clean = re.sub(r"\s*\|\s*(?:SmartRecruiters|Greenhouse|Lever|Ashby|Workday)\s*$", "", clean, flags=re.IGNORECASE)
 
         # Clean common generic title prefixes (e.g. "Easy apply - ", "Job Application for ")
-        clean = re.sub(r"^(?:Easy apply|Job Application|Application for|Apply for)\s*[-:–—]\s*", "", clean, flags=re.IGNORECASE).strip()
-        clean = re.sub(r"^(?:Application for|Apply for)\s+", "", clean, flags=re.IGNORECASE).strip()
+        clean = re.sub(r"^(?:Easy apply|Job Application for|Job Application|Application for|Apply for)\s*[-:–—]?\s*", "", clean, flags=re.IGNORECASE).strip()
+
+        # Handle pipe separator in title: e.g. "Staff Software Engineer - Search | Elastic"
+        if " | " in clean:
+            pipe_parts = clean.split(" | ")
+            if not company and len(pipe_parts) > 1 and pipe_parts[-1].strip().lower() not in ("careers", "jobs", "apply"):
+                company = pipe_parts[-1].strip()
+            clean = " | ".join(pipe_parts[:-1]).strip()
 
         if " @ " in clean:
             parts = clean.split(" @ ")
@@ -163,15 +171,23 @@ def extract_company_and_role_from_context(url: str, title: str) -> tuple[str, st
                 cand_role = parts[1].strip()
             if not role:
                 role = cand_role
-            if not company:
+            if not company and len(parts) > 1:
                 company = parts[-1].strip()
         elif not role and clean.lower() not in ("smartrecruiters", "smartrecruiters.com", "oneclick-ui", "job application", "application", "easy apply"):
             role = clean
 
-    # Fallback company from URL domain if still empty
-    if not company and url:
-        p = urlparse(url)
-        parts = [part for part in p.path.strip("/").split("/") if part and part.lower() not in ("oneclick-ui", "jobs", "company", "publication", "application", "apply")]
+    # Domain fallback if company is still empty (e.g. jobs.elastic.co -> Elastic)
+    if not company and p and p.hostname:
+        host_parts = p.hostname.split(".")
+        tlds = {"com", "co", "org", "net", "io", "ai", "uk", "us", "de", "fr", "ca", "app", "dev"}
+        subdomains = {"jobs", "careers", "boards", "board", "job-boards", "app", "www", "work", "hire"}
+        cand = [part for part in host_parts if part.lower() not in tlds and part.lower() not in subdomains]
+        if cand:
+            company = cand[0].replace("-", " ").title()
+
+    # Path fallback if still empty
+    if not company and p:
+        parts = [part for part in p.path.strip("/").split("/") if part and part.lower() not in ("oneclick-ui", "jobs", "company", "publication", "application", "apply", "form", "search", "view", "embed")]
         if parts:
             company = parts[0].replace("-", " ").title()
 

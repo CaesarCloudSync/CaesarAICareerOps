@@ -565,15 +565,15 @@
     return count;
   }
 
+  function getEffectiveUrl() {
+    if (window !== window.top && document.referrer && document.referrer.startsWith('http')) {
+      return document.referrer;
+    }
+    return window.location.href;
+  }
+
   // 7. Asynchronous Queue Action (Button 1)
   async function handleQueueGeneration() {
-    showToast({
-      pct: 30,
-      title: '<span>⚡</span> CaesarAI Queueing',
-      msg: '🔍 Detecting application form elements...',
-      sub: 'Scanning live inputs, custom controls, and embedded iframes...',
-    });
-
     let fields = extractFormFields();
 
     // If 0 fields found initially, wait up to 2.5s for dynamic SPA forms (SmartRecruiters, Workday, Lever)
@@ -586,6 +586,13 @@
     }
 
     if (fields.length === 0) {
+      // If running in top-level window and cross-origin iframes exist (e.g. Greenhouse inside Elastic),
+      // allow the iframe content script to handle detection without showing an error
+      const hasIframes = document.querySelectorAll('iframe').length > 0;
+      if (window === window.top && hasIframes) {
+        return { success: false, delegated: true };
+      }
+
       showToast({
         pct: 100,
         title: '<span>⚠️</span> No Form Inputs Found',
@@ -609,7 +616,7 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          url: window.location.href,
+          url: getEffectiveUrl(),
           page_title: document.title,
           fields,
         }),

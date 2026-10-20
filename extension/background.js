@@ -5,7 +5,7 @@ chrome.commands.onCommand.addListener(async (command) => {
     if (tab && tab.id) {
       try {
         await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
+          target: { tabId: tab.id, allFrames: true },
           files: ['content.js'],
         });
 
@@ -23,6 +23,18 @@ chrome.commands.onCommand.addListener(async (command) => {
         } catch (e) {
           console.warn('Status check failed, defaulting to queue:', e);
         }
+
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id, allFrames: true },
+          func: (act) => {
+            if (act === 'caesar_queue_generation' && typeof window.__caesarQueue === 'function') {
+              window.__caesarQueue();
+            } else if (act === 'caesar_instant_autofill' && typeof window.__caesarInstant === 'function') {
+              window.__caesarInstant();
+            }
+          },
+          args: [action],
+        });
 
         chrome.tabs.sendMessage(tab.id, { action });
       } catch (err) {
