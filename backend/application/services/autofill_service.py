@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 from datetime import date
 
+from urllib.parse import urlparse
+
 from sqlmodel import Session, select
 
 from backend.application.settings import BACKEND_DIR, ROOT_DIR
@@ -14,6 +16,72 @@ from backend.application.models import ApplicationCreate, Application
 from backend.application.repository.base import BaseRepository
 from backend.application.database import engine
 from backend.application.services.autofill_tracker import autofill_tracker
+
+
+def normalize_job_url(u: str) -> str:
+    """Simple domain + path matching (strips query parameters, trailing slashes, /application, /apply)."""
+    if not u:
+        return ""
+    p = urlparse(u.strip().lower())
+    path = p.path.rstrip("/")
+    if path.endswith("/application"):
+        path = path[:-12]
+    elif path.endswith("/apply"):
+        path = path[:-6]
+    return f"{p.netloc}{path}"
+
+
+def _is_url_match(u1: str, u2: str) -> bool:
+    n1 = normalize_job_url(u1)
+    n2 = normalize_job_url(u2)
+    if not n1 or not n2:
+        return False
+    return n1 == n2 or n1 in n2 or n2 in n1
+
+
+def find_matching_application(
+    session: Session,
+    url: str = "",
+    company: str = "",
+    role: str = "",
+) -> Optional[Application]:
+    """
+    Finds the best matching application in the database with strict priority:
+    1. Exact or normalized URL match (highest priority, avoids collisions for multi-role companies)
+    2. Exact Company + Role match (when both provided)
+    3. Company match (fallback, only if URL is blank or candidate application has no URL set)
+    """
+    all_apps = session.exec(select(Application)).all()
+
+    # 1. Match by URL first
+    if url and url.startswith("http"):
+        for a in all_apps:
+            if a.url and _is_url_match(url, a.url):
+                return a
+
+    norm_comp = (company or "").strip().lower()
+    norm_role = (role or "").strip().lower()
+
+    # 2. Match by Company + Role
+    if norm_comp and norm_role:
+        for a in all_apps:
+            a_comp = (a.company or "").strip().lower()
+            a_role = (a.role or "").strip().lower()
+            if (norm_comp == a_comp or norm_comp in a_comp or a_comp in norm_comp) and (
+                norm_role == a_role or norm_role in a_role or a_role in norm_role
+            ):
+                return a
+
+    # 3. Match by Company only (fallback, only if URL is blank or application has no URL set)
+    if norm_comp:
+        for a in all_apps:
+            a_comp = (a.company or "").strip().lower()
+            if norm_comp == a_comp or norm_comp in a_comp or a_comp in norm_comp:
+                if url and a.url and not _is_url_match(url, a.url):
+                    continue
+                return a
+
+    return None
 
 
 class AutofillService:
@@ -528,59 +596,6 @@ Return ONLY JSON. No conversational text or markdown code fences outside JSON.
         except Exception as e:
             print(f"[AutofillService] agy resolve_live_dom error: {e}")
 
-        # Automatic Database Persistence with status = 'Application Generated'
-        try:
-            norm_comp = (detected_company or "").strip().lower()
-            norm_url = (url or "").strip().lower()
-
-            with Session(engine) as session:
-                target_app = None
-                if app_id:
-                    target_app = session.get(Application, app_id)
-
-                if not target_app:
-                    for a in session.exec(select(Application)).all():
-                        matches_url = norm_url and norm_url.startswith("http") and (
-                            (a.url or "").strip().lower() == norm_url
-                            or (url and a.url and url.split("?")[0].rstrip("/").replace("/application", "") == a.url.split("?")[0].rstrip("/").replace("/application", ""))
-                        )
-                        matches_comp = norm_comp and (a.company or "").strip().lower() == norm_comp
-                        if matches_url or matches_comp:
-                            target_app = a
-                            break
-
-                stored_payload = {
-                    "answers": answers,
-                    "actions": actions,
-                    "cover_letter": cover_letter,
-                    "has_cover_letter": bool(cover_letter),
-                    "actions_count": len(actions),
-                }
-                stored_json = json.dumps(stored_payload)
-
-                if target_app:
-                    target_app.status = "Application Generated"
-                    target_app.answers = stored_json
-                    if not target_app.url and url:
-                        target_app.url = url
-                    session.add(target_app)
-                    session.commit()
-                else:
-                    new_app = Application(
-                        company=detected_company or "Target Company",
-                        role=detected_role or "Software Engineer",
-                        url=url or "",
-                        status="Application Generated",
-                        score=0.0,
-                        date_applied=date.today().isoformat(),
-                        notes="AI Resolved via Live In-Browser DOM",
-                        answers=stored_json,
-                    )
-                    session.add(new_app)
-                    session.commit()
-        except Exception as ex:
-            print(f"[AutofillService] Database persistence error in resolve_live_dom: {ex}")
-
         return {
             "status": "success",
             "company": detected_company,
@@ -663,9 +678,9 @@ Return ONLY JSON. No conversational text or markdown code fences outside JSON.
     async def run_async_live_resolution(self, job_id: str, payload: Dict[str, Any]):
         """
         Background worker for asynchronous live DOM resolution:
-        Executes agy contextual reasoning on scraped form fields,
-        stores the result with status 'Application Generated',
-        and updates the job progress so the dashboard shows real-time progress.
+        Executes agy contextual reasoning on scraped form fields.
+        Persists results ATOMICALLY in ALL ONE GO and updates status to
+        'Application Generated' only after all fields are completely resolved.
         """
         job = autofill_tracker.get_job(job_id)
         if not job:
@@ -676,30 +691,74 @@ Return ONLY JSON. No conversational text or markdown code fences outside JSON.
 
         try:
             target_app_id = payload.get("app_id", 0)
+            url = payload.get("url", "")
+            company = payload.get("company", "")
+            role = payload.get("role", "")
+            page_title = payload.get("page_title", "")
+
+            # 1. Execute agy without any intermediate DB writes
             res = await self.resolve_live_dom(
                 fields=payload.get("fields", []),
-                url=payload.get("url", ""),
-                company=payload.get("company", ""),
-                role=payload.get("role", ""),
-                page_title=payload.get("page_title", ""),
+                url=url,
+                company=company,
+                role=role,
+                page_title=page_title,
                 app_id=target_app_id,
             )
 
             actions = res.get("actions", [])
             answers = res.get("answers", [])
+            cover_letter = res.get("cover_letter")
             has_cov = res.get("has_cover_letter", False)
+            detected_company = res.get("company") or company
+            detected_role = res.get("role") or role
 
-            if target_app_id:
-                try:
-                    with Session(engine) as session:
-                        db_app = session.get(Application, target_app_id)
-                        if db_app:
-                            db_app.status = "Application Generated"
-                            session.add(db_app)
-                            session.commit()
-                except Exception as db_err:
-                    print(f"[AutofillService] Explicit status update error: {db_err}")
+            if not actions and not answers:
+                raise ValueError("Contextual reasoning completed but produced no actions or answers.")
 
+            # 2. ALL IN ONE GO: Single atomic database transaction updating all fields and status
+            stored_payload = {
+                "actions": actions,
+                "answers": answers,
+                "cover_letter": cover_letter,
+                "has_cover_letter": bool(cover_letter),
+                "actions_count": len(actions),
+            }
+            stored_json = json.dumps(stored_payload)
+
+            with Session(engine) as session:
+                target_app = None
+                if target_app_id:
+                    target_app = session.get(Application, target_app_id)
+                if not target_app:
+                    target_app = find_matching_application(session, url=url, company=detected_company, role=detected_role)
+
+                if target_app:
+                    target_app.answers = stored_json
+                    target_app.status = "Application Generated"
+                    if detected_company and (not target_app.company or target_app.company == "Target Company"):
+                        target_app.company = detected_company
+                    if detected_role and (not target_app.role or target_app.role == "Software Engineer"):
+                        target_app.role = detected_role
+                    if not target_app.url and url:
+                        target_app.url = url
+                    session.add(target_app)
+                    session.commit()
+                else:
+                    new_app = Application(
+                        company=detected_company or "Target Company",
+                        role=detected_role or "Software Engineer",
+                        url=url or "",
+                        status="Application Generated",
+                        score=0.0,
+                        date_applied=date.today().isoformat(),
+                        notes="AI Resolved via Live In-Browser DOM",
+                        answers=stored_json,
+                    )
+                    session.add(new_app)
+                    session.commit()
+
+            # 3. Mark job complete now that all fields are securely saved in DB
             job.record_result(
                 app_id=target_app_id,
                 target=target_name,
@@ -708,7 +767,7 @@ Return ONLY JSON. No conversational text or markdown code fences outside JSON.
                 has_cover_letter=has_cov,
             )
             job.complete()
-            job.detail = f"Generated {len(actions)} DOM actions and {len(answers)} custom answers. Ready for 1-click autofill!"
+            job.detail = f"Generated {len(actions)} DOM actions and {len(answers)} custom answers. Ready for instant autofill!"
         except Exception as e:
             print(f"[AutofillService] run_async_live_resolution failed: {e}")
             job.fail(str(e))

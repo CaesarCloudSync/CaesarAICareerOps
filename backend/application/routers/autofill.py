@@ -11,7 +11,12 @@ from backend.application.repository.base import BaseRepository
 from backend.application.dependencies import get_career_repository
 from backend.application.database import engine
 from backend.application.models import Application, ApplicationCreate
-from backend.application.services.autofill_service import autofill_service
+from backend.application.services.autofill_service import (
+    autofill_service,
+    normalize_job_url,
+    _is_url_match,
+    find_matching_application,
+)
 from backend.application.services.autofill_tracker import autofill_tracker
 
 router = APIRouter(prefix="/api/autofill", tags=["Autofill"])
@@ -63,30 +68,6 @@ async def resolve_live(payload: ResolveLiveRequest):
     )
 
 
-from urllib.parse import urlparse
-
-
-def normalize_job_url(u: str) -> str:
-    """Simple domain + path matching (strips query parameters, trailing slashes, and /application)."""
-    if not u:
-        return ""
-    p = urlparse(u.strip().lower())
-    path = p.path.rstrip("/")
-    if path.endswith("/application"):
-        path = path[:-12]
-    elif path.endswith("/apply"):
-        path = path[:-6]
-    return f"{p.netloc}{path}"
-
-
-def _is_url_match(u1: str, u2: str) -> bool:
-    n1 = normalize_job_url(u1)
-    n2 = normalize_job_url(u2)
-    if not n1 or not n2:
-        return False
-    return n1 == n2 or n1 in n2 or n2 in n1
-
-
 def extract_company_and_role_from_context(url: str, title: str) -> tuple[str, str]:
     """Clean company and role extraction using URL domain and page title."""
     company = ""
@@ -125,7 +106,8 @@ async def resolve_live_async(payload: ResolveLiveRequest):
     """
     Decoupled Async Live Autofill:
     Receives scraped form fields from browser, creates a real job_id in AutofillBatchTracker,
-    spawns background agy reasoning task, and sets status to 'Application Generated' when complete.
+    spawns background agy reasoning task, and sets status to 'Application in progress'.
+    Only upon 100% completion does the worker commit all actions in one go and transition to 'Application Generated'.
     """
     url = payload.url or ""
     page_title = payload.page_title or ""
@@ -134,34 +116,26 @@ async def resolve_live_async(payload: ResolveLiveRequest):
     detected_company = payload.company or inferred_comp
     detected_role = payload.role or inferred_role
 
-    # Find or create application with status 'Application in progress'
-    norm_comp = detected_company.strip().lower()
     target_app_id = 0
 
     with Session(engine) as session:
-        for a in session.exec(select(Application)).all():
-            matches_url = _is_url_match(url, a.url or "")
-            matches_comp = norm_comp and (
-                norm_comp == (a.company or "").strip().lower()
-                or norm_comp in (a.company or "").strip().lower()
-                or (a.company or "").strip().lower() in norm_comp
-            )
-            if matches_url or matches_comp:
-                target_app_id = a.id
-                a.status = "Application in progress"
-                if not a.url and url:
-                    a.url = url
-                session.add(a)
-                session.commit()
-                break
-
-        if not target_app_id:
+        target_app = find_matching_application(session, url=url, company=detected_company, role=detected_role)
+        if target_app:
+            target_app_id = target_app.id
+            target_app.status = "Application in progress"
+            target_app.answers = None  # Clear any previous answers so user never receives half-created state
+            if not target_app.url and url:
+                target_app.url = url
+            session.add(target_app)
+            session.commit()
+        else:
             new_app = Application(
                 company=detected_company,
                 role=detected_role,
                 url=url,
                 status="Application in progress",
                 date_applied=date.today().isoformat(),
+                answers=None,
             )
             session.add(new_app)
             session.commit()
@@ -203,52 +177,42 @@ async def check_autofill_status(
     Checks if an application exists for the active tab URL/company,
     and whether AI answers and DOM actions are already generated and ready for instant autofill.
     """
-    inferred_comp, _ = extract_company_and_role_from_context(url or "", title or "")
-    norm_comp = (company or inferred_comp or "").strip().lower()
+    inferred_comp, inferred_role = extract_company_and_role_from_context(url or "", title or "")
+    comp = company or inferred_comp
 
     with Session(engine) as session:
-        for a in session.exec(select(Application)).all():
-            matches_url = _is_url_match(url or "", a.url or "")
-            matches_comp = norm_comp and (
-                norm_comp == (a.company or "").strip().lower()
-                or norm_comp in (a.company or "").strip().lower()
-                or (a.company or "").strip().lower() in norm_comp
-            )
-            if matches_url or matches_comp:
-                has_answers = False
-                actions_count = 0
-                answers_count = 0
-                if a.answers:
-                    try:
-                        d = json.loads(a.answers)
-                        if isinstance(d, dict):
-                            actions_count = len(d.get("actions", [])) or d.get("actions_count", 0)
-                            answers_count = len(d.get("answers", []))
-                            has_answers = bool(actions_count or answers_count or d.get("cover_letter"))
-                        elif isinstance(d, list):
-                            answers_count = len(d)
-                            has_answers = len(d) > 0
-                    except Exception:
-                        pass
+        target_app = find_matching_application(session, url=url or "", company=comp, role=inferred_role)
+        if target_app:
+            actions_count = 0
+            answers_count = 0
+            has_answers = False
 
-                return {
-                    "exists": True,
-                    "app_id": a.id,
-                    "company": a.company,
-                    "role": a.role,
-                    "status": a.status,
-                    "has_generated": (a.status == "Application Generated") and (actions_count > 0),
-                    "actions_count": actions_count,
-                    "answers_count": answers_count,
-                }
+            # Strictly only consider ready when status is 'Application Generated' AND answers/actions exist!
+            if target_app.status == "Application Generated" and target_app.answers:
+                try:
+                    d = json.loads(target_app.answers)
+                    if isinstance(d, dict):
+                        actions_count = len(d.get("actions", [])) or d.get("actions_count", 0)
+                        answers_count = len(d.get("answers", []))
+                        has_answers = bool(actions_count or answers_count or d.get("cover_letter"))
+                    elif isinstance(d, list):
+                        answers_count = len(d)
+                        has_answers = len(d) > 0
+                except Exception:
+                    pass
 
-    return {
-        "exists": False,
-        "status": None,
-        "has_generated": False,
-        "actions_count": 0,
-        "answers_count": 0,
-    }
+            is_ready = (target_app.status == "Application Generated") and (actions_count > 0 or has_answers)
+
+            return {
+                "exists": True,
+                "app_id": target_app.id,
+                "company": target_app.company,
+                "role": target_app.role,
+                "status": target_app.status,
+                "has_generated": is_ready,
+                "actions_count": actions_count,
+                "answers_count": answers_count,
+            }
 
     return {
         "exists": False,
@@ -272,57 +236,70 @@ async def apply_saved(payload: ApplySavedRequest):
     Instant In-Browser Autofill:
     Retrieves pre-generated actions and answers from SQLite,
     attaches candidate Master CV PDF Base64, and returns immediately (<200ms) with zero AI latency.
+    Guarantees user cannot apply a half-created application while generation is in progress.
     """
-    norm_comp = (payload.company or "").strip().lower()
-    if not norm_comp and payload.title:
-        clean_title = re.sub(r"\s*-\s*Careers.*$", "", payload.title, flags=re.IGNORECASE)
-        for sep in [" — ", " - ", " | ", " at "]:
-            if sep in clean_title:
-                parts = clean_title.split(sep, 1)
-                norm_comp = parts[0].strip().lower()
-                break
+    inferred_comp, inferred_role = extract_company_and_role_from_context(payload.url or "", payload.title or "")
+    comp = payload.company or inferred_comp
+    role = payload.role or inferred_role
 
     cv_payload = autofill_service.get_cv_base64_payload()
     cand_data = autofill_service.get_candidate_data()
 
     with Session(engine) as session:
-        for a in session.exec(select(Application)).all():
-            matches_url = _is_url_match(payload.url or "", a.url or "")
-            matches_comp = norm_comp and (
-                norm_comp == (a.company or "").strip().lower()
-                or norm_comp in (a.company or "").strip().lower()
-                or (a.company or "").strip().lower() in norm_comp
-            )
-            if matches_url or matches_comp:
-                actions = []
-                answers = []
-                cover_letter = None
-                if a.answers:
-                    try:
-                        d = json.loads(a.answers)
-                        if isinstance(d, dict):
-                            actions = d.get("actions", [])
-                            answers = d.get("answers", [])
-                            cover_letter = d.get("cover_letter")
-                        elif isinstance(d, list):
-                            answers = d
-                    except Exception:
-                        pass
-
+        target_app = find_matching_application(session, url=payload.url or "", company=comp, role=role)
+        if target_app:
+            # If still generating, refuse to return half-baked answers
+            if target_app.status == "Application in progress":
                 return {
-                    "status": "success",
-                    "found": True,
-                    "company": a.company,
-                    "role": a.role,
-                    "actions": actions,
-                    "answers": answers,
-                    "cover_letter": cover_letter,
-                    "has_cover_letter": bool(cover_letter),
-                    "profile": cand_data.get("profile", {}),
-                    "screening": cand_data.get("screening", {}),
+                    "status": "in_progress",
+                    "found": False,
+                    "message": "Autofill generation is still running in background. Please wait until all fields are created.",
+                    "actions": [],
+                    "answers": [],
                     "cvBase64": cv_payload.get("base64", ""),
                     "cvFilename": cv_payload.get("filename", "Bob_Hillus_CV.pdf"),
                 }
+
+            actions = []
+            answers = []
+            cover_letter = None
+            if target_app.answers and target_app.status == "Application Generated":
+                try:
+                    d = json.loads(target_app.answers)
+                    if isinstance(d, dict):
+                        actions = d.get("actions", [])
+                        answers = d.get("answers", [])
+                        cover_letter = d.get("cover_letter")
+                    elif isinstance(d, list):
+                        answers = d
+                except Exception:
+                    pass
+
+            if not actions and not answers:
+                return {
+                    "status": "not_ready",
+                    "found": False,
+                    "message": "Application does not have generated actions yet. Please run AI generation first.",
+                    "actions": [],
+                    "answers": [],
+                    "cvBase64": cv_payload.get("base64", ""),
+                    "cvFilename": cv_payload.get("filename", "Bob_Hillus_CV.pdf"),
+                }
+
+            return {
+                "status": "success",
+                "found": True,
+                "company": target_app.company,
+                "role": target_app.role,
+                "actions": actions,
+                "answers": answers,
+                "cover_letter": cover_letter,
+                "has_cover_letter": bool(cover_letter),
+                "profile": cand_data.get("profile", {}),
+                "screening": cand_data.get("screening", {}),
+                "cvBase64": cv_payload.get("base64", ""),
+                "cvFilename": cv_payload.get("filename", "Bob_Hillus_CV.pdf"),
+            }
 
     return {
         "status": "not_found",
@@ -362,18 +339,18 @@ async def generate_answers(payload: AutofillGenerateRequest):
                 "has_cover_letter": result.get("has_cover_letter", False),
             }
             answers_json = json.dumps(payload_to_store)
-            norm_comp = (payload.company or "").strip().lower()
-            norm_url = (payload.url or "").strip().lower()
 
             with Session(engine) as session:
-                for a in session.exec(select(Application)).all():
-                    matches_url = norm_url and norm_url.startswith("http") and (a.url or "").strip().lower() == norm_url
-                    matches_comp = norm_comp and (a.company or "").strip().lower() == norm_comp
-                    if matches_url or matches_comp:
-                        a.answers = answers_json
-                        session.add(a)
-                        session.commit()
-                        break
+                target_app = find_matching_application(
+                    session,
+                    url=payload.url or "",
+                    company=payload.company or "",
+                    role=payload.role or "",
+                )
+                if target_app:
+                    target_app.answers = answers_json
+                    session.add(target_app)
+                    session.commit()
         except Exception as e:
             print(f"[AutofillRouter] Error persisting answers: {e}")
 
@@ -390,17 +367,16 @@ async def generate_async(payload: AutofillGenerateRequest):
 
     # If no app_id provided, look up or create the application in SQLite
     if not target_app_id:
-        norm_url = (payload.url or "").strip().lower()
-        norm_comp = (payload.company or "").strip().lower()
         with Session(engine) as session:
-            for a in session.exec(select(Application)).all():
-                matches_url = norm_url and norm_url.startswith("http") and (a.url or "").strip().lower() == norm_url
-                matches_comp = norm_comp and (a.company or "").strip().lower() == norm_comp
-                if matches_url or matches_comp:
-                    target_app_id = a.id
-                    break
-
-            if not target_app_id:
+            target_app = find_matching_application(
+                session,
+                url=payload.url or "",
+                company=payload.company or "",
+                role=payload.role or "",
+            )
+            if target_app:
+                target_app_id = target_app.id
+            else:
                 new_app = Application(
                     company=payload.company or "Target Company",
                     role=payload.role or "Software Engineer",
@@ -606,15 +582,12 @@ async def save_answers(
     norm_url = (payload.url or "").strip().lower()
 
     with Session(engine) as session:
-        all_apps = session.exec(select(Application)).all()
-        target_app = None
-        for a in all_apps:
-            if norm_url and norm_url.startswith("http") and (a.url or "").strip().lower() == norm_url:
-                target_app = a
-                break
-            if norm_comp and (a.company or "").strip().lower() == norm_comp:
-                target_app = a
-                break
+        target_app = find_matching_application(
+            session,
+            url=payload.url or "",
+            company=payload.company or "",
+            role=payload.role or "",
+        )
 
         if target_app:
             target_app.answers = answers_json
@@ -655,19 +628,18 @@ async def clear_answers(payload: ClearAnswersPayload):
     """
     Clears all AI-generated answers and cover letter for a specific job application from SQLite.
     """
-    norm_comp = (payload.company or "").strip().lower()
-    norm_url = (payload.url or "").strip().lower()
-
     with Session(engine) as session:
-        all_apps = session.exec(select(Application)).all()
-        for a in all_apps:
-            matches_url = norm_url and norm_url.startswith("http") and (a.url or "").strip().lower() == norm_url
-            matches_comp = norm_comp and (a.company or "").strip().lower() == norm_comp
-            if matches_url or matches_comp:
-                a.answers = None
-                session.add(a)
-                session.commit()
-                return {"status": "cleared", "id": a.id}
+        target_app = find_matching_application(
+            session,
+            url=payload.url or "",
+            company=payload.company or "",
+            role=payload.role or "",
+        )
+        if target_app:
+            target_app.answers = None
+            session.add(target_app)
+            session.commit()
+            return {"status": "cleared", "id": target_app.id}
 
     return {"status": "not_found"}
 
@@ -679,34 +651,33 @@ async def get_saved_answers(
     url: Optional[str] = "",
 ):
     """Retrieve previously saved tailored answers and cover letter for a job application."""
-    norm_comp = (company or "").strip().lower()
-    norm_url = (url or "").strip().lower()
-
     with Session(engine) as session:
-        all_apps = session.exec(select(Application)).all()
-        for a in all_apps:
-            matches_url = norm_url and norm_url.startswith("http") and (a.url or "").strip().lower() == norm_url
-            matches_comp = norm_comp and (a.company or "").strip().lower() == norm_comp
-            if (matches_url or matches_comp) and a.answers:
-                try:
-                    data = json.loads(a.answers)
-                    # Check if dict with answers/cover_letter or legacy array
-                    if isinstance(data, dict):
-                        return {
-                            "found": True,
-                            "answers": data.get("answers", []),
-                            "cover_letter": data.get("cover_letter"),
-                            "has_cover_letter": data.get("has_cover_letter", False),
-                        }
-                    elif isinstance(data, list):
-                        return {
-                            "found": True,
-                            "answers": data,
-                            "cover_letter": None,
-                            "has_cover_letter": False,
-                        }
-                except Exception:
-                    pass
+        target_app = find_matching_application(
+            session,
+            url=url or "",
+            company=company or "",
+            role=role or "",
+        )
+        if target_app and target_app.answers:
+            try:
+                data = json.loads(target_app.answers)
+                # Check if dict with answers/cover_letter or legacy array
+                if isinstance(data, dict):
+                    return {
+                        "found": True,
+                        "answers": data.get("answers", []),
+                        "cover_letter": data.get("cover_letter"),
+                        "has_cover_letter": data.get("has_cover_letter", False),
+                    }
+                elif isinstance(data, list):
+                    return {
+                        "found": True,
+                        "answers": data,
+                        "cover_letter": None,
+                        "has_cover_letter": False,
+                    }
+            except Exception:
+                pass
 
     return {"found": False, "answers": [], "cover_letter": None, "has_cover_letter": False}
 
