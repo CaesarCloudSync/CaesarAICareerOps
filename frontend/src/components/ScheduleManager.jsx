@@ -354,6 +354,15 @@ export default function ScheduleManager() {
                     <div className={`flex items-center gap-1.5 ${sch.enable_liveness ? 'text-sky-300 font-medium' : 'text-slate-600 line-through'}`}>
                       {sch.enable_liveness ? <CheckSquare className="w-4 h-4 text-sky-400" /> : <Square className="w-4 h-4 text-slate-600" />}
                       <span>2. Liveness</span>
+                      {sch.enable_liveness && (
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${
+                          sch.liveness_purge_dead !== false
+                            ? 'text-sky-300 border-sky-800/80 bg-sky-950/60'
+                            : 'text-amber-300 border-amber-800/80 bg-amber-950/60'
+                        }`}>
+                          {sch.liveness_purge_dead !== false ? 'Auto-Prune' : 'Audit Only'}
+                        </span>
+                      )}
                     </div>
 
                     <div className={`flex items-center gap-1.5 ${sch.enable_evaluation ? 'text-violet-300 font-medium' : 'text-slate-600 line-through'}`}>
@@ -488,7 +497,11 @@ export default function ScheduleManager() {
                 <div className="grid grid-cols-2 gap-3">
                   <button
                     type="button"
-                    onClick={() => setFormData({ ...formData, target_area: 'new_jobs' })}
+                    onClick={() => setFormData({
+                      ...formData,
+                      target_area: 'new_jobs',
+                      enable_liveness: formData.enable_scan ? formData.enable_liveness : false
+                    })}
                     className={`p-3 rounded-lg border text-left text-xs transition-all ${
                       formData.target_area === 'new_jobs'
                         ? 'bg-indigo-600/20 border-indigo-500 text-indigo-300 font-semibold'
@@ -534,7 +547,19 @@ export default function ScheduleManager() {
                     <input
                       type="checkbox"
                       checked={formData.enable_scan}
-                      onChange={(e) => setFormData({ ...formData, enable_scan: e.target.checked })}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        if (formData.target_area === 'new_jobs') {
+                          // In New Jobs: checking Scan enables Liveness by default; unchecking Scan forces Liveness OFF
+                          setFormData({
+                            ...formData,
+                            enable_scan: checked,
+                            enable_liveness: checked ? true : false,
+                          });
+                        } else {
+                          setFormData({ ...formData, enable_scan: checked });
+                        }
+                      }}
                       className="mt-0.5 rounded text-emerald-600 focus:ring-0"
                     />
                     <div className="text-xs">
@@ -546,22 +571,37 @@ export default function ScheduleManager() {
                   </label>
 
                   {/* Stage 2: Liveness */}
-                  <label className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
-                    formData.enable_liveness ? 'bg-sky-950/30 border-sky-800/80 text-sky-200' : 'bg-slate-900 border-slate-800 text-slate-500'
-                  }`}>
-                    <input
-                      type="checkbox"
-                      checked={formData.enable_liveness}
-                      onChange={(e) => setFormData({ ...formData, enable_liveness: e.target.checked })}
-                      className="mt-0.5 rounded text-sky-600 focus:ring-0"
-                    />
-                    <div className="text-xs">
-                      <span className="font-bold block">Stage 2: Liveness</span>
-                      <span className="text-[10px] opacity-80 block mt-0.5">
-                        Zero-browser HTTP health test; purge 404/dead links
-                      </span>
-                    </div>
-                  </label>
+                  {(() => {
+                    const isLivenessBlocked = formData.target_area === 'new_jobs' && !formData.enable_scan;
+                    return (
+                      <label className={`flex items-start gap-3 p-3 rounded-lg border transition-all ${
+                        isLivenessBlocked
+                          ? 'opacity-40 cursor-not-allowed bg-slate-950 border-slate-800 text-slate-600'
+                          : formData.enable_liveness
+                            ? 'cursor-pointer bg-sky-950/30 border-sky-800/80 text-sky-200'
+                            : 'cursor-pointer bg-slate-900 border-slate-800 text-slate-500'
+                      }`}>
+                        <input
+                          type="checkbox"
+                          disabled={isLivenessBlocked}
+                          checked={!isLivenessBlocked && formData.enable_liveness}
+                          onChange={(e) => {
+                            if (isLivenessBlocked) return;
+                            setFormData({ ...formData, enable_liveness: e.target.checked });
+                          }}
+                          className="mt-0.5 rounded text-sky-600 focus:ring-0 disabled:opacity-30"
+                        />
+                        <div className="text-xs">
+                          <span className="font-bold block">Stage 2: Liveness</span>
+                          <span className="text-[10px] opacity-80 block mt-0.5">
+                            {isLivenessBlocked
+                              ? '⚠️ Requires Stage 1: Scan for New Jobs'
+                              : 'Zero-browser HTTP health test; purge 404/dead links'}
+                          </span>
+                        </div>
+                      </label>
+                    );
+                  })()}
 
                   {/* Stage 3: Evaluation */}
                   <label className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
@@ -612,6 +652,35 @@ export default function ScheduleManager() {
                   ))}
                 </div>
               </div>
+
+              {/* Liveness Parameters (If Liveness is checked) */}
+              {formData.enable_liveness && (
+                <div className="p-3.5 bg-slate-950/50 border border-sky-900/40 rounded-xl space-y-2">
+                  <span className="text-xs font-bold text-sky-300 block flex items-center gap-1.5">
+                    <ShieldCheck className="w-4 h-4 text-sky-400" />
+                    <span>Stage 2: Liveness Verification Options</span>
+                  </span>
+
+                  <label className="flex items-center justify-between p-3 rounded-lg bg-slate-900/70 border border-slate-800 hover:border-slate-700 cursor-pointer transition-colors">
+                    <div className="space-y-0.5 pr-2">
+                      <span className="text-xs font-semibold text-slate-200 block">
+                        Automatically Purge Dead / 404 Links
+                      </span>
+                      <span className="text-[11px] text-slate-400 block">
+                        {formData.target_area === 'new_jobs'
+                          ? 'When enabled, dead or unreachable URLs are immediately discarded before entering inbox.'
+                          : 'When enabled, links returning 404/410/unreachable are permanently deleted from database and pipeline.md.'}
+                      </span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={formData.liveness_purge_dead}
+                      onChange={(e) => setFormData({ ...formData, liveness_purge_dead: e.target.checked })}
+                      className="w-4 h-4 rounded text-sky-600 focus:ring-0 cursor-pointer shrink-0"
+                    />
+                  </label>
+                </div>
+              )}
 
               {/* Evaluation Parameters (If Evaluation is checked) */}
               {formData.enable_evaluation && (

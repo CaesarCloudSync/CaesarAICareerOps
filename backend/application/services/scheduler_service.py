@@ -113,29 +113,37 @@ class SchedulerService:
                 else:
                     summary_parts.append("Scan: Skipped")
 
-                # Stage 2: Pre-Ingest Liveness Verification
+                # Stage 2: Pre-Ingest Liveness Verification (Streamed)
                 live_roles = []
+                dead_count = 0
                 if enable_liveness and newly_discovered_roles:
-                    dead_count = 0
-                    liveness_results = await asyncio.gather(
-                        *[self.natural_service.verify_url_active(r["url"]) for r in newly_discovered_roles],
-                        return_exceptions=True
-                    )
-                    for role, is_live in zip(newly_discovered_roles, liveness_results):
-                        if is_live is True or not isinstance(is_live, bool):
-                            live_roles.append(role)
-                        else:
-                            dead_count += 1
+                    for role in newly_discovered_roles:
+                        url = role.get("url")
+                        if not url:
+                            continue
+                        try:
+                            is_live = await self.natural_service.verify_url_active(url)
+                            if is_live is True or not isinstance(is_live, bool):
+                                live_roles.append(role)
+                            else:
+                                dead_count += 1
+                                if liveness_purge_dead:
+                                    # Immediate incremental commit: purge from DB
+                                    with Session(engine) as session:
+                                        for item in session.exec(select(PipelineItem)).all():
+                                            if url in item.raw_text:
+                                                session.delete(item)
+                                        session.commit()
+                                    # Immediate strip from pipeline.md
+                                    if PIPELINE_MD.exists():
+                                        lines = PIPELINE_MD.read_text(encoding="utf-8").splitlines()
+                                        clean_lines = [l for l in lines if url not in l]
+                                        PIPELINE_MD.write_text("\n".join(clean_lines) + "\n", encoding="utf-8")
+                        except Exception as e:
+                            print(f"[Scheduler] Liveness check error on {url}: {e}")
+                            live_roles.append(role)  # fail open
+                        await asyncio.sleep(0.05)
 
-                    if liveness_purge_dead and dead_count > 0:
-                        # Prune dead from DB and pipeline.md if already staged
-                        dead_urls = {r["url"] for r, is_live in zip(newly_discovered_roles, liveness_results) if is_live is False}
-                        with Session(engine) as session:
-                            for item in session.exec(select(PipelineItem)).all():
-                                for du in dead_urls:
-                                    if du in item.raw_text:
-                                        session.delete(item)
-                            session.commit()
                     summary_parts.append(f"Liveness: {len(live_roles)} live ({dead_count} dead purged)")
                 elif enable_liveness:
                     summary_parts.append("Liveness: Checked (0 new to check)")
@@ -143,7 +151,7 @@ class SchedulerService:
                     summary_parts.append("Liveness: Skipped")
                     live_roles = newly_discovered_roles
 
-                # Stage 3: Auto-Evaluation
+                # Stage 3: Auto-Evaluation (Streamed)
                 if enable_evaluation:
                     candidates_to_eval = [
                         r for r in live_roles
@@ -155,12 +163,20 @@ class SchedulerService:
                         evaluator = CareerOpsEvaluatorService(repository=repo)
                         eval_success = 0
                         for r in candidates_to_eval:
+                            u = r.get("url")
                             try:
-                                eval_res = await evaluator.evaluate_job(r["url"])
+                                eval_res = await evaluator.evaluate_job(u)
                                 if eval_res.exit_code == 0:
                                     eval_success += 1
+                                    # Immediate atomic commit: mark PipelineItem as evaluated
+                                    with Session(engine) as session:
+                                        for item in session.exec(select(PipelineItem)).all():
+                                            if u in item.raw_text:
+                                                item.status = "evaluated"
+                                                session.add(item)
+                                        session.commit()
                             except Exception as e:
-                                print(f"[Scheduler] Eval error on {r.get('url')}: {e}")
+                                print(f"[Scheduler] Eval error on {u}: {e}")
                             await asyncio.sleep(0.2)
                         summary_parts.append(f"Eval: {eval_success}/{len(candidates_to_eval)} evaluated (>= {eval_min_score}%)")
                     else:
@@ -179,8 +195,7 @@ class SchedulerService:
                 else:
                     summary_parts.append("Scan: Skipped")
 
-                # Stage 2: Backlog Liveness Sweep & Dead Link Pruning
-                active_backlog_items = []
+                # Stage 2: Backlog Liveness Sweep & Dead Link Pruning (Streamed)
                 if enable_liveness:
                     with Session(engine) as session:
                         all_items = session.exec(select(PipelineItem)).all()
@@ -190,40 +205,34 @@ class SchedulerService:
                             if m:
                                 item_map[m.group(0)] = it
 
-                    urls = list(item_map.keys())
                     dead_purged = 0
-                    if urls:
-                        liveness_results = await asyncio.gather(
-                            *[self.natural_service.verify_url_active(u) for u in urls],
-                            return_exceptions=True
-                        )
-                        dead_urls = set()
-                        for u, is_live in zip(urls, liveness_results):
+                    total_checked = len(item_map)
+                    for u, it in list(item_map.items()):
+                        try:
+                            is_live = await self.natural_service.verify_url_active(u)
                             if is_live is False:
-                                dead_urls.add(u)
                                 dead_purged += 1
-
-                        if liveness_purge_dead and dead_urls:
-                            with Session(engine) as session:
-                                for u in dead_urls:
-                                    item = item_map.get(u)
-                                    if item:
-                                        db_item = session.get(PipelineItem, item.id)
+                                if liveness_purge_dead:
+                                    # Immediate atomic delete per dead URL
+                                    with Session(engine) as session:
+                                        db_item = session.get(PipelineItem, it.id)
                                         if db_item:
                                             session.delete(db_item)
-                                session.commit()
+                                            session.commit()
 
-                            # Rewrite pipeline.md without dead URLs
-                            if PIPELINE_MD.exists():
-                                lines = PIPELINE_MD.read_text(encoding="utf-8").splitlines()
-                                clean_lines = [l for l in lines if not any(du in l for du in dead_urls)]
-                                PIPELINE_MD.write_text("\n".join(clean_lines) + "\n", encoding="utf-8")
+                                    if PIPELINE_MD.exists():
+                                        lines = PIPELINE_MD.read_text(encoding="utf-8").splitlines()
+                                        clean_lines = [l for l in lines if u not in l]
+                                        PIPELINE_MD.write_text("\n".join(clean_lines) + "\n", encoding="utf-8")
+                        except Exception as e:
+                            print(f"[Scheduler] Error checking liveness for {u}: {e}")
+                        await asyncio.sleep(0.05)
 
-                    summary_parts.append(f"Liveness: {len(urls) - dead_purged} verified live ({dead_purged} dead pruned)")
+                    summary_parts.append(f"Liveness: {total_checked - dead_purged} verified live ({dead_purged} dead purged)")
                 else:
                     summary_parts.append("Liveness: Skipped")
 
-                # Stage 3: Backlog Evaluation
+                # Stage 3: Backlog Evaluation (Streamed)
                 if enable_evaluation:
                     # Find unevaluated or target backlog roles
                     with Session(engine) as session:
@@ -258,6 +267,13 @@ class SchedulerService:
                                 eval_res = await evaluator.evaluate_job(u)
                                 if eval_res.exit_code == 0:
                                     eval_success += 1
+                                    # Immediate atomic commit: mark PipelineItem as evaluated
+                                    with Session(engine) as session:
+                                        db_item = session.get(PipelineItem, it.id)
+                                        if db_item:
+                                            db_item.status = "evaluated"
+                                            session.add(db_item)
+                                            session.commit()
                             except Exception as e:
                                 print(f"[Scheduler] Backlog eval error on {u}: {e}")
                             await asyncio.sleep(0.2)

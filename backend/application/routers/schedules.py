@@ -29,6 +29,9 @@ def create_schedule(req: ScheduleCreateRequest):
     """Creates a new pipeline workflow schedule."""
     with Session(engine) as session:
         task = ScheduleTask(**req.model_dump())
+        # Safe normalization: in New Jobs, Liveness cannot be active without Scan
+        if task.target_area == "new_jobs" and not task.enable_scan:
+            task.enable_liveness = False
         task.next_run_at = compute_next_run(task)
         task.last_status = "idle"
         session.add(task)
@@ -58,6 +61,10 @@ def update_schedule(schedule_id: int, req: ScheduleUpdateRequest):
         update_data = req.model_dump(exclude_unset=True)
         for k, v in update_data.items():
             setattr(task, k, v)
+
+        # Safe normalization: in New Jobs, Liveness cannot be active without Scan
+        if task.target_area == "new_jobs" and not task.enable_scan:
+            task.enable_liveness = False
 
         # Recompute next_run_at if timing or frequency was modified
         task.next_run_at = compute_next_run(task)
