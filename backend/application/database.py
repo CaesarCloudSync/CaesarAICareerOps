@@ -32,6 +32,13 @@ def init_database() -> None:
     except Exception:
         pass
 
+    try:
+        with engine.begin() as conn:
+            from sqlalchemy import text
+            conn.execute(text("ALTER TABLE applications ADD COLUMN answers TEXT NULL;"))
+    except Exception:
+        pass
+
 
 def get_db_session():
     """Dependency provider yielding an active SQLModel Session."""

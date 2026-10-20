@@ -14,6 +14,7 @@ import {
   User,
   ArrowRight,
   Clock,
+  Save,
 } from 'lucide-react';
 
 export default function AutofillModal({
@@ -25,8 +26,11 @@ export default function AutofillModal({
   const [loading, setLoading] = useState(false);
   const [markingInProgress, setMarkingInProgress] = useState(false);
   const [markedInProgress, setMarkedInProgress] = useState(false);
+  const [savingAnswers, setSavingAnswers] = useState(false);
+  const [savedAnswersSuccess, setSavedAnswersSuccess] = useState(false);
   const [profile, setProfile] = useState({});
   const [answers, setAnswers] = useState([]);
+  const [cvData, setCvData] = useState({ filename: 'Bob_Hillus_CV.pdf', base64: '' });
   const [copiedScript, setCopiedScript] = useState(false);
   const [copiedField, setCopiedField] = useState(null);
   const [activeTab, setActiveTab] = useState('profile'); // 'profile' | 'bookmarklet' | 'answers'
@@ -35,22 +39,49 @@ export default function AutofillModal({
   const role = initialData.role || initialData.title || '';
   const url = initialData.url || '';
 
-  // Initialize modal state on open: do NOT auto-generate, fetch candidate profile if needed
+  // Initialize modal state on open: fetch CV base64, candidate profile, and saved answers if available
   useEffect(() => {
     if (!isOpen) return;
 
     setMarkedInProgress(initialData.status === 'Application in progress');
+
+    // Fetch candidate CV base64 for reliable zero-CSP upload
+    fetch('/api/autofill/cv-base64')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data && data.base64) {
+          setCvData(data);
+        }
+      })
+      .catch((err) => console.error('Failed to load CV base64:', err));
 
     // If initialData already has answers, use them
     if (initialData.answers && initialData.answers.length > 0) {
       setAnswers(initialData.answers);
       setProfile(initialData.profile || {});
       setActiveTab('answers');
-      return;
+    } else {
+      // Check for previously saved answers in SQLite for this job
+      fetch(
+        `/api/autofill/saved-answers?company=${encodeURIComponent(company)}&role=${encodeURIComponent(
+          role
+        )}&url=${encodeURIComponent(url)}`
+      )
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (data && data.found && data.answers && data.answers.length > 0) {
+            setAnswers(data.answers);
+            setActiveTab('answers');
+          } else {
+            setAnswers([]);
+            setActiveTab('profile');
+          }
+        })
+        .catch(() => {
+          setAnswers([]);
+          setActiveTab('profile');
+        });
     }
-
-    setAnswers([]);
-    setActiveTab('profile');
 
     // Fetch candidate profile immediately so Profile & Bookmarklet tabs work instantly
     if (initialData.profile && Object.keys(initialData.profile).length > 0) {
@@ -63,7 +94,7 @@ export default function AutofillModal({
         })
         .catch((err) => console.error('Failed to load candidate profile:', err));
     }
-  }, [isOpen, initialData]);
+  }, [isOpen, initialData, company, role, url]);
 
   // Manually generate answers with agy CLI
   const handleGenerateAnswers = async () => {
@@ -90,6 +121,33 @@ export default function AutofillModal({
       console.error('Failed to generate autofill answers with agy:', err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Persist customized/edited answers to database
+  const handleSaveAnswers = async () => {
+    if (!answers || answers.length === 0) return;
+    setSavingAnswers(true);
+    try {
+      const res = await fetch('/api/autofill/save-answers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          company,
+          role,
+          url,
+          answers,
+        }),
+      });
+      if (res.ok) {
+        setSavedAnswersSuccess(true);
+        setTimeout(() => setSavedAnswersSuccess(false), 2500);
+        onApplicationCreated?.();
+      }
+    } catch (err) {
+      console.error('Failed to save answers:', err);
+    } finally {
+      setSavingAnswers(false);
     }
   };
 
@@ -136,6 +194,8 @@ export default function AutofillModal({
     const payload = {
       profile,
       answers,
+      cvBase64: cvData.base64 || '',
+      cvFilename: cvData.filename || 'Bob_Hillus_CV.pdf',
     };
 
     return `(function(){
@@ -260,7 +320,34 @@ export default function AutofillModal({
 
     fillAnswersList(data.answers || []);
 
-    /* Also auto-read from clipboard if fresh answers were copied */
+    /* 4. Auto-attach CV PDF via zero-CSP Base64 DataTransfer */
+    function attachResume(b64, fn) {
+      if (!b64) return;
+      try {
+        const fileInp = document.getElementById('_systemfield_resume') || document.querySelector('input[type="file"][id*="resume"], input[type="file"][name*="resume"], input[type="file"]');
+        if (!fileInp || (fileInp.files && fileInp.files.length > 0)) return;
+        const byteChars = atob(b64);
+        const byteNums = new Array(byteChars.length);
+        for (let i = 0; i < byteChars.length; i++) {
+          byteNums[i] = byteChars.charCodeAt(i);
+        }
+        const byteArray = new Uint8Array(byteNums);
+        const cvFile = new File([byteArray], fn || 'Bob_Hillus_CV.pdf', { type: 'application/pdf' });
+        const dt = new DataTransfer();
+        dt.items.add(cvFile);
+        fileInp.files = dt.files;
+        fileInp.dispatchEvent(new Event('input', { bubbles: true }));
+        fileInp.dispatchEvent(new Event('change', { bubbles: true }));
+        count++;
+      } catch (e) {}
+    }
+
+    // Attach from baked-in payload if available
+    if (data.cvBase64) {
+      attachResume(data.cvBase64, data.cvFilename);
+    }
+
+    /* 5. Also auto-read from clipboard if fresh answers or CV were copied */
     if (navigator.clipboard && navigator.clipboard.readText) {
       navigator.clipboard.readText().then(function(text) {
         if (text && text.includes('__caesar__')) {
@@ -272,40 +359,22 @@ export default function AutofillModal({
                 showBanner(count);
               }
             }
+            if (clipData && clipData.cvBase64) {
+              attachResume(clipData.cvBase64, clipData.cvFilename);
+            }
           } catch(e) {}
         }
       }).catch(function(){});
     }
 
-    /* 4. Auto-attach CV PDF via local endpoint if accessible */
-    const fileInp = document.querySelector('input[type="file"]:not(#_systemfield_resume), input[id="_systemfield_resume"], input[type="file"]');
-    if (fileInp && !fileInp.files?.length) {
-      try {
-        fetch('http://localhost:8000/api/autofill/cv.pdf')
-          .then(function(res) { return res.ok ? res.blob() : null; })
-          .then(function(blob) {
-            if (blob) {
-              const candName = (p.firstName && p.lastName ? (p.firstName + '_' + p.lastName) : (p.fullName || 'Candidate')).trim().replace(/\\s+/g, '_');
-              const cvFilename = candName + '_CV.pdf';
-              const cvFile = new File([blob], cvFilename, { type: 'application/pdf' });
-              const dt = new DataTransfer();
-              dt.items.add(cvFile);
-              fileInp.files = dt.files;
-              fileInp.dispatchEvent(new Event('input', { bubbles: true }));
-              fileInp.dispatchEvent(new Event('change', { bubbles: true }));
-            }
-          }).catch(function(){});
-      } catch (e) {}
-    }
-
-    /* 5. Floating banner visual feedback */
+    /* 6. Floating banner visual feedback */
     function showBanner(cnt) {
       const existing = document.getElementById('caesar-autofill-banner');
       if (existing) existing.remove();
       const banner = document.createElement('div');
       banner.id = 'caesar-autofill-banner';
       banner.style.cssText = 'position:fixed;top:20px;right:20px;z-index:9999999;background:#0f172a;color:#fff;padding:12px 18px;border-radius:12px;font-family:system-ui,sans-serif;font-size:13px;box-shadow:0 10px 25px rgba(0,0,0,0.5);border:1px solid #10b981;display:flex;align-items:center;gap:10px;';
-      banner.innerHTML = '<span style="font-size:18px">⚡</span> <strong>CaesarAI:</strong> Auto-filled ' + cnt + ' fields & profile! Review answers before submitting.';
+      banner.innerHTML = '<span style="font-size:18px">⚡</span> <strong>CaesarAI:</strong> Auto-filled ' + cnt + ' fields, profile & attached CV! Review before submitting.';
       document.body.appendChild(banner);
       setTimeout(function() { banner.remove(); }, 6000);
     }
@@ -342,18 +411,18 @@ export default function AutofillModal({
   };
 
   const handleLaunchJob = () => {
-    if (answers && answers.length > 0) {
-      try {
-        navigator.clipboard.writeText(
-          JSON.stringify({
-            __caesar__: true,
-            company,
-            role,
-            answers,
-          })
-        );
-      } catch (e) {}
-    }
+    try {
+      navigator.clipboard.writeText(
+        JSON.stringify({
+          __caesar__: true,
+          company,
+          role,
+          answers,
+          cvBase64: cvData.base64,
+          cvFilename: cvData.filename,
+        })
+      );
+    } catch (e) {}
     if (url) {
       window.open(url, '_blank', 'noopener,noreferrer');
     }
@@ -471,13 +540,37 @@ export default function AutofillModal({
             </div>
           ) : activeTab === 'answers' ? (
             <div className="space-y-3.5">
-              <div className="p-2.5 rounded-xl bg-indigo-950/30 border border-indigo-500/20 text-slate-300 flex items-center justify-between gap-2">
-                <span className="text-[11px]">
-                  💡 <strong>Edit any field below!</strong> Your edits will be automatically baked into the 1-click Auto-Fill script.
-                </span>
-                <span className="text-[10px] font-mono text-indigo-400 bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/30 shrink-0">
-                  Engine: agy
-                </span>
+              <div className="p-3 rounded-xl bg-gradient-to-r from-indigo-950/50 to-slate-900 border border-indigo-500/30 text-slate-300 flex flex-wrap items-center justify-between gap-3 shadow-sm">
+                <div className="space-y-0.5">
+                  <div className="text-[11px] font-bold text-white flex items-center gap-1.5">
+                    <span>💡 Tailored Form Responses</span>
+                    <span className="text-[10px] font-mono text-indigo-400 bg-indigo-500/15 px-2 py-0.5 rounded border border-indigo-500/30">
+                      Engine: agy
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-slate-400">
+                    Edit any answer below. Click <strong>Save Answers</strong> to persist changes to this job application.
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleSaveAnswers}
+                    disabled={savingAnswers || answers.length === 0}
+                    className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1.5 shadow-md shadow-emerald-950/50 transition-all hover:scale-[1.02] disabled:opacity-50"
+                    title="Save your changes to this job application"
+                  >
+                    {savingAnswers ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : savedAnswersSuccess ? (
+                      <Check className="w-3.5 h-3.5 text-white" />
+                    ) : (
+                      <Save className="w-3.5 h-3.5 text-white" />
+                    )}
+                    <span>{savedAnswersSuccess ? 'Saved to Tracker!' : 'Save Answers'}</span>
+                  </button>
+                </div>
               </div>
 
               {answers.map((ans, idx) => (

@@ -12,6 +12,7 @@ class ApplicationBase(SQLModel):
     url: Optional[str] = Field(default="", description="Job posting URL")
     report_path: Optional[str] = Field(default="", description="Relative path to generated markdown report")
     notes: Optional[str] = Field(default="", description="Notes or action items")
+    answers: Optional[str] = Field(default=None, description="JSON string of persisted tailored answers")
 
 
 class Application(ApplicationBase, table=True):
@@ -33,6 +34,7 @@ class ApplicationUpdate(SQLModel):
     status: Optional[str] = None
     notes: Optional[str] = None
     report_path: Optional[str] = None
+    answers: Optional[str] = None
 
 
 class StatusUpdateRequest(SQLModel):

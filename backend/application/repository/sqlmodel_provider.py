@@ -168,6 +168,8 @@ class SQLModelRepository(BaseRepository):
                 existing_app.date_applied = today_str
                 if app_data.notes:
                     existing_app.notes = app_data.notes
+                if app_data.answers is not None:
+                    existing_app.answers = app_data.answers
 
                 session.add(existing_app)
                 session.commit()
@@ -188,6 +190,7 @@ class SQLModelRepository(BaseRepository):
                 url=app_data.url,
                 report_path=app_data.report_path,
                 notes=app_data.notes,
+                answers=app_data.answers,
             )
             session.add(app)
             session.commit()
