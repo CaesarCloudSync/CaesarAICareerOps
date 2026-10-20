@@ -8,6 +8,7 @@ from backend.application.models.schedule import (
     ScheduleTask,
     ScheduleCreateRequest,
     ScheduleUpdateRequest,
+    ScheduleResponse,
 )
 from backend.application.services.scheduler_service import (
     scheduler_service,
@@ -17,11 +18,17 @@ from backend.application.services.scheduler_service import (
 router = APIRouter(prefix="/api/schedules", tags=["Schedules"])
 
 
-@router.get("", response_model=List[ScheduleTask])
+@router.get("", response_model=List[ScheduleResponse])
 def list_schedules():
-    """Returns all configured pipeline workflow schedules."""
+    """Returns all configured pipeline workflow schedules with real-time live progress."""
     with Session(engine) as session:
-        return session.exec(select(ScheduleTask).order_by(ScheduleTask.id.desc())).all()
+        tasks = session.exec(select(ScheduleTask).order_by(ScheduleTask.id.desc())).all()
+        results = []
+        for t in tasks:
+            res = ScheduleResponse.model_validate(t)
+            res.progress = scheduler_service.get_progress(t.id)
+            results.append(res)
+        return results
 
 
 @router.post("", response_model=ScheduleTask)
@@ -40,14 +47,16 @@ def create_schedule(req: ScheduleCreateRequest):
         return task
 
 
-@router.get("/{schedule_id}", response_model=ScheduleTask)
+@router.get("/{schedule_id}", response_model=ScheduleResponse)
 def get_schedule(schedule_id: int):
-    """Retrieves a single schedule by ID."""
+    """Retrieves a single schedule by ID with real-time progress."""
     with Session(engine) as session:
         task = session.get(ScheduleTask, schedule_id)
         if not task:
             raise HTTPException(status_code=404, detail="Schedule not found")
-        return task
+        res = ScheduleResponse.model_validate(task)
+        res.progress = scheduler_service.get_progress(task.id)
+        return res
 
 
 @router.put("/{schedule_id}", response_model=ScheduleTask)

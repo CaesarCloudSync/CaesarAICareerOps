@@ -21,6 +21,7 @@ import {
   X,
   Check,
 } from 'lucide-react';
+import PipelineProgressCard from './PipelineProgressCard';
 
 const STEP_SUBSTEPS = {
   1: [
@@ -1039,90 +1040,31 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
 
       {/* Asynchronous Evaluation Job Active Progress Card */}
       {activeEvalJob && (
-        <div className={`p-4 rounded-xl border transition-all shadow-xl space-y-3 ${
-          activeEvalJob.status === 'completed'
-            ? 'bg-emerald-950/40 border-emerald-600/70 text-emerald-100 shadow-emerald-950/30'
-            : activeEvalJob.status === 'cancelled'
-            ? 'bg-slate-900 border-slate-700 text-slate-300'
-            : activeEvalJob.status === 'failed'
-            ? 'bg-rose-950/40 border-rose-600/70 text-rose-100'
-            : 'bg-violet-950/50 border-violet-600/70 text-violet-100 shadow-violet-950/40'
-        }`}>
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              {activeEvalJob.status === 'running' && <Loader2 className="w-4 h-4 text-violet-400 animate-spin" />}
-              {activeEvalJob.status === 'completed' && <CheckCircle2 className="w-4 h-4 text-emerald-400" />}
-              {activeEvalJob.status === 'cancelled' && <AlertCircle className="w-4 h-4 text-amber-400" />}
-              {activeEvalJob.status === 'failed' && <AlertCircle className="w-4 h-4 text-rose-400" />}
-
-              <span className="text-xs font-semibold text-white">
-                {activeEvalJob.status === 'completed'
-                  ? 'Evaluation Complete'
-                  : activeEvalJob.status === 'cancelled'
-                  ? 'Evaluation Cancelled'
-                  : activeEvalJob.status === 'failed'
-                  ? 'Evaluation Failed'
-                  : activeEvalJob.total === 1
-                  ? 'Evaluating Role...'
-                  : `Batch Evaluating Role ${activeEvalJob.current_index || 1} of ${activeEvalJob.total}`}
-              </span>
-
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300 border border-violet-500/30">
-                {activeEvalJob.completed_count} completed • {activeEvalJob.failed_count} failed
-              </span>
-
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-slate-900/80 text-slate-400 border border-slate-700/60">
-                Job: {activeEvalJob.job_id}
-              </span>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <div className="flex items-center gap-1 text-[11px] font-mono text-slate-400">
-                <Clock className="w-3 h-3 text-indigo-400" />
-                <span>{activeEvalJob.elapsed_seconds || 0}s</span>
-              </div>
-              {activeEvalJob.status === 'running' && (
-                <button
-                  onClick={handleCancelEvalJob}
-                  className="px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/30 text-rose-300 text-xs font-medium flex items-center gap-1 transition-colors"
-                >
-                  <X className="w-3.5 h-3.5" />
-                  <span>Cancel</span>
-                </button>
-              )}
-            </div>
-          </div>
-
-          <div className="w-full bg-slate-900 rounded-full h-1.5 overflow-hidden">
-            <div
-              className={`h-1.5 rounded-full transition-all duration-300 ${
-                activeEvalJob.status === 'completed'
-                  ? 'bg-emerald-400'
-                  : activeEvalJob.status === 'cancelled'
-                  ? 'bg-amber-400'
-                  : activeEvalJob.status === 'failed'
-                  ? 'bg-rose-500'
-                  : 'bg-gradient-to-r from-violet-500 to-indigo-500'
-              }`}
-              style={{
-                width: `${
-                  activeEvalJob.status === 'completed'
-                    ? 100
-                    : Math.round(((activeEvalJob.current_index || 0) / (activeEvalJob.total || 1)) * 100)
-                }%`,
-              }}
-            />
-          </div>
-
-          <div className="text-[11px] font-mono text-slate-300 flex items-center justify-between gap-2">
-            <div className="truncate">
-              Target: <span className="text-white font-medium">{activeEvalJob.current_target}</span>
-            </div>
-            <div className="text-slate-400 shrink-0 text-[10px]">
-              {activeEvalJob.detail}
-            </div>
-          </div>
-        </div>
+        <PipelineProgressCard
+          title={
+            activeEvalJob.status === 'completed'
+              ? 'Evaluation Complete'
+              : activeEvalJob.status === 'cancelled'
+              ? 'Evaluation Cancelled'
+              : activeEvalJob.status === 'failed'
+              ? 'Evaluation Failed'
+              : activeEvalJob.total === 1
+              ? 'Evaluating Role...'
+              : `Batch Evaluating Role ${activeEvalJob.current_index || 1} of ${activeEvalJob.total}`
+          }
+          status={activeEvalJob.status}
+          elapsedSeconds={activeEvalJob.elapsed_seconds || 0}
+          percent={
+            activeEvalJob.status === 'completed'
+              ? 100
+              : Math.round(((activeEvalJob.current_index || 0) / (activeEvalJob.total || 1)) * 100)
+          }
+          badge={`${activeEvalJob.completed_count} completed • ${activeEvalJob.failed_count} failed`}
+          tag={`Job: ${activeEvalJob.job_id}`}
+          currentTarget={activeEvalJob.current_target}
+          detail={activeEvalJob.detail}
+          onCancel={handleCancelEvalJob}
+        />
       )}
 
       {/* Fallback simple banner for non-discovery actions (purge, verify, reset) */}

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Calendar,
   Clock,
@@ -18,8 +18,10 @@ import {
   Info,
   CheckCircle2,
   XCircle,
-  AlertCircle
+  AlertCircle,
+  Loader2
 } from 'lucide-react';
+import PipelineProgressCard from './PipelineProgressCard';
 
 const SUGGESTIONS = [
   {
@@ -53,7 +55,7 @@ const SUGGESTIONS = [
 ];
 
 export default function ScheduleManager() {
-  const [activeArea, setActiveArea] = useState('new_jobs'); // 'new_jobs' | 'backlog'
+  const [activeArea, setActiveArea] = useState('all'); // 'all' | 'new_jobs' | 'backlog'
   const [schedules, setSchedules] = useState([]);
   const [loading, setLoading] = useState(false);
   const [runningScheduleId, setRunningScheduleId] = useState(null);
@@ -80,8 +82,8 @@ export default function ScheduleManager() {
     is_active: true,
   });
 
-  const loadSchedules = async () => {
-    setLoading(true);
+  const loadSchedules = async (showLoading = false) => {
+    if (showLoading) setLoading(true);
     try {
       const res = await fetch('/api/schedules');
       if (res.ok) {
@@ -91,25 +93,28 @@ export default function ScheduleManager() {
     } catch (err) {
       console.error('Failed to load schedules', err);
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
   };
 
   useEffect(() => {
-    loadSchedules();
-    const interval = setInterval(loadSchedules, 15000);
+    loadSchedules(true);
+    const interval = setInterval(() => {
+      loadSchedules(false);
+    }, 3000);
     return () => clearInterval(interval);
   }, []);
 
   const openCreateModal = (area) => {
+    const targetArea = (area === 'all' || !area) ? 'new_jobs' : area;
     setEditingSchedule(null);
     setFormData({
-      name: area === 'new_jobs' ? 'Daily London Backend Inflow' : 'Backlog Health & Evaluation Sweep',
-      target_area: area,
+      name: targetArea === 'new_jobs' ? 'Daily London Backend Inflow' : 'Backlog Health & Evaluation Sweep',
+      target_area: targetArea,
       enable_scan: true,
       enable_liveness: true,
-      enable_evaluation: area === 'new_jobs' ? false : true,
-      prompt: area === 'new_jobs'
+      enable_evaluation: targetArea === 'new_jobs' ? false : true,
+      prompt: targetArea === 'new_jobs'
         ? 'Find 100 new jobs from 200 new companies for Junior and Mid Level Backend Engineer in any and all industries (Python, Java, C#) London'
         : '',
       liveness_purge_dead: true,
@@ -160,7 +165,7 @@ export default function ScheduleManager() {
         });
         if (res.ok) {
           setIsModalOpen(false);
-          loadSchedules();
+          await loadSchedules(false);
         }
       } else {
         const res = await fetch('/api/schedules', {
@@ -170,7 +175,10 @@ export default function ScheduleManager() {
         });
         if (res.ok) {
           setIsModalOpen(false);
-          loadSchedules();
+          if (activeArea !== 'all' && activeArea !== formData.target_area) {
+            setActiveArea(formData.target_area);
+          }
+          await loadSchedules(false);
         }
       }
     } catch (err) {
@@ -234,7 +242,9 @@ export default function ScheduleManager() {
     return { text: 'Custom Workflow', color: 'bg-slate-900 text-slate-300 border-slate-700' };
   };
 
-  const filteredSchedules = schedules.filter(s => s.target_area === activeArea);
+  const filteredSchedules = activeArea === 'all'
+    ? schedules
+    : schedules.filter(s => s.target_area === activeArea);
 
   return (
     <div className="space-y-6">
@@ -253,7 +263,7 @@ export default function ScheduleManager() {
 
           <div className="flex items-center gap-3">
             <button
-              onClick={loadSchedules}
+              onClick={() => loadSchedules(true)}
               disabled={loading}
               className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-colors"
               title="Refresh schedules"
@@ -266,13 +276,28 @@ export default function ScheduleManager() {
               className="px-4 py-2 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white rounded-lg text-xs font-semibold flex items-center gap-2 shadow-md shadow-indigo-600/20 transition-all hover:scale-105"
             >
               <Plus className="w-4 h-4" />
-              <span>New {activeArea === 'new_jobs' ? 'New Jobs' : 'Backlog'} Schedule</span>
+              <span>New {activeArea === 'backlog' ? 'Backlog' : 'Pipeline'} Schedule</span>
             </button>
           </div>
         </div>
 
-        {/* Dual Area Tabs */}
-        <div className="flex space-x-2 mt-6 border-b border-slate-800 pb-2">
+        {/* All / New Jobs / Backlog Tabs */}
+        <div className="flex space-x-2 mt-6 border-b border-slate-800 pb-2 overflow-x-auto">
+          <button
+            onClick={() => setActiveArea('all')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all ${
+              activeArea === 'all'
+                ? 'bg-indigo-600/30 text-indigo-300 border border-indigo-500/40 shadow-sm'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+            }`}
+          >
+            <Layers className="w-4 h-4 text-violet-400" />
+            <span>All Workflows</span>
+            <span className="ml-1 text-[10px] px-1.5 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700">
+              {schedules.length}
+            </span>
+          </button>
+
           <button
             onClick={() => setActiveArea('new_jobs')}
             className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all ${
@@ -321,9 +346,16 @@ export default function ScheduleManager() {
               <div>
                 {/* Header row */}
                 <div className="flex items-start justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <span className={`w-2.5 h-2.5 rounded-full ${sch.is_active ? 'bg-emerald-400 animate-pulse' : 'bg-slate-600'}`} />
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${sch.is_active ? 'bg-emerald-400 animate-pulse' : 'bg-slate-600'}`} />
                     <h3 className="font-semibold text-sm text-slate-100">{sch.name}</h3>
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full border font-mono ${
+                      sch.target_area === 'new_jobs'
+                        ? 'bg-amber-950/40 text-amber-300 border-amber-800/60'
+                        : 'bg-sky-950/40 text-sky-300 border-sky-800/60'
+                    }`}>
+                      {sch.target_area === 'new_jobs' ? '✦ New Jobs' : '📦 Backlog'}
+                    </span>
                   </div>
 
                   <span className={`text-[10px] px-2 py-0.5 rounded-full border font-mono ${badge.color}`}>
@@ -341,6 +373,25 @@ export default function ScheduleManager() {
                     {sch.frequency_type === 'weekdays' && `Weekdays at ${sch.time_of_day}`}
                   </span>
                 </div>
+
+                {/* Active Progress Card (matching main page evaluation progress card with zero duplication) */}
+                {(isRunning || sch.progress?.status === 'running') && (
+                  <PipelineProgressCard
+                    className="mt-3.5"
+                    title={sch.progress?.stage || 'Executing Workflow Pipeline...'}
+                    status={sch.progress?.status || (isRunning ? 'running' : 'idle')}
+                    elapsedSeconds={sch.progress?.elapsed_seconds || 0}
+                    percent={sch.progress?.percent || (isRunning ? 25 : 0)}
+                    badge={
+                      sch.progress?.total > 0
+                        ? `${sch.progress.completed_count || 0} / ${sch.progress.total}`
+                        : undefined
+                    }
+                    tag={`Schedule #${sch.id}`}
+                    currentTarget={sch.progress?.current_target || sch.name}
+                    detail={sch.progress?.detail || 'Processing stages...'}
+                  />
+                )}
 
                 {/* Stages Tick Box Visualizer */}
                 <div className="mt-4 p-3 bg-slate-950/60 rounded-lg border border-slate-800/80 space-y-2">
@@ -500,6 +551,7 @@ export default function ScheduleManager() {
                     onClick={() => setFormData({
                       ...formData,
                       target_area: 'new_jobs',
+                      name: formData.name === 'Backlog Health & Evaluation Sweep' ? 'Daily London Backend Inflow' : formData.name,
                       enable_liveness: formData.enable_scan ? formData.enable_liveness : false
                     })}
                     className={`p-3 rounded-lg border text-left text-xs transition-all ${
@@ -514,7 +566,11 @@ export default function ScheduleManager() {
 
                   <button
                     type="button"
-                    onClick={() => setFormData({ ...formData, target_area: 'backlog' })}
+                    onClick={() => setFormData({
+                      ...formData,
+                      target_area: 'backlog',
+                      name: formData.name === 'Daily London Backend Inflow' ? 'Backlog Health & Evaluation Sweep' : formData.name,
+                    })}
                     className={`p-3 rounded-lg border text-left text-xs transition-all ${
                       formData.target_area === 'backlog'
                         ? 'bg-indigo-600/20 border-indigo-500 text-indigo-300 font-semibold'

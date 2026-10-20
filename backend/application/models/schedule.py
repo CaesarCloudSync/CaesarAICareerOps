@@ -4,10 +4,7 @@ from sqlmodel import SQLModel, Field
 from pydantic import BaseModel
 
 
-class ScheduleTask(SQLModel, table=True):
-    __tablename__ = "scheduletask"
-
-    id: Optional[int] = Field(default=None, primary_key=True)
+class ScheduleBase(SQLModel):
     name: str = Field(index=True)
     target_area: str = Field(default="new_jobs")  # "new_jobs" | "backlog"
 
@@ -40,6 +37,12 @@ class ScheduleTask(SQLModel, table=True):
     next_run_at: Optional[datetime] = Field(default=None)
     last_status: str = Field(default="idle")  # "idle" | "running" | "success" | "failed"
     last_result_summary: Optional[str] = Field(default=None)
+
+
+class ScheduleTask(ScheduleBase, table=True):
+    __tablename__ = "scheduletask"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -79,3 +82,9 @@ class ScheduleUpdateRequest(BaseModel):
     time_of_day: Optional[str] = None
     days_of_week: Optional[str] = None
     is_active: Optional[bool] = None
+
+
+class ScheduleResponse(ScheduleBase):
+    id: Optional[int] = None
+    created_at: Optional[datetime] = None
+    progress: Optional[Dict[str, Any]] = None
