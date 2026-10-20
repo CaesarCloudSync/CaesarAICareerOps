@@ -566,10 +566,12 @@ export default function ScheduleManager() {
                   </div>
                 </div>
 
-                {/* Prompt Preview (for New Jobs) or Scope (for Backlog) */}
-                {sch.target_area === 'new_jobs' && sch.prompt && (
+                {/* Prompt Preview */}
+                {sch.prompt && (
                   <div className="mt-3 p-2.5 bg-slate-950/40 rounded-lg border border-slate-800/60 text-xs text-slate-300 font-mono line-clamp-2 leading-relaxed">
-                    <span className="text-slate-500 font-sans block text-[10px] font-bold">Search Prompt:</span>
+                    <span className="text-slate-500 font-sans block text-[10px] font-bold">
+                      {sch.target_area === 'new_jobs' ? 'Search Prompt:' : 'Workflow / Search Prompt:'}
+                    </span>
                     {sch.prompt}
                   </div>
                 )}
