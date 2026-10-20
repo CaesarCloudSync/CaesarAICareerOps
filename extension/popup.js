@@ -67,10 +67,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         btnInstantSub.innerText = '⚡ 0s instant fill: fields + CV attached';
 
         if (statusPollInterval) clearInterval(statusPollInterval);
-      } else if (info.status === 'Application in progress') {
+      } else if (info.status === 'Generating Application with agy' || info.status === 'Application in progress') {
         appStatusBadge.className = 'app-status-tag app-status-progress';
-        appStatusBadge.innerText = 'In Progress (agy)';
-        statusDetail.innerText = 'AI reasoning running in background. Track on dashboard.';
+        appStatusBadge.innerText = 'Generating (agy)';
+        statusDetail.innerText = 'AI reasoning running in background (medium effort). Track on dashboard.';
 
         btnQueue.removeAttribute('disabled');
         btnQueue.querySelector('.btn-main').innerHTML = '<span>⏳</span> AI Generating in Background...';

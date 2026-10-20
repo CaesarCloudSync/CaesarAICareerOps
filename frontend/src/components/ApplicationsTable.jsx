@@ -12,21 +12,27 @@ import {
   Zap,
   Sparkles,
   Bookmark,
+  Pencil,
 } from 'lucide-react';
 import PipelineProgressCard from './PipelineProgressCard';
 import ConfirmModal from './ConfirmModal';
 import AutofillModal from './AutofillModal';
 
-export default function ApplicationsTable({ applications = [], onStatusChange, onViewReport, onRefresh }) {
+export default function ApplicationsTable({
+  applications = [],
+  onStatusChange,
+  onScoreChange,
+  onViewReport,
+  onRefresh,
+}) {
   const [search, setSearch] = useState('');
   const [reEvaluatingId, setReEvaluatingId] = useState(null);
   const [activeEvalJobId, setActiveEvalJobId] = useState(null);
   const [activeEvalJob, setActiveEvalJob] = useState(null);
   const [isEvaluating, setIsEvaluating] = useState(false);
-  const [activeAutofillJobId, setActiveAutofillJobId] = useState(null);
-  const [activeAutofillJob, setActiveAutofillJob] = useState(null);
-  const [singleAutofillJob, setSingleAutofillJob] = useState(null);
-  const [isAutofilling, setIsAutofilling] = useState(false);
+  const [activeAutofillJobs, setActiveAutofillJobs] = useState([]);
+  const [editingScoreId, setEditingScoreId] = useState(null);
+  const [editScoreValue, setEditScoreValue] = useState('');
   const [selectedAppIds, setSelectedAppIds] = useState(new Set());
   const [autofillModalConfig, setAutofillModalConfig] = useState({
     isOpen: false,
@@ -49,14 +55,14 @@ export default function ApplicationsTable({ applications = [], onStatusChange, o
 
   const cleanRole = (role) => (role || '').replace(/\s+evaluation$/i, '').trim();
 
-  // 1. Refresh resilience: Check if an evaluation or autofill job is already running on mount
+  // 1. Refresh resilience: Check if an evaluation or autofill jobs are already running on mount
   useEffect(() => {
     let isMounted = true;
     const checkActiveJobs = async () => {
       try {
         const [evalRes, autofillRes] = await Promise.all([
           fetch('/api/evaluate/job/active').catch(() => null),
-          fetch('/api/autofill/job/active').catch(() => null),
+          fetch('/api/autofill/jobs/active').catch(() => null),
         ]);
 
         if (evalRes && evalRes.ok) {
@@ -70,14 +76,9 @@ export default function ApplicationsTable({ applications = [], onStatusChange, o
 
         if (autofillRes && autofillRes.ok) {
           const aData = await autofillRes.json();
-          if (aData.active && aData.job && isMounted) {
-            if (aData.job.total === 1) {
-              setSingleAutofillJob(aData.job);
-            } else {
-              setActiveAutofillJob(aData.job);
-              setActiveAutofillJobId(aData.job.job_id);
-              setIsAutofilling(true);
-            }
+          if (isMounted) {
+            const jobs = aData.jobs || (aData.job ? [aData.job] : []);
+            setActiveAutofillJobs(jobs);
           }
         }
       } catch (err) {
@@ -92,93 +93,45 @@ export default function ApplicationsTable({ applications = [], onStatusChange, o
     };
   }, []);
 
-  // 1b. Batch Autofill Status Polling: Polls live progress every 1200ms
+  // 1b. Multi-Job Autofill Polling: Polls all active autofill jobs simultaneously every 1200ms
   useEffect(() => {
-    if (!activeAutofillJobId || !isAutofilling) return;
+    const hasRunning = activeAutofillJobs.some((j) => j.status === 'running');
+    if (!hasRunning) return;
 
     let isCancelled = false;
     const pollAutofillStatus = async () => {
       try {
-        const res = await fetch(`/api/autofill/job/${activeAutofillJobId}`);
-        if (!res.ok) {
-          if (res.status === 404) {
-            setIsAutofilling(false);
-          }
-          return;
+        const res = await fetch('/api/autofill/jobs/active');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (isCancelled) return;
+
+        const jobs = data.jobs || (data.job ? [data.job] : []);
+        setActiveAutofillJobs(jobs);
+
+        // Real-time synchronization when any application autofill finishes
+        const totalCompleted = jobs.reduce((sum, j) => sum + (j.completed_count || 0), 0);
+        if (totalCompleted > (lastAutofillCountRef.current || 0)) {
+          lastAutofillCountRef.current = totalCompleted;
+          onRefresh?.();
         }
-        const job = await res.json();
-        if (!isCancelled && job) {
-          setActiveAutofillJob(job);
 
-          // Real-time synchronization when individual application autofill finishes
-          if (job.completed_count > (lastAutofillCountRef.current || 0)) {
-            lastAutofillCountRef.current = job.completed_count;
-            onRefresh?.();
-          }
-
-          if (job.status === 'completed') {
-            setIsAutofilling(false);
-            setSelectedAppIds(new Set());
-            onRefresh?.();
-            setTimeout(() => {
-              setActiveAutofillJob((prev) => (prev?.status === 'completed' ? null : prev));
-            }, 8000);
-          } else if (job.status === 'cancelled') {
-            setIsAutofilling(false);
-            onRefresh?.();
-            setTimeout(() => {
-              setActiveAutofillJob((prev) => (prev?.status === 'cancelled' ? null : prev));
-            }, 6000);
-          } else if (job.status === 'failed') {
-            setIsAutofilling(false);
-            setTimeout(() => {
-              setActiveAutofillJob((prev) => (prev?.status === 'failed' ? null : prev));
-            }, 8000);
-          }
+        // If any job just transitioned to completed/cancelled/failed
+        const finishedJobs = jobs.filter((j) => ['completed', 'cancelled', 'failed'].includes(j.status));
+        if (finishedJobs.length > 0) {
+          onRefresh?.();
         }
       } catch (err) {
-        console.error('Failed to poll batch autofill job:', err);
+        console.error('Failed to poll active autofill jobs:', err);
       }
     };
 
-    pollAutofillStatus();
     const interval = setInterval(pollAutofillStatus, 1200);
     return () => {
       isCancelled = true;
       clearInterval(interval);
     };
-  }, [activeAutofillJobId, isAutofilling, onRefresh]);
-
-  // 1c. Single Job Autofill Status Polling: Keeps main page updated in real time
-  useEffect(() => {
-    if (!singleAutofillJob?.job_id || singleAutofillJob?.status !== 'running') return;
-
-    let isCancelled = false;
-    const pollSingleStatus = async () => {
-      try {
-        const res = await fetch(`/api/autofill/job/${singleAutofillJob.job_id}`);
-        if (!res.ok) return;
-        const job = await res.json();
-        if (!isCancelled && job) {
-          setSingleAutofillJob(job);
-          if (job.status === 'completed' || job.status === 'cancelled' || job.status === 'failed') {
-            onRefresh?.();
-            setTimeout(() => {
-              setSingleAutofillJob((prev) => (prev?.status === job.status ? null : prev));
-            }, 6000);
-          }
-        }
-      } catch (err) {
-        console.error('Failed to poll single autofill job in table:', err);
-      }
-    };
-
-    const interval = setInterval(pollSingleStatus, 1000);
-    return () => {
-      isCancelled = true;
-      clearInterval(interval);
-    };
-  }, [singleAutofillJob?.job_id, singleAutofillJob?.status, onRefresh]);
+  }, [activeAutofillJobs, onRefresh]);
 
   // 2. Evaluation Status Polling: Polls live progress, elapsed seconds & target every 1000ms
   useEffect(() => {
@@ -283,10 +236,12 @@ export default function ApplicationsTable({ applications = [], onStatusChange, o
 
   const getStatusBadgeClass = (status) => {
     switch (status) {
+      case 'Generating Application with agy':
+        return 'bg-amber-950/80 text-amber-300 border-amber-500/60 shadow-sm shadow-amber-900/30 hover:border-amber-400 animate-pulse font-semibold';
       case 'Application Generated':
         return 'bg-purple-950/80 text-purple-200 border-purple-500/60 shadow-sm shadow-purple-900/30 hover:border-purple-400 font-semibold';
       case 'Application in progress':
-        return 'bg-amber-950/80 text-amber-300 border-amber-500/60 shadow-sm shadow-amber-900/30 hover:border-amber-400 animate-pulse';
+        return 'bg-amber-950/80 text-amber-300 border-amber-500/60 shadow-sm shadow-amber-900/30 hover:border-amber-400 font-medium';
       case 'Applied':
         return 'bg-blue-950/80 text-blue-300 border-blue-500/60 shadow-sm shadow-blue-900/30 hover:border-blue-400 font-medium';
       case 'Evaluated':
@@ -305,6 +260,7 @@ export default function ApplicationsTable({ applications = [], onStatusChange, o
   };
 
   const statusOptions = [
+    'Generating Application with agy',
     'Application in progress',
     'Application Generated',
     'Evaluated',
@@ -503,7 +459,6 @@ export default function ApplicationsTable({ applications = [], onStatusChange, o
     if (selectedAppIds.size === 0) return;
     const appIds = Array.from(selectedAppIds);
     lastAutofillCountRef.current = 0;
-    setIsAutofilling(true);
     try {
       const res = await fetch('/api/autofill/batch', {
         method: 'POST',
@@ -516,8 +471,7 @@ export default function ApplicationsTable({ applications = [], onStatusChange, o
       }
       const data = await res.json();
       if (data.job_id) {
-        setActiveAutofillJobId(data.job_id);
-        setActiveAutofillJob({
+        const newJob = {
           job_id: data.job_id,
           status: 'running',
           total: appIds.length,
@@ -527,29 +481,46 @@ export default function ApplicationsTable({ applications = [], onStatusChange, o
           failed_count: 0,
           elapsed_seconds: 0,
           detail: `Inspecting form HTML and drafting answers for ${appIds.length} application(s)...`,
-        });
+        };
+        setActiveAutofillJobs((prev) => [newJob, ...prev.filter((j) => j.job_id !== data.job_id)]);
       }
     } catch (err) {
       alert(`Batch autofill failed: ${err.message}`);
-      setIsAutofilling(false);
     }
   };
 
-  const handleCancelAutofillJob = async () => {
-    if (!activeAutofillJobId) return;
+  const handleCancelAutofillJob = async (jobId) => {
+    if (!jobId) return;
     try {
-      await fetch(`/api/autofill/job/${activeAutofillJobId}/cancel`, { method: 'POST' });
+      await fetch(`/api/autofill/job/${jobId}/cancel`, { method: 'POST' });
+      const res = await fetch('/api/autofill/jobs/active');
+      if (res.ok) {
+        const data = await res.json();
+        setActiveAutofillJobs(data.jobs || []);
+      }
     } catch (err) {
-      console.error('Failed to cancel batch autofill job:', err);
+      console.error('Failed to cancel autofill job:', err);
     }
   };
 
-  const handleCancelSingleAutofillJob = async () => {
-    if (!singleAutofillJob?.job_id) return;
-    try {
-      await fetch(`/api/autofill/job/${singleAutofillJob.job_id}/cancel`, { method: 'POST' });
-    } catch (err) {
-      console.error('Failed to cancel single autofill job:', err);
+  const handleStartEditScore = (app) => {
+    setEditingScoreId(app.id);
+    setEditScoreValue(app.score !== undefined && app.score !== null ? String(app.score) : '');
+  };
+
+  const handleSaveScore = async (app) => {
+    const currentId = editingScoreId;
+    setEditingScoreId(null);
+    if (currentId !== app.id) return;
+    const trimmed = (editScoreValue || '').trim();
+    if (trimmed === '') return;
+    const parsed = parseFloat(trimmed);
+    if (isNaN(parsed)) return;
+    const clamped = Math.min(5.0, Math.max(0.0, Math.round(parsed * 10) / 10));
+    if (clamped !== app.score) {
+      if (onScoreChange) {
+        await onScoreChange(app.id, app.company, app.role, clamped);
+      }
     }
   };
 
@@ -590,63 +561,58 @@ export default function ApplicationsTable({ applications = [], onStatusChange, o
         </div>
       )}
 
-      {/* Active Batch Autofill Progress Card */}
-      {activeAutofillJob && (
-        <div className="p-4 border-b border-indigo-500/30 bg-indigo-950/20">
-          <PipelineProgressCard
-            title={
-              activeAutofillJob.status === 'completed'
-                ? 'Batch Autofill Complete'
-                : activeAutofillJob.status === 'cancelled'
-                ? 'Batch Autofill Cancelled'
-                : activeAutofillJob.status === 'failed'
-                ? 'Batch Autofill Failed'
-                : `AI Form Inspection & Autofill (${activeAutofillJob.current_index || 1}/${activeAutofillJob.total})`
-            }
-            status={activeAutofillJob.status}
-            elapsedSeconds={activeAutofillJob.elapsed_seconds || 0}
-            percent={
-              activeAutofillJob.status === 'completed'
-                ? 100
-                : Math.round(((activeAutofillJob.current_index || 0) / (activeAutofillJob.total || 1)) * 100)
-            }
-            badge="AI Autofill (agy)"
-            tag={activeAutofillJob.job_id ? `Job: ${activeAutofillJob.job_id}` : undefined}
-            currentTarget={activeAutofillJob.current_target}
-            detail={activeAutofillJob.detail || 'Inspecting form HTML and drafting tailored answers...'}
-            onCancel={handleCancelAutofillJob}
-          />
-        </div>
-      )}
+      {/* Active Autofill Jobs (Supports Multiple Simultaneous Jobs) */}
+      {activeAutofillJobs.length > 0 && (
+        <div className="border-b border-indigo-500/30 bg-indigo-950/20 divide-y divide-indigo-500/20">
+          {activeAutofillJobs.length > 1 && (
+            <div className="px-4 py-2 bg-indigo-950/40 flex items-center justify-between text-xs text-indigo-300">
+              <span className="flex items-center gap-1.5 font-semibold">
+                <Sparkles className="w-3.5 h-3.5 text-indigo-400 animate-pulse" />
+                <span>
+                  {activeAutofillJobs.filter((j) => j.status === 'running').length || activeAutofillJobs.length} Simultaneous Autofill Jobs in Progress
+                </span>
+              </span>
+              <span className="text-[11px] text-indigo-400 font-mono">agy medium effort</span>
+            </div>
+          )}
+          {activeAutofillJobs.map((job) => {
+            const isSingle = (job.total || 1) <= 1;
+            const title =
+              job.status === 'completed'
+                ? (isSingle ? 'AI Autofill Complete' : 'Batch Autofill Complete')
+                : job.status === 'cancelled'
+                ? (isSingle ? 'AI Autofill Cancelled' : 'Batch Autofill Cancelled')
+                : job.status === 'failed'
+                ? (isSingle ? 'AI Autofill Failed' : 'Batch Autofill Failed')
+                : isSingle
+                ? `Generating Application with agy: ${job.current_target || 'Target Role'}`
+                : `AI Form Inspection & Autofill (${job.current_index || 1}/${job.total})`;
 
-      {/* Active Single Job Autofill Progress Card */}
-      {singleAutofillJob && (
-        <div className="p-4 border-b border-indigo-500/30 bg-indigo-950/20">
-          <PipelineProgressCard
-            title={
-              singleAutofillJob.status === 'completed'
-                ? 'AI Autofill Complete'
-                : singleAutofillJob.status === 'cancelled'
-                ? 'AI Autofill Cancelled'
-                : singleAutofillJob.status === 'failed'
-                ? 'AI Autofill Failed'
-                : 'Generating Tailored Answers with agy...'
-            }
-            status={singleAutofillJob.status}
-            elapsedSeconds={singleAutofillJob.elapsed_seconds ?? singleAutofillJob.elapsedSeconds ?? 0}
-            percent={
-              singleAutofillJob.status === 'completed'
+            const percent =
+              job.status === 'completed'
                 ? 100
-                : singleAutofillJob.status === 'cancelled' || singleAutofillJob.status === 'failed'
+                : job.status === 'cancelled' || job.status === 'failed'
                 ? 100
-                : Math.min(95, Math.max(15, Math.round((singleAutofillJob.elapsed_seconds || 1) * 6)))
-            }
-            badge="AI Autofill (agy)"
-            tag={singleAutofillJob.job_id ? `Job: ${singleAutofillJob.job_id}` : 'Single Job'}
-            currentTarget={singleAutofillJob.current_target || singleAutofillJob.currentTarget}
-            detail={singleAutofillJob.detail || 'Inspecting form HTML and drafting tailored answers with agy...'}
-            onCancel={handleCancelSingleAutofillJob}
-          />
+                : isSingle
+                ? Math.min(95, Math.max(15, Math.round((job.elapsed_seconds || 1) * 6)))
+                : Math.round(((job.current_index || 0) / (job.total || 1)) * 100);
+
+            return (
+              <div key={job.job_id} className="p-4">
+                <PipelineProgressCard
+                  title={title}
+                  status={job.status}
+                  elapsedSeconds={job.elapsed_seconds || 0}
+                  percent={percent}
+                  badge="AI Autofill (agy)"
+                  tag={job.job_id ? `Job: ${job.job_id}` : undefined}
+                  currentTarget={job.current_target}
+                  detail={job.detail || 'Inspecting form HTML and drafting tailored answers with agy...'}
+                  onCancel={() => handleCancelAutofillJob(job.job_id)}
+                />
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -811,9 +777,36 @@ export default function ApplicationsTable({ applications = [], onStatusChange, o
                     <td className="py-3 px-4 font-semibold text-slate-200">{app.company}</td>
                     <td className="py-3 px-4 text-slate-300 max-w-xs truncate">{cleanRole(app.role)}</td>
                     <td className="py-3 px-4">
-                      <span className={`px-2 py-0.5 rounded border text-[11px] font-mono font-bold ${getScoreBadge(app.score)}`}>
-                        {app.score}/5.0
-                      </span>
+                      {editingScoreId === app.id ? (
+                        <div className="flex items-center gap-1">
+                          <input
+                            type="number"
+                            min="0"
+                            max="5"
+                            step="0.1"
+                            autoFocus
+                            value={editScoreValue}
+                            onChange={(e) => setEditScoreValue(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') handleSaveScore(app);
+                              if (e.key === 'Escape') setEditingScoreId(null);
+                            }}
+                            onBlur={() => handleSaveScore(app)}
+                            className="w-16 px-1.5 py-0.5 bg-slate-950 border border-indigo-500 rounded text-xs font-mono font-bold text-white focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                          />
+                          <span className="text-[10px] text-slate-500 font-mono">/5.0</span>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => handleStartEditScore(app)}
+                          title="Click to manually edit rating score (0.0 - 5.0)"
+                          className={`group inline-flex items-center gap-1.5 px-2 py-0.5 rounded border text-[11px] font-mono font-bold transition-all hover:scale-105 hover:ring-1 hover:ring-indigo-400 cursor-pointer ${getScoreBadge(app.score)}`}
+                        >
+                          <span>{app.score !== undefined && app.score !== null ? `${app.score}/5.0` : '—'}</span>
+                          <Pencil className="w-2.5 h-2.5 opacity-0 group-hover:opacity-100 transition-opacity text-indigo-400" />
+                        </button>
+                      )}
                     </td>
                     <td className="py-3 px-4">
                       <div className="relative inline-flex items-center">
@@ -920,7 +913,19 @@ export default function ApplicationsTable({ applications = [], onStatusChange, o
         onClose={() => setAutofillModalConfig({ isOpen: false, data: {} })}
         initialData={autofillModalConfig.data}
         onApplicationCreated={onRefresh}
-        onProgressUpdate={setSingleAutofillJob}
+        onProgressUpdate={(job) => {
+          if (job) {
+            setActiveAutofillJobs((prev) => {
+              const idx = prev.findIndex((j) => j.job_id === job.job_id);
+              if (idx >= 0) {
+                const next = [...prev];
+                next[idx] = { ...next[idx], ...job };
+                return next;
+              }
+              return [job, ...prev];
+            });
+          }
+        }}
       />
     </div>
   );

@@ -5,6 +5,7 @@ from backend.application.models import (
     Application,
     ApplicationCreate,
     StatusUpdateRequest,
+    ScoreUpdateRequest,
     DashboardStats,
 )
 from backend.application.repository.base import BaseRepository
@@ -55,6 +56,27 @@ async def update_application_status(
         "message": "Status updated successfully",
         "company": payload.company,
         "status": payload.status,
+    }
+
+
+@router.post("/applications/score")
+async def update_application_score(
+    payload: ScoreUpdateRequest,
+    repo: BaseRepository = Depends(get_career_repository),
+):
+    """Manually update rating score of a tracked job application."""
+    success = await repo.update_application_score(
+        score=payload.score,
+        app_id=payload.app_id,
+        company=payload.company,
+        role=payload.role,
+    )
+    if not success:
+        raise HTTPException(status_code=404, detail="Application record not found")
+    return {
+        "message": "Score updated successfully",
+        "app_id": payload.app_id,
+        "score": payload.score,
     }
 
 

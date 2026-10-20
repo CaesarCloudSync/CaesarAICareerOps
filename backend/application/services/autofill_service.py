@@ -208,6 +208,107 @@ class AutofillService:
         b64 = base64.b64encode(pdf_bytes).decode("utf-8")
         return {"filename": cv_filename, "base64": b64}
 
+    def generate_cover_letter_pdf_base64(self, cover_letter_text: str, company: str = "", role: str = "") -> str:
+        """
+        Dynamically renders a clean, professional ATS-ready single-page Cover Letter PDF
+        using ReportLab and returns it as a Base64 string.
+        """
+        if not cover_letter_text or not cover_letter_text.strip():
+            return ""
+        try:
+            import io
+            import base64
+            from reportlab.lib.pagesizes import letter
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+            from reportlab.lib import colors
+
+            buffer = io.BytesIO()
+            doc = SimpleDocTemplate(
+                buffer,
+                pagesize=letter,
+                rightMargin=54,
+                leftMargin=54,
+                topMargin=54,
+                bottomMargin=54,
+            )
+
+            cand_data = self.get_candidate_data()
+            profile = cand_data.get("profile", {})
+            name = profile.get("fullName", "Bob Hillus")
+            email = profile.get("email", "")
+            phone = profile.get("phone", "")
+            loc = profile.get("location", "")
+
+            styles = getSampleStyleSheet()
+            title_style = ParagraphStyle(
+                "CandName",
+                parent=styles["Normal"],
+                fontName="Helvetica-Bold",
+                fontSize=16,
+                leading=20,
+                textColor=colors.HexColor("#0f172a"),
+            )
+            contact_style = ParagraphStyle(
+                "CandContact",
+                parent=styles["Normal"],
+                fontName="Helvetica",
+                fontSize=9,
+                leading=12,
+                textColor=colors.HexColor("#475569"),
+            )
+            date_style = ParagraphStyle(
+                "LetterDate",
+                parent=styles["Normal"],
+                fontName="Helvetica",
+                fontSize=9.5,
+                leading=14,
+                textColor=colors.HexColor("#334155"),
+            )
+            body_style = ParagraphStyle(
+                "LetterBody",
+                parent=styles["Normal"],
+                fontName="Helvetica",
+                fontSize=10,
+                leading=14.5,
+                textColor=colors.HexColor("#1e293b"),
+                spaceAfter=10,
+            )
+
+            story = []
+            story.append(Paragraph(name, title_style))
+            contact_line = " &bull; ".join(filter(None, [email, phone, loc]))
+            if contact_line:
+                story.append(Paragraph(contact_line, contact_style))
+            story.append(Spacer(1, 14))
+
+            today_str = date.today().strftime("%B %d, %Y")
+            story.append(Paragraph(today_str, date_style))
+            if company:
+                target_hdr = f"Hiring Team<br/>{company}"
+                if role:
+                    target_hdr += f"<br/>Application for: {role}"
+                story.append(Paragraph(target_hdr, date_style))
+            story.append(Spacer(1, 14))
+
+            paragraphs = [p.strip() for p in cover_letter_text.split("\n\n") if p.strip()]
+            for para in paragraphs:
+                clean_para = (
+                    para.replace("&", "&amp;")
+                    .replace("<", "&lt;")
+                    .replace(">", "&gt;")
+                    .replace("\n", " ")
+                )
+                story.append(Paragraph(clean_para, body_style))
+
+            doc.build(story)
+            pdf_bytes = buffer.getvalue()
+            buffer.close()
+            return base64.b64encode(pdf_bytes).decode("utf-8")
+        except Exception as e:
+            print(f"[AutofillService] Error generating cover letter PDF: {e}")
+            return ""
+
     async def inspect_page_form(self, url: str) -> Dict[str, Any]:
         """
         Dynamically inspects the job application URL using Playwright Chromium to extract:
@@ -447,7 +548,7 @@ Do NOT output any conversational text or markdown code fences outside the JSON. 
         cover_letter = None
         try:
             proc = await asyncio.create_subprocess_exec(
-                "agy", "-p", prompt, "--dangerously-skip-permissions", "--disable-slash-commands", "--effort", "low",
+                "agy", "-p", prompt, "--dangerously-skip-permissions", "--disable-slash-commands", "--effort", "medium",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(self.career_ops_dir)
@@ -570,7 +671,7 @@ Return ONLY JSON. No conversational text or markdown code fences outside JSON.
 
         try:
             proc = await asyncio.create_subprocess_exec(
-                "agy", "-p", prompt, "--dangerously-skip-permissions", "--disable-slash-commands", "--effort", "low",
+                "agy", "-p", prompt, "--dangerously-skip-permissions", "--disable-slash-commands", "--effort", "medium",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(self.career_ops_dir)

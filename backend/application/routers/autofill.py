@@ -122,7 +122,7 @@ async def resolve_live_async(payload: ResolveLiveRequest):
         target_app = find_matching_application(session, url=url, company=detected_company, role=detected_role)
         if target_app:
             target_app_id = target_app.id
-            target_app.status = "Application in progress"
+            target_app.status = "Generating Application with agy"
             target_app.answers = None  # Clear any previous answers so user never receives half-created state
             if not target_app.url and url:
                 target_app.url = url
@@ -133,7 +133,7 @@ async def resolve_live_async(payload: ResolveLiveRequest):
                 company=detected_company,
                 role=detected_role,
                 url=url,
-                status="Application in progress",
+                status="Generating Application with agy",
                 date_applied=date.today().isoformat(),
                 answers=None,
             )
@@ -249,11 +249,11 @@ async def apply_saved(payload: ApplySavedRequest):
         target_app = find_matching_application(session, url=payload.url or "", company=comp, role=role)
         if target_app:
             # If still generating, refuse to return half-baked answers
-            if target_app.status == "Application in progress":
+            if target_app.status in ("Generating Application with agy", "Application in progress"):
                 return {
                     "status": "in_progress",
                     "found": False,
-                    "message": "Autofill generation is still running in background. Please wait until all fields are created.",
+                    "message": "Autofill generation is still running in background with agy. Please wait until all fields are created.",
                     "actions": [],
                     "answers": [],
                     "cvBase64": cv_payload.get("base64", ""),
@@ -286,6 +286,19 @@ async def apply_saved(payload: ApplySavedRequest):
                     "cvFilename": cv_payload.get("filename", "Bob_Hillus_CV.pdf"),
                 }
 
+            # Generate Cover Letter PDF Base64 if cover letter text was created
+            cover_letter_b64 = ""
+            cover_letter_fn = "Bob_Hillus_Cover_Letter.pdf"
+            if cover_letter:
+                cover_letter_b64 = autofill_service.generate_cover_letter_pdf_base64(
+                    cover_letter_text=cover_letter,
+                    company=target_app.company or comp,
+                    role=target_app.role or role,
+                )
+                safe_comp = re.sub(r"[^\w\-]", "_", target_app.company or comp).strip("_")
+                if safe_comp:
+                    cover_letter_fn = f"Bob_Hillus_Cover_Letter_{safe_comp}.pdf"
+
             return {
                 "status": "success",
                 "found": True,
@@ -295,6 +308,8 @@ async def apply_saved(payload: ApplySavedRequest):
                 "answers": answers,
                 "cover_letter": cover_letter,
                 "has_cover_letter": bool(cover_letter),
+                "coverLetterBase64": cover_letter_b64,
+                "coverLetterFilename": cover_letter_fn,
                 "profile": cand_data.get("profile", {}),
                 "screening": cand_data.get("screening", {}),
                 "cvBase64": cv_payload.get("base64", ""),
@@ -381,7 +396,7 @@ async def generate_async(payload: AutofillGenerateRequest):
                     company=payload.company or "Target Company",
                     role=payload.role or "Software Engineer",
                     url=payload.url or "",
-                    status="Application in progress",
+                    status="Generating Application with agy",
                     date_applied=date.today().isoformat(),
                 )
                 session.add(new_app)
@@ -433,12 +448,19 @@ async def start_batch_autofill(payload: BatchAutofillRequest):
 
 
 @router.get("/job/active")
+@router.get("/jobs/active")
 async def get_active_batch_job():
-    """Check if a batch autofill job is currently in flight."""
-    job = autofill_tracker.get_active_job()
-    if not job:
-        return {"active": False, "job": None}
-    return {"active": True, "job": job.to_dict()}
+    """Check running and active autofill jobs in flight, returning all simultaneous jobs."""
+    all_active = autofill_tracker.get_active_jobs()
+    running_only = [j for j in all_active if j.status == "running"]
+    primary = running_only[0] if running_only else (all_active[0] if all_active else None)
+    return {
+        "active": len(running_only) > 0,
+        "count": len(running_only),
+        "total_active": len(all_active),
+        "job": primary.to_dict() if primary else None,
+        "jobs": [j.to_dict() for j in all_active],
+    }
 
 
 @router.get("/job/{job_id}")

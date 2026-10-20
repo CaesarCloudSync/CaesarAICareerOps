@@ -215,6 +215,39 @@ class SQLModelRepository(BaseRepository):
             self._sync_applications_md(session)
             return True
 
+    async def update_application_score(
+        self,
+        score: float,
+        app_id: Optional[int] = None,
+        company: Optional[str] = None,
+        role: Optional[str] = None,
+    ) -> bool:
+        with Session(engine) as session:
+            target = None
+            if app_id:
+                target = session.get(Application, app_id)
+            if not target and company and role:
+                statement = select(Application).where(
+                    func.lower(Application.company).contains(company.lower()),
+                    func.lower(Application.role).contains(role.lower())
+                )
+                target = session.exec(statement).first()
+            elif not target and company:
+                statement = select(Application).where(
+                    func.lower(Application.company).contains(company.lower())
+                )
+                target = session.exec(statement).first()
+
+            if not target:
+                return False
+
+            target.score = round(float(score), 1)
+            session.add(target)
+            session.commit()
+            session.refresh(target)
+            self._sync_applications_md(session)
+            return True
+
     async def delete_application(self, app_id: int) -> bool:
         with Session(engine) as session:
             app = session.get(Application, app_id)

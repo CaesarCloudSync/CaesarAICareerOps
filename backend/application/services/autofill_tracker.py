@@ -114,12 +114,37 @@ class AutofillBatchTracker:
         return self._jobs.get(job_id)
 
     def get_active_job(self) -> Optional[AutofillBatchJob]:
-        if not self._active_job_id:
-            return None
-        job = self._jobs.get(self._active_job_id)
-        if job and job.status == "running":
-            return job
+        # Return most recently created running job, or fallback to any running job
+        if self._active_job_id:
+            job = self._jobs.get(self._active_job_id)
+            if job and job.status == "running":
+                return job
+        for job in reversed(list(self._jobs.values())):
+            if job.status == "running":
+                return job
         return None
+
+    def get_running_jobs(self) -> List[AutofillBatchJob]:
+        """Returns all jobs currently in running state."""
+        return [job for job in self._jobs.values() if job.status == "running"]
+
+    def get_active_jobs(self) -> List[AutofillBatchJob]:
+        """
+        Returns all active jobs:
+        - All currently running jobs
+        - Plus jobs that finished (completed/failed/cancelled) in the last 8 seconds
+          so the dashboard can display final status before dismissing.
+        """
+        now = time.time()
+        active = []
+        for job in self._jobs.values():
+            if job.status == "running":
+                active.append(job)
+            else:
+                finished_recently = (now - (job.start_timestamp + (job.elapsed_seconds or 0))) < 8.0
+                if finished_recently:
+                    active.append(job)
+        return active
 
     def cancel_job(self, job_id: str) -> bool:
         job = self._jobs.get(job_id)

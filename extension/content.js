@@ -162,6 +162,31 @@
     }
   }
 
+  function attachCoverLetterPdf(b64, fn) {
+    if (!b64) return false;
+    try {
+      const fileInp = document.getElementById('_systemfield_cover_letter') ||
+                      document.querySelector('input[type="file"][id*="cover" i], input[type="file"][name*="cover" i], input[type="file"][aria-label*="cover" i], input[type="file"][data-qa*="cover" i]');
+      if (!fileInp || (fileInp.files && fileInp.files.length > 0)) return false;
+      const byteChars = atob(b64);
+      const byteNums = new Array(byteChars.length);
+      for (let i = 0; i < byteChars.length; i++) {
+        byteNums[i] = byteChars.charCodeAt(i);
+      }
+      const byteArray = new Uint8Array(byteNums);
+      const clFile = new File([byteArray], fn || 'Bob_Hillus_Cover_Letter.pdf', { type: 'application/pdf' });
+      const dt = new DataTransfer();
+      dt.items.add(clFile);
+      fileInp.files = dt.files;
+      fileInp.dispatchEvent(new Event('input', { bubbles: true }));
+      fileInp.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    } catch (e) {
+      console.warn('CaesarAI Cover Letter PDF attach error:', e);
+      return false;
+    }
+  }
+
   // 3. Extract Live Interactive Form Elements
   function extractFormFields() {
     const fields = [];
@@ -319,8 +344,8 @@
     return count;
   }
 
-  // 6. Execute DOM Actions Plan & Attach CV PDF
-  function executeActions(actions = [], cvBase64 = '', cvFilename = '') {
+  // 6. Execute DOM Actions Plan & Attach CV & Cover Letter PDFs
+  function executeActions(actions = [], cvBase64 = '', cvFilename = '', coverLetterBase64 = '', coverLetterFilename = '') {
     let count = 0;
     actions.forEach((act) => {
       try {
@@ -371,6 +396,16 @@
       console.warn('CaesarAI CV attach warning:', cvErr);
     }
 
+    // Attach Cover Letter PDF if generated & file input exists
+    try {
+      if (coverLetterBase64) {
+        const clAttached = attachCoverLetterPdf(coverLetterBase64, coverLetterFilename);
+        if (clAttached) count++;
+      }
+    } catch (clErr) {
+      console.warn('CaesarAI Cover Letter attach warning:', clErr);
+    }
+
     return count;
   }
 
@@ -388,7 +423,7 @@
       pct: 65,
       title: '<span>⚡</span> CaesarAI Queueing',
       msg: `Discovered ${fields.length} form inputs`,
-      sub: 'Dispatching non-blocking background job to agy...',
+      sub: 'Dispatching non-blocking background job to agy (medium effort)...',
     });
 
     try {
@@ -412,7 +447,7 @@
         pct: 100,
         title: '<span>✅</span> Queued in Background!',
         msg: `Job #${jobId} running in background`,
-        sub: 'Status: "Application in progress". You can freely navigate away anytime!',
+        sub: 'Status: "Generating Application with agy". You can freely navigate away anytime!',
         autoDismissMs: 6500,
       });
 
@@ -475,7 +510,13 @@
         sub: 'Filling form fields & attaching Master CV PDF...',
       });
 
-      let count = executeActions(data.actions || [], data.cvBase64, data.cvFilename);
+      let count = executeActions(
+        data.actions || [],
+        data.cvBase64,
+        data.cvFilename,
+        data.coverLetterBase64,
+        data.coverLetterFilename
+      );
 
       // Intelligent Fallback: if very few fields matched, fill standard profile fields
       if (data.profile) {

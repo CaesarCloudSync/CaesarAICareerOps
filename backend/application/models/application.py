@@ -41,3 +41,10 @@ class StatusUpdateRequest(SQLModel):
     company: str
     role: str
     status: str
+
+
+class ScoreUpdateRequest(SQLModel):
+    app_id: Optional[int] = None
+    company: Optional[str] = None
+    role: Optional[str] = None
+    score: float

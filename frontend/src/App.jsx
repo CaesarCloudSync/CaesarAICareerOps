@@ -77,6 +77,21 @@ export default function App() {
     }
   };
 
+  const handleScoreChange = async (appId, company, role, newScore) => {
+    try {
+      const res = await fetch('/api/applications/score', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ app_id: appId, company, role, score: parseFloat(newScore) }),
+      });
+      if (res.ok) {
+        loadData();
+      }
+    } catch (err) {
+      console.error('Error updating score', err);
+    }
+  };
+
   const handleSendToEvaluator = (inputData) => {
     setPrefillJd(inputData);
     setActiveTab('evaluator');
@@ -103,6 +118,7 @@ export default function App() {
           <ApplicationsTable
             applications={applications}
             onStatusChange={handleStatusChange}
+            onScoreChange={handleScoreChange}
             onViewReport={handleViewReport}
             onRefresh={loadData}
           />

@@ -3,6 +3,7 @@ from backend.application.models.application import (
     ApplicationCreate,
     ApplicationUpdate,
     StatusUpdateRequest,
+    ScoreUpdateRequest,
 )
 from backend.application.models.cv import (
     Resume,
@@ -44,6 +45,7 @@ __all__ = [
     "ApplicationCreate",
     "ApplicationUpdate",
     "StatusUpdateRequest",
+    "ScoreUpdateRequest",
     "Resume",
     "ResumeCreate",
     "ResumeSaveRequest",

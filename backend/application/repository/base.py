@@ -36,6 +36,17 @@ class BaseRepository(ABC):
         pass
 
     @abstractmethod
+    async def update_application_score(
+        self,
+        score: float,
+        app_id: Optional[int] = None,
+        company: Optional[str] = None,
+        role: Optional[str] = None,
+    ) -> bool:
+        """Manually update match/rating score of an application."""
+        pass
+
+    @abstractmethod
     async def delete_application(self, app_id: int) -> bool:
         """Delete a tracked application and its associated report/PDF."""
         pass
