@@ -323,6 +323,34 @@ async def save_answers(
     }
 
 
+class ClearAnswersPayload(BaseModel):
+    company: Optional[str] = ""
+    role: Optional[str] = ""
+    url: Optional[str] = ""
+
+
+@router.post("/clear-answers")
+async def clear_answers(payload: ClearAnswersPayload):
+    """
+    Clears all AI-generated answers and cover letter for a specific job application from SQLite.
+    """
+    norm_comp = (payload.company or "").strip().lower()
+    norm_url = (payload.url or "").strip().lower()
+
+    with Session(engine) as session:
+        all_apps = session.exec(select(Application)).all()
+        for a in all_apps:
+            matches_url = norm_url and norm_url.startswith("http") and (a.url or "").strip().lower() == norm_url
+            matches_comp = norm_comp and (a.company or "").strip().lower() == norm_comp
+            if matches_url or matches_comp:
+                a.answers = None
+                session.add(a)
+                session.commit()
+                return {"status": "cleared", "id": a.id}
+
+    return {"status": "not_found"}
+
+
 @router.get("/saved-answers")
 async def get_saved_answers(
     company: Optional[str] = "",

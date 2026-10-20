@@ -17,6 +17,7 @@ import {
   Save,
   Trash2,
   RotateCcw,
+  AlertTriangle,
 } from 'lucide-react';
 
 export default function AutofillModal({
@@ -38,6 +39,8 @@ export default function AutofillModal({
   const [copiedScript, setCopiedScript] = useState(false);
   const [copiedField, setCopiedField] = useState(null);
   const [activeTab, setActiveTab] = useState('profile'); // 'profile' | 'bookmarklet' | 'answers'
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [clearingAgy, setClearingAgy] = useState(false);
 
   const company = initialData.company || '';
   const role = initialData.role || initialData.title || '';
@@ -197,10 +200,26 @@ export default function AutofillModal({
     }
   };
 
-  // Clear AI written fields (empties answers and cover letter)
-  const handleClearFields = () => {
-    setAnswers((prev) => prev.map((ans) => ({ ...ans, answer: '' })));
-    setCoverLetter('');
+  // Permanently clear agy generation for this job application
+  const handleConfirmClearAgy = async () => {
+    setClearingAgy(true);
+    try {
+      await fetch('/api/autofill/clear-answers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ company, role, url }),
+      });
+      setAnswers([]);
+      setCoverLetter('');
+      setHasCoverLetter(false);
+      setActiveTab('profile');
+      setShowClearConfirm(false);
+      onApplicationCreated?.();
+    } catch (err) {
+      console.error('Failed to clear agy answers:', err);
+    } finally {
+      setClearingAgy(false);
+    }
   };
 
   // Handle Escape key to close
@@ -672,13 +691,13 @@ export default function AutofillModal({
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={handleClearFields}
+                    onClick={() => setShowClearConfirm(true)}
                     disabled={answers.length === 0 && !coverLetter}
                     className="px-2.5 py-1.5 rounded-lg bg-rose-950/40 hover:bg-rose-900/60 border border-rose-500/30 text-rose-300 font-medium text-xs flex items-center gap-1.5 transition-all disabled:opacity-40"
-                    title="Clear AI written text in fields"
+                    title="Clear agy generation for this job with confirmation"
                   >
                     <Trash2 className="w-3.5 h-3.5 text-rose-400" />
-                    <span>Clear Fields</span>
+                    <span>Clear AGY</span>
                   </button>
 
                   <button
@@ -932,6 +951,43 @@ export default function AutofillModal({
             )}
           </div>
         </div>
+
+        {/* Clear AGY Confirmation Dialog Overlay */}
+        {showClearConfirm && (
+          <div className="absolute inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-sm rounded-2xl animate-in fade-in duration-150">
+            <div className="bg-slate-900 border border-rose-500/40 rounded-2xl p-5 sm:p-6 max-w-sm w-full shadow-2xl space-y-4 text-center ring-1 ring-rose-500/20">
+              <div className="w-12 h-12 rounded-full bg-rose-500/15 border border-rose-500/30 text-rose-400 mx-auto flex items-center justify-center">
+                <AlertTriangle className="w-6 h-6" />
+              </div>
+              <div className="space-y-1.5">
+                <h3 className="text-base font-bold text-white">Clear AGY Generation?</h3>
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  This will permanently delete all AI-generated form answers and the tailored cover letter for{' '}
+                  <strong className="text-white">{company || 'this role'}</strong> from your local database.
+                </p>
+              </div>
+              <div className="flex items-center justify-center gap-2.5 pt-2">
+                <button
+                  type="button"
+                  disabled={clearingAgy}
+                  onClick={() => setShowClearConfirm(false)}
+                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={clearingAgy}
+                  onClick={handleConfirmClearAgy}
+                  className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 active:bg-rose-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-lg shadow-rose-950/60 transition-all hover:scale-[1.02] disabled:opacity-50"
+                >
+                  {clearingAgy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                  <span>{clearingAgy ? 'Clearing...' : 'Yes, Clear AGY'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>,
     document.body
