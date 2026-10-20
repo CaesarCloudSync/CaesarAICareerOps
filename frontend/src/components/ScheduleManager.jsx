@@ -419,6 +419,15 @@ export default function ScheduleManager() {
                     <div className={`flex items-center gap-1.5 ${sch.enable_evaluation ? 'text-violet-300 font-medium' : 'text-slate-600 line-through'}`}>
                       {sch.enable_evaluation ? <CheckSquare className="w-4 h-4 text-violet-400" /> : <Square className="w-4 h-4 text-slate-600" />}
                       <span>3. Evaluation</span>
+                      {sch.enable_evaluation && (
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${
+                          sch.eval_scope === 're_evaluate_all'
+                            ? 'text-amber-300 border-amber-800/80 bg-amber-950/60 font-semibold'
+                            : 'text-violet-300 border-violet-800/80 bg-violet-950/60'
+                        }`}>
+                          {sch.eval_scope === 're_evaluate_all' ? 'Re-eval All' : 'Unevaluated'}
+                        </span>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -743,10 +752,38 @@ export default function ScheduleManager() {
                 <div className="p-3.5 bg-slate-950/50 border border-violet-900/40 rounded-xl space-y-3">
                   <span className="text-xs font-bold text-violet-300 block flex items-center gap-1.5">
                     <Zap className="w-3.5 h-3.5 text-violet-400" />
-                    <span>Evaluation Settings</span>
+                    <span>Stage 3: Evaluation Settings</span>
                   </span>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                    {/* Evaluation Scope */}
+                    <div>
+                      <label className="block text-slate-300 mb-1 font-semibold">Evaluation Scope</label>
+                      <select
+                        value={formData.eval_scope}
+                        onChange={(e) => setFormData({ ...formData, eval_scope: e.target.value })}
+                        className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-xs text-white focus:outline-none focus:border-violet-500"
+                      >
+                        <option value="unevaluated">Unevaluated Only (Skip existing reports)</option>
+                        <option value="re_evaluate_all">Re-evaluate All Roles (Fresh CV sweep)</option>
+                      </select>
+                    </div>
+
+                    {/* Evaluation Order */}
+                    <div>
+                      <label className="block text-slate-300 mb-1 font-semibold">Evaluation Priority Order</label>
+                      <select
+                        value={formData.eval_order}
+                        onChange={(e) => setFormData({ ...formData, eval_order: e.target.value })}
+                        className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-xs text-white focus:outline-none focus:border-violet-500"
+                      >
+                        <option value="highest_match">Highest Match Score First</option>
+                        <option value="newest_first">Newest Additions First</option>
+                        <option value="oldest_first">Oldest in Queue First</option>
+                      </select>
+                    </div>
+
+                    {/* Min Score Slider */}
                     <div>
                       <label className="block text-slate-400 mb-1">Min Match Score to Evaluate ({formData.eval_min_score}%)</label>
                       <input
@@ -760,6 +797,7 @@ export default function ScheduleManager() {
                       />
                     </div>
 
+                    {/* Batch Size */}
                     <div>
                       <label className="block text-slate-400 mb-1">Batch Limit per Run</label>
                       <input
@@ -768,7 +806,7 @@ export default function ScheduleManager() {
                         max="50"
                         value={formData.eval_batch_size}
                         onChange={(e) => setFormData({ ...formData, eval_batch_size: parseInt(e.target.value) || 10 })}
-                        className="w-full px-3 py-1.5 bg-slate-900 border border-slate-800 rounded text-xs text-white"
+                        className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-xs text-white focus:outline-none focus:border-violet-500"
                       />
                     </div>
                   </div>
