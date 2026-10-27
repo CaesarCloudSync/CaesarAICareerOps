@@ -135,6 +135,9 @@ export default function AutofillModal({
   const [manualHtml, setManualHtml] = useState('');
   const [showManualPaste, setShowManualPaste] = useState(false);
   const [generatedScript, setGeneratedScript] = useState('');
+  const [isCompiled, setIsCompiled] = useState(false);
+  const [storedHtml, setStoredHtml] = useState('');
+  const [showStoredHtml, setShowStoredHtml] = useState(false);
   const [activeTab, setActiveTab] = useState('bookmarklets'); // 'bookmarklets' | 'profile' | 'answers'
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [clearingAgy, setClearingAgy] = useState(false);
@@ -146,6 +149,10 @@ export default function AutofillModal({
   // Initialize modal state on open:
   useEffect(() => {
     if (!isOpen) return;
+
+    // Reset local transient notices
+    setCompileError(null);
+    setCompileSuccess(null);
 
     // Fetch candidate CV base64 for reliable zero-CSP upload
     fetch('/api/autofill/cv-base64')
@@ -162,44 +169,43 @@ export default function AutofillModal({
       setCoverLetter(initialData.cover_letter);
       setHasCoverLetter(true);
     }
+    if (initialData.script) {
+      setGeneratedScript(initialData.script);
+      setIsCompiled(true);
+    }
 
     if (initialData.answers && initialData.answers.length > 0) {
       setAnswers(initialData.answers);
       setProfile(initialData.profile || {});
-      setActiveTab('answers');
-    } else {
-      // Check for previously saved answers and cover letter in SQLite for this job
-      fetch(
-        `/api/autofill/saved-answers?company=${encodeURIComponent(company)}&role=${encodeURIComponent(
-          role
-        )}&url=${encodeURIComponent(url)}`
-      )
-        .then((res) => (res.ok ? res.json() : null))
-        .then((data) => {
-          if (data && data.found) {
-            if (data.answers && data.answers.length > 0) {
-              setAnswers(data.answers);
-            }
-            if (data.cover_letter) {
-              setCoverLetter(data.cover_letter);
-              setHasCoverLetter(true);
-            }
-            if ((data.answers && data.answers.length > 0) || data.cover_letter) {
-              setActiveTab('answers');
-            } else {
-              setAnswers([]);
-              setActiveTab('bookmarklets');
-            }
-          } else {
-            setAnswers([]);
-            setActiveTab('bookmarklets');
-          }
-        })
-        .catch(() => {
-          setAnswers([]);
-          setActiveTab('bookmarklets');
-        });
+      setIsCompiled(true);
     }
+
+    // Check for previously saved answers, script, and raw HTML snapshot in database for this job
+    fetch(
+      `/api/autofill/saved-answers?company=${encodeURIComponent(company)}&role=${encodeURIComponent(
+        role
+      )}&url=${encodeURIComponent(url)}`
+    )
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data && data.found) {
+          if (data.answers && data.answers.length > 0) {
+            setAnswers(data.answers);
+          }
+          if (data.cover_letter) {
+            setCoverLetter(data.cover_letter);
+            setHasCoverLetter(true);
+          }
+          if (data.script) {
+            setGeneratedScript(data.script);
+            setIsCompiled(true);
+          }
+          if (data.raw_html) {
+            setStoredHtml(data.raw_html);
+          }
+        }
+      })
+      .catch(() => {});
 
     // Fetch candidate profile immediately
     if (initialData.profile && Object.keys(initialData.profile).length > 0) {
@@ -216,7 +222,7 @@ export default function AutofillModal({
 
   const [activeJobId, setActiveJobId] = useState(null);
 
-  // Poll live progress of async autofill job
+  // Poll live progress of async autofill / compilation job
   useEffect(() => {
     if (!activeJobId) return;
     let isCancelled = false;
@@ -239,9 +245,10 @@ export default function AutofillModal({
           if (job.status === 'completed') {
             setActiveJobId(null);
             setLoading(false);
+            setIsCompiled(true);
             onApplicationCreated?.();
 
-            // Fetch saved answers from SQLite
+            // Fetch newly saved answers, script, and HTML snapshot
             fetch(`/api/autofill/saved-answers?company=${encodeURIComponent(company)}&role=${encodeURIComponent(role)}&url=${encodeURIComponent(url)}`)
               .then((r) => (r.ok ? r.json() : null))
               .then((saved) => {
@@ -251,10 +258,29 @@ export default function AutofillModal({
                     setCoverLetter(saved.cover_letter);
                     setHasCoverLetter(true);
                   }
-                  setActiveTab('answers');
+                  if (saved.script) {
+                    setGeneratedScript(saved.script);
+                    setIsCompiled(true);
+                    // Automatically put payload onto clipboard
+                    try {
+                      navigator.clipboard.writeText(JSON.stringify({
+                        __CAESAR_AUTOFILL_PAYLOAD__: true,
+                        company,
+                        role,
+                        script: saved.script,
+                      }));
+                      setCopiedScript(true);
+                      setTimeout(() => setCopiedScript(false), 3000);
+                    } catch (e) {}
+                  }
+                  if (saved.raw_html) setStoredHtml(saved.raw_html);
                 }
               })
               .catch(() => {});
+
+            setCompileSuccess(
+              `✅ Compilation complete! The autofill payload is now in your clipboard — switch to the job tab and click 2️⃣ Caesar Fill!`
+            );
 
             setTimeout(() => {
               setSingleJobProgress((prev) => (prev?.status === 'completed' ? null : prev));
@@ -332,7 +358,7 @@ export default function AutofillModal({
     }
   };
 
-  // Compile Form HTML from Clipboard via agy
+  // Compile Form HTML from Clipboard via agy (Asynchronous FIFO Queue)
   const handleCompileFromClipboard = async (customHtml = null) => {
     setCompilingHtml(true);
     setCompileError(null);
@@ -373,7 +399,10 @@ export default function AutofillModal({
         );
       }
 
-      const res = await fetch('/api/autofill/compile-html-script', {
+      setStoredHtml(htmlText);
+
+      // Submit to background compilation queue
+      const res = await fetch('/api/autofill/compile-html-async', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -392,40 +421,51 @@ export default function AutofillModal({
       }
 
       const data = await res.json();
-      const compiledScript = data.script;
+      if (data.job_id) {
+        setActiveJobId(data.job_id);
+        const initialJob = data.job || {
+          job_id: data.job_id,
+          status: data.status || 'running',
+          total: 1,
+          current_index: 1,
+          current_target: `${company || 'Target Company'} — ${role || 'Role'}`,
+          elapsed_seconds: 0,
+          detail: data.status === 'queued'
+            ? 'Queued: Waiting for previous compilation to complete...'
+            : 'Analyzing HTML snapshot & drafting tailored answers with agy...',
+        };
+        setSingleJobProgress(initialJob);
+        onProgressUpdate?.(initialJob);
 
-      if (data.answers && data.answers.length > 0) {
-        setAnswers(data.answers);
+        if (data.status === 'queued') {
+          setCompileSuccess(
+            `⏳ Added to queue! It will automatically start compiling as soon as the previous job finishes. You can move freely around the app.`
+          );
+        } else {
+          setCompileSuccess(
+            `🚀 Compilation started with agy! You can move freely around the app — progress is tracked at the top of the dashboard.`
+          );
+        }
       }
-      if (data.cover_letter) {
-        setCoverLetter(data.cover_letter);
-        setHasCoverLetter(true);
-      }
-      setGeneratedScript(compiledScript);
-
-      // Copy execution payload back to clipboard for Button 2 (Fill)
-      const execPayload = JSON.stringify({
-        __CAESAR_AUTOFILL_PAYLOAD__: true,
-        company: data.company || company,
-        role: data.role || role,
-        script: compiledScript,
-      });
-
-      try {
-        await navigator.clipboard.writeText(execPayload);
-      } catch (e) {
-        console.warn('Failed to write payload to clipboard:', e);
-      }
-
-      setCompileSuccess(
-        `✅ Successfully compiled with agy! ${data.answers?.length || 0} tailored answers generated. The autofill payload is now in your clipboard — switch to the job tab and click 2️⃣ Caesar Fill!`
-      );
-      onApplicationCreated?.();
     } catch (err) {
       setCompileError(err.message);
     } finally {
       setCompilingHtml(false);
     }
+  };
+
+  // 1-Click Load compiled payload into clipboard for 2️⃣ Fill
+  const handleLoadPayloadToClipboard = () => {
+    const scriptToUse = generatedScript || buildAutofillCode();
+    const payload = JSON.stringify({
+      __CAESAR_AUTOFILL_PAYLOAD__: true,
+      company: company || '',
+      role: role || '',
+      script: scriptToUse,
+    });
+    navigator.clipboard.writeText(payload);
+    setCopiedScript(true);
+    setTimeout(() => setCopiedScript(false), 2500);
   };
 
   // Persist customized/edited answers and cover letter to database
@@ -468,6 +508,8 @@ export default function AutofillModal({
       setCoverLetter('');
       setHasCoverLetter(false);
       setGeneratedScript('');
+      setIsCompiled(false);
+      setStoredHtml('');
       setActiveTab('bookmarklets');
       setShowClearConfirm(false);
       onApplicationCreated?.();
@@ -621,15 +663,7 @@ export default function AutofillModal({
   };
 
   const handleCopyScript = () => {
-    const payload = JSON.stringify({
-      __CAESAR_AUTOFILL_PAYLOAD__: true,
-      company: company || '',
-      role: role || '',
-      script: buildAutofillCode(),
-    });
-    navigator.clipboard.writeText(payload);
-    setCopiedScript(true);
-    setTimeout(() => setCopiedScript(false), 2500);
+    handleLoadPayloadToClipboard();
   };
 
   const handleCopySingle = (text, id) => {
@@ -648,14 +682,7 @@ export default function AutofillModal({
 
   const handleLaunchJob = () => {
     try {
-      navigator.clipboard.writeText(
-        JSON.stringify({
-          __CAESAR_AUTOFILL_PAYLOAD__: true,
-          company,
-          role,
-          script: buildAutofillCode(),
-        })
-      );
+      handleLoadPayloadToClipboard();
     } catch (e) {}
     if (url) {
       window.open(url, '_blank', 'noopener,noreferrer');
@@ -678,20 +705,20 @@ export default function AutofillModal({
               <div>
                 <h2 className="text-base sm:text-lg font-bold text-white tracking-wide flex items-center gap-2">
                   <span>Application Auto-Fill & Tailoring</span>
-                  {compilingHtml ? (
+                  {singleJobProgress?.status === 'queued' ? (
                     <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-amber-500/15 border border-amber-500/30 text-amber-300 font-semibold flex items-center gap-1 animate-pulse">
-                      <Sparkles className="w-3 h-3 text-amber-400" />
+                      <Clock className="w-3 h-3 text-amber-400" />
+                      Queued for Compilation
+                    </span>
+                  ) : singleJobProgress?.status === 'running' || compilingHtml ? (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 font-semibold flex items-center gap-1 animate-pulse">
+                      <Sparkles className="w-3 h-3 text-indigo-400" />
                       Compiling HTML with agy
                     </span>
-                  ) : singleJobProgress?.status === 'running' ? (
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-amber-500/15 border border-amber-500/30 text-amber-300 font-semibold flex items-center gap-1 animate-pulse">
-                      <Sparkles className="w-3 h-3 text-amber-400" />
-                      Generating Application with agy
-                    </span>
-                  ) : (answers && answers.length > 0) || hasCoverLetter ? (
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-purple-500/15 border border-purple-500/30 text-purple-300 font-semibold flex items-center gap-1">
-                      <Check className="w-3 h-3 text-purple-400" />
-                      Application Generated
+                  ) : isCompiled || (answers && answers.length > 0) || hasCoverLetter ? (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 font-semibold flex items-center gap-1">
+                      <Check className="w-3 h-3 text-emerald-400" />
+                      Ready for 2️⃣ Fill
                     </span>
                   ) : (
                     <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-slate-800 border border-slate-700 text-slate-400 font-semibold">
@@ -715,7 +742,7 @@ export default function AutofillModal({
           </button>
         </div>
 
-        {/* Active Single Job Autofill Progress Card */}
+        {/* Active Single Job Autofill / Compilation Progress Card */}
         {singleJobProgress && (
           <div className="pt-3 pb-1 shrink-0">
             <PipelineProgressCard
@@ -726,7 +753,9 @@ export default function AutofillModal({
                   ? 'AI Autofill Cancelled'
                   : singleJobProgress.status === 'failed'
                   ? 'AI Autofill Failed'
-                  : 'Generating Tailored Answers with agy...'
+                  : singleJobProgress.status === 'queued'
+                  ? 'Queued Behind Active Compilation...'
+                  : 'Compiling Form HTML & Drafting Answers with agy...'
               }
               status={singleJobProgress.status}
               elapsedSeconds={singleJobProgress.elapsed_seconds ?? singleJobProgress.elapsedSeconds ?? 0}
@@ -735,10 +764,12 @@ export default function AutofillModal({
                   ? 100
                   : singleJobProgress.status === 'cancelled' || singleJobProgress.status === 'failed'
                   ? 100
+                  : singleJobProgress.status === 'queued'
+                  ? 5
                   : Math.min(95, Math.max(15, Math.round((singleJobProgress.elapsed_seconds || 1) * 6)))
               }
-              badge="AI Autofill (agy)"
-              tag={singleJobProgress.job_id ? `Job: ${singleJobProgress.job_id}` : 'Single Job'}
+              badge="AI Compiler (agy)"
+              tag={singleJobProgress.job_id ? `Job: ${singleJobProgress.job_id}` : 'Compile Job'}
               currentTarget={singleJobProgress.current_target || singleJobProgress.currentTarget}
               detail={singleJobProgress.detail || 'Inspecting form HTML and drafting tailored answers with agy...'}
               onCancel={handleCancelJob}
@@ -815,6 +846,81 @@ export default function AutofillModal({
             </div>
           ) : activeTab === 'bookmarklets' ? (
             <div className="space-y-4 p-1">
+              {/* If Already Compiled for this Job: 1-Click Load to Clipboard Card */}
+              {(isCompiled || generatedScript) && (
+                <div className="p-4 rounded-xl bg-gradient-to-r from-emerald-950/70 via-indigo-950/60 to-slate-900 border-2 border-emerald-500/60 shadow-xl shadow-emerald-950/50 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="w-6 h-6 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-bold text-xs">✓</span>
+                      <span className="font-bold text-white text-sm">Compilation Ready & Saved in Database</span>
+                    </div>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                      ⚡ Ready for 2️⃣ Fill
+                    </span>
+                  </div>
+
+                  <p className="text-slate-300 text-xs leading-relaxed">
+                    This job application form HTML has already been compiled with agy ({answers.length} custom answers drafted).
+                    Click below to copy the execution payload to your clipboard, then click <strong>2️⃣ Caesar Fill</strong> on the job page!
+                  </p>
+
+                  <div className="flex flex-wrap items-center gap-2.5 pt-1">
+                    <button
+                      type="button"
+                      onClick={handleLoadPayloadToClipboard}
+                      className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-extrabold text-xs flex items-center gap-2 shadow-lg shadow-emerald-950/60 transition-all hover:scale-105 active:scale-95"
+                    >
+                      {copiedScript ? <Check className="w-4 h-4 text-slate-950" /> : <Zap className="w-4 h-4 text-slate-950 fill-slate-950" />}
+                      <span>{copiedScript ? 'Payload Loaded into Clipboard!' : '⚡ Copy Payload to Clipboard for 2️⃣ Fill'}</span>
+                    </button>
+
+                    {url && (
+                      <button
+                        type="button"
+                        onClick={handleLaunchJob}
+                        className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-semibold text-xs flex items-center gap-1.5 transition-colors"
+                      >
+                        <span>Open Job Page</span>
+                        <ExternalLink className="w-3.5 h-3.5 text-slate-400" />
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Collapsible Stored HTML Inspector */}
+                  {storedHtml && (
+                    <div className="pt-2 border-t border-slate-800/80">
+                      <button
+                        type="button"
+                        onClick={() => setShowStoredHtml(!showStoredHtml)}
+                        className="text-[11px] text-slate-400 hover:text-slate-200 flex items-center gap-1 transition-colors"
+                      >
+                        <span>{showStoredHtml ? '▼ Hide stored form HTML snapshot' : '▶ View stored form HTML snapshot (' + Math.round(storedHtml.length / 1024) + ' KB)'}</span>
+                      </button>
+                      {showStoredHtml && (
+                        <div className="mt-2 space-y-1.5 animate-in fade-in">
+                          <div className="flex justify-between items-center text-[10px] text-slate-500">
+                            <span>Raw DOM snapshot saved during compilation:</span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                navigator.clipboard.writeText(storedHtml);
+                                alert('Stored HTML copied to clipboard');
+                              }}
+                              className="text-indigo-400 hover:text-indigo-300"
+                            >
+                              Copy HTML
+                            </button>
+                          </div>
+                          <pre className="p-2.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-400 text-[10px] font-mono max-h-40 overflow-y-auto whitespace-pre-wrap select-all">
+                            {storedHtml}
+                          </pre>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Primary: Two Companion Bookmarklets */}
               <div className="p-4 rounded-xl bg-gradient-to-r from-emerald-950/40 via-indigo-950/30 to-slate-900 border border-emerald-500/40 space-y-3.5">
                 <div className="flex items-center justify-between">
@@ -955,54 +1061,60 @@ export default function AutofillModal({
                   <div className="space-y-0.5">
                     <div className="text-xs font-bold text-white flex items-center gap-2">
                       <Sparkles className="w-4 h-4 text-indigo-400" />
-                      <span>Step 2: Compile Form HTML with agy</span>
+                      <span>{isCompiled ? 'Re-compile Form HTML Snapshot' : 'Step 2: Compile Form HTML with agy'}</span>
                     </div>
                     <div className="text-[11px] text-slate-400">
-                      Reads the copied HTML snapshot, drafts custom essay answers, and generates a zero-CSP execution script.
+                      Enqueues the HTML snapshot into the background queue. agy analyzes the DOM, drafts answers, and stores the script for instant 1-click loading.
                     </div>
                   </div>
 
                   <button
                     type="button"
                     onClick={() => handleCompileFromClipboard()}
-                    disabled={compilingHtml}
+                    disabled={compilingHtml || singleJobProgress?.status === 'running' || singleJobProgress?.status === 'queued'}
                     className="px-4 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-bold text-xs flex items-center gap-2 shadow-lg shadow-indigo-950/60 transition-all hover:scale-[1.02] active:scale-[0.98] disabled:opacity-60"
                   >
-                    {compilingHtml ? (
+                    {compilingHtml || singleJobProgress?.status === 'running' ? (
                       <Loader2 className="w-4 h-4 animate-spin text-amber-300" />
                     ) : (
                       <Sparkles className="w-4 h-4 text-amber-300" />
                     )}
                     <span>
-                      {compilingHtml
-                        ? 'Drafting answers & compiling script...'
+                      {singleJobProgress?.status === 'queued'
+                        ? 'Queued in Background...'
+                        : compilingHtml || singleJobProgress?.status === 'running'
+                        ? 'Compiling in Background...'
+                        : isCompiled
+                        ? '🔄 Re-compile Form HTML'
                         : '📋 Paste HTML & Compile with agy'}
                     </span>
                   </button>
                 </div>
 
-                {/* Compilation Success Notification */}
+                {/* Compilation Status Notification */}
                 {compileSuccess && (
                   <div className="p-3 rounded-lg bg-emerald-950/50 border border-emerald-500/40 text-emerald-200 text-xs flex items-start gap-2 animate-in fade-in">
                     <Check className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
                     <div className="space-y-1 flex-1">
                       <div>{compileSuccess}</div>
-                      <div className="flex items-center gap-2 pt-1">
-                        <button
-                          type="button"
-                          onClick={() => setActiveTab('answers')}
-                          className="px-2.5 py-1 rounded bg-emerald-800/60 hover:bg-emerald-700/80 text-emerald-100 text-[11px] font-semibold transition-colors"
-                        >
-                          Review & Edit Answers →
-                        </button>
-                        <button
-                          type="button"
-                          onClick={handleCopyScript}
-                          className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-medium transition-colors"
-                        >
-                          Copy Payload Again
-                        </button>
-                      </div>
+                      {isCompiled && (
+                        <div className="flex items-center gap-2 pt-1">
+                          <button
+                            type="button"
+                            onClick={() => setActiveTab('answers')}
+                            className="px-2.5 py-1 rounded bg-emerald-800/60 hover:bg-emerald-700/80 text-emerald-100 text-[11px] font-semibold transition-colors"
+                          >
+                            Review & Edit Answers →
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleLoadPayloadToClipboard}
+                            className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-medium transition-colors"
+                          >
+                            {copiedScript ? 'Copied!' : 'Copy Payload Again'}
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
@@ -1276,12 +1388,12 @@ export default function AutofillModal({
             {/* Copy Autofill Script */}
             <button
               type="button"
-              onClick={handleCopyScript}
+              onClick={handleLoadPayloadToClipboard}
               className="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold flex items-center gap-1.5 transition-colors"
               title="Copy the complete autofill script ready for execution"
             >
               {copiedScript ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-              <span>{copiedScript ? 'Payload Copied!' : 'Copy Script'}</span>
+              <span>{copiedScript ? 'Payload Copied!' : 'Copy Payload'}</span>
             </button>
 
             {/* Launch Application Page */}

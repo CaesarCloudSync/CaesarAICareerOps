@@ -3,7 +3,7 @@ import { Loader2, CheckCircle2, AlertCircle, Clock, X } from 'lucide-react';
 
 export default function PipelineProgressCard({
   title,
-  status = 'running', // 'running' | 'completed' | 'cancelled' | 'failed'
+  status = 'running', // 'queued' | 'running' | 'completed' | 'cancelled' | 'failed'
   elapsedSeconds = 0,
   percent = 0,
   badge,
@@ -17,6 +17,7 @@ export default function PipelineProgressCard({
   const isCancelled = status === 'cancelled';
   const isFailed = status === 'failed';
   const isRunning = status === 'running';
+  const isQueued = status === 'queued';
 
   const containerColorClass = isCompleted
     ? 'bg-emerald-950/40 border-emerald-600/70 text-emerald-100 shadow-emerald-950/30'
@@ -24,6 +25,8 @@ export default function PipelineProgressCard({
     ? 'bg-slate-900 border-slate-700 text-slate-300'
     : isFailed
     ? 'bg-rose-950/40 border-rose-600/70 text-rose-100'
+    : isQueued
+    ? 'bg-amber-950/30 border-amber-500/50 text-amber-100 shadow-amber-950/30'
     : 'bg-violet-950/50 border-violet-600/70 text-violet-100 shadow-violet-950/40';
 
   const barColorClass = isCompleted
@@ -32,15 +35,18 @@ export default function PipelineProgressCard({
     ? 'bg-amber-400'
     : isFailed
     ? 'bg-rose-500'
+    : isQueued
+    ? 'bg-amber-400/60'
     : 'bg-gradient-to-r from-violet-500 to-indigo-500';
 
-  const clampedPercent = Math.max(0, Math.min(100, percent));
+  const clampedPercent = Math.max(0, Math.min(100, isQueued ? 5 : percent));
 
   return (
     <div className={`p-4 rounded-xl border transition-all shadow-xl space-y-3 ${containerColorClass} ${className}`}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           {isRunning && <Loader2 className="w-4 h-4 text-violet-400 animate-spin" />}
+          {isQueued && <Clock className="w-4 h-4 text-amber-400 animate-pulse" />}
           {isCompleted && <CheckCircle2 className="w-4 h-4 text-emerald-400" />}
           {isCancelled && <AlertCircle className="w-4 h-4 text-amber-400" />}
           {isFailed && <AlertCircle className="w-4 h-4 text-rose-400" />}
@@ -65,9 +71,9 @@ export default function PipelineProgressCard({
         <div className="flex items-center gap-2">
           <div className="flex items-center gap-1 text-[11px] font-mono text-slate-400">
             <Clock className="w-3 h-3 text-indigo-400" />
-            <span>{elapsedSeconds || 0}s</span>
+            <span>{isQueued ? 'Queued' : `${elapsedSeconds || 0}s`}</span>
           </div>
-          {isRunning && onCancel && (
+          {(isRunning || isQueued) && onCancel && (
             <button
               type="button"
               onClick={onCancel}

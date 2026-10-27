@@ -1002,35 +1002,6 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
           </div>
         </div>
 
-      {/* Asynchronous Evaluation Job Active Progress Card */}
-      {activeEvalJob && (
-        <PipelineProgressCard
-          title={
-            activeEvalJob.status === 'completed'
-              ? 'Evaluation Complete'
-              : activeEvalJob.status === 'cancelled'
-              ? 'Evaluation Cancelled'
-              : activeEvalJob.status === 'failed'
-              ? 'Evaluation Failed'
-              : activeEvalJob.total === 1
-              ? 'Evaluating Role...'
-              : `Batch Evaluating Role ${activeEvalJob.current_index || 1} of ${activeEvalJob.total}`
-          }
-          status={activeEvalJob.status}
-          elapsedSeconds={activeEvalJob.elapsed_seconds || 0}
-          percent={
-            activeEvalJob.status === 'completed'
-              ? 100
-              : Math.round(((activeEvalJob.current_index || 0) / (activeEvalJob.total || 1)) * 100)
-          }
-          badge={`${activeEvalJob.completed_count} completed • ${activeEvalJob.failed_count} failed`}
-          tag={`Job: ${activeEvalJob.job_id}`}
-          currentTarget={activeEvalJob.current_target}
-          detail={activeEvalJob.detail}
-          onCancel={handleCancelEvalJob}
-        />
-      )}
-
       {/* Fallback simple banner for non-discovery actions (purge, verify, reset) */}
       {!activeJob && actionMessage && (
         <div className="p-2.5 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-xs text-indigo-300 font-mono flex items-center gap-2">

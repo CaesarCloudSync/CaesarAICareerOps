@@ -1,11 +1,12 @@
 import os
 import re
+import time
 import json
 import yaml
 import asyncio
 from pathlib import Path
 from typing import Dict, Any, List, Optional
-from datetime import date
+from datetime import date, datetime, timezone
 
 from urllib.parse import urlparse
 
@@ -116,6 +117,14 @@ class AutofillService:
         self.career_ops_dir = BACKEND_DIR / "career-ops"
         self.profile_path = self.career_ops_dir / "config" / "profile.yml"
         self.cv_path = self.career_ops_dir / "cv.md"
+        self._compile_queue: Optional[asyncio.Queue] = None
+        self._compile_worker_task: Optional[asyncio.Task] = None
+        self._is_compile_worker_running: bool = False
+
+    def _get_compile_queue(self) -> asyncio.Queue:
+        if self._compile_queue is None:
+            self._compile_queue = asyncio.Queue()
+        return self._compile_queue
 
     def get_candidate_data(self) -> Dict[str, Any]:
         """Extracts candidate profile, CV content, screening rules, and demographic preferences."""
@@ -575,12 +584,28 @@ Do NOT output any conversational text or markdown code fences outside the JSON. 
         cover_letter = None
         try:
             proc = await asyncio.create_subprocess_exec(
-                "agy", "-p", prompt, "--dangerously-skip-permissions", "--disable-slash-commands", "--effort", "medium",
+                "agy",
+                "--dangerously-skip-permissions",
+                "--disable-slash-commands",
+                "--effort", "medium",
+                "--print-timeout", "75s",
+                "-p", prompt,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(self.career_ops_dir)
             )
-            stdout, stderr = await proc.communicate()
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=85.0)
+            except asyncio.TimeoutError:
+                print("[AutofillService] agy timed out in generate_autofill_answers, killing process...")
+                try:
+                    proc.kill()
+                    await proc.wait()
+                except Exception:
+                    pass
+                stdout, stderr = b"", b"Timeout"
+
             raw = stdout.decode("utf-8", errors="replace").strip()
 
             cleaned = raw
@@ -727,12 +752,28 @@ Return ONLY JSON. No conversational text or markdown code fences outside JSON.
 
         try:
             proc = await asyncio.create_subprocess_exec(
-                "agy", "-p", prompt, "--dangerously-skip-permissions", "--disable-slash-commands", "--effort", "medium",
+                "agy",
+                "--dangerously-skip-permissions",
+                "--disable-slash-commands",
+                "--effort", "medium",
+                "--print-timeout", "75s",
+                "-p", prompt,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(self.career_ops_dir)
             )
-            stdout, stderr = await proc.communicate()
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=85.0)
+            except asyncio.TimeoutError:
+                print("[AutofillService] agy timed out in compile_html_to_autofill_script, killing process...")
+                try:
+                    proc.kill()
+                    await proc.wait()
+                except Exception:
+                    pass
+                stdout, stderr = b"", b"Timeout"
+
             raw = stdout.decode("utf-8", errors="replace").strip()
 
             parsed = _extract_json_object(raw)
@@ -991,12 +1032,28 @@ Return ONLY JSON. No conversational preamble or code blocks outside the JSON obj
 
         try:
             proc = await asyncio.create_subprocess_exec(
-                "agy", "-p", prompt, "--dangerously-skip-permissions", "--disable-slash-commands", "--effort", "medium",
+                "agy",
+                "--dangerously-skip-permissions",
+                "--disable-slash-commands",
+                "--effort", "medium",
+                "--print-timeout", "75s",
+                "-p", prompt,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(self.career_ops_dir)
             )
-            stdout, stderr = await proc.communicate()
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=85.0)
+            except asyncio.TimeoutError:
+                print("[AutofillService] agy timed out in compile_html_to_autofill_script, killing process...")
+                try:
+                    proc.kill()
+                    await proc.wait()
+                except Exception:
+                    pass
+                stdout, stderr = b"", b"Timeout"
+
             raw = stdout.decode("utf-8", errors="replace").strip()
             parsed = _extract_json_object(raw)
             if parsed:
@@ -1040,6 +1097,20 @@ Return ONLY JSON. No conversational preamble or code blocks outside the JSON obj
             compiled_script = compiled_script.replace("__CV_BASE64_PLACEHOLDER__", cv_payload["base64"])
             compiled_script = compiled_script.replace("__CV_FILENAME_PLACEHOLDER__", cv_payload.get("filename", "Bob_Hillus_CV.pdf"))
 
+        # Store full compiled snapshot in Application.answers JSON
+        storage_dict = {
+            "is_compiled": True,
+            "script": compiled_script,
+            "raw_html": cleaned_html[:50000],
+            "answers": answers,
+            "cover_letter": cover_letter,
+            "has_cover_letter": bool(cover_letter),
+            "compiled_at": datetime.now(timezone.utc).isoformat(),
+            "company": detected_company,
+            "role": detected_role,
+        }
+        stored_answers_json = json.dumps(storage_dict)
+
         # Persist or update Application in SQLite/Postgres
         try:
             with Session(engine) as session:
@@ -1057,9 +1128,7 @@ Return ONLY JSON. No conversational preamble or code blocks outside the JSON obj
                     matching_app.role = detected_role or matching_app.role
                     matching_app.url = url or matching_app.url
                     matching_app.status = "Application in progress"
-                    matching_app.autofill_answers_json = json.dumps(answers)
-                    if cover_letter:
-                        matching_app.cover_letter_text = cover_letter
+                    matching_app.answers = stored_answers_json
                     session.add(matching_app)
                     session.commit()
                 elif detected_company and detected_role:
@@ -1069,8 +1138,7 @@ Return ONLY JSON. No conversational preamble or code blocks outside the JSON obj
                         url=url,
                         status="Application in progress",
                         date_applied=date.today().isoformat(),
-                        autofill_answers_json=json.dumps(answers),
-                        cover_letter_text=cover_letter,
+                        answers=stored_answers_json,
                     )
                     session.add(new_app)
                     session.commit()
@@ -1085,12 +1153,115 @@ Return ONLY JSON. No conversational preamble or code blocks outside the JSON obj
             "script": compiled_script,
             "answers": answers,
             "cover_letter": cover_letter,
+            "raw_html": cleaned_html[:50000],
+            "is_compiled": True,
             "payload": {
                 "__CAESAR_AUTOFILL_PAYLOAD__": True,
                 "script": compiled_script,
                 "company": detected_company,
                 "role": detected_role,
             }
+        }
+
+    def _ensure_compile_worker(self):
+        """Ensures the background FIFO compilation worker loop is actively running."""
+        if not self._is_compile_worker_running or not self._compile_worker_task or self._compile_worker_task.done():
+            self._is_compile_worker_running = True
+            self._compile_worker_task = asyncio.create_task(self._run_compile_worker())
+
+    async def _run_compile_worker(self):
+        """
+        Background FIFO worker for HTML script compilation:
+        Processes jobs one by one so that if multiple compilations are triggered,
+        subsequent ones are neatly queued and start as soon as the previous one finishes.
+        """
+        queue = self._get_compile_queue()
+        while True:
+            try:
+                try:
+                    job, payload = await asyncio.wait_for(queue.get(), timeout=120.0)
+                except asyncio.TimeoutError:
+                    self._is_compile_worker_running = False
+                    break
+
+                if job.cancelled:
+                    queue.task_done()
+                    continue
+
+                job.status = "running"
+                job.start_timestamp = time.time()
+                target_name = f"{payload.get('company') or 'Target Company'} — {payload.get('role') or 'Role'}"
+                job.update_progress(
+                    1,
+                    target_name,
+                    "Inspecting HTML snapshot & drafting tailored answers with agy..."
+                )
+
+                try:
+                    result = await self.compile_html_to_autofill_script(
+                        html=payload.get("html", ""),
+                        url=payload.get("url", ""),
+                        company=payload.get("company", ""),
+                        role=payload.get("role", ""),
+                        page_title=payload.get("page_title", ""),
+                        app_id=payload.get("app_id"),
+                    )
+
+                    job.results.append(result)
+                    job.complete()
+                    ans_count = len(result.get("answers", []))
+                    job.detail = f"Compiled successfully! {ans_count} answers generated. Ready for 2️⃣ Caesar Fill."
+                except Exception as e:
+                    print(f"[AutofillService] Compilation error for {job.job_id}: {e}")
+                    job.fail(str(e))
+                finally:
+                    queue.task_done()
+
+            except Exception as outer_err:
+                print(f"[AutofillService] Compile worker loop error: {outer_err}")
+                await asyncio.sleep(1)
+
+    async def queue_compile_html_job(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Enqueues an HTML snapshot compilation job into the FIFO background worker:
+        - If another compilation is actively compiling, this job is marked 'queued' with its position.
+        - The user can move freely around the application while jobs process in the background.
+        """
+        company = payload.get("company", "")
+        role = payload.get("role", "")
+        url = payload.get("url", "")
+        html = payload.get("html", "")
+        page_title = payload.get("page_title", "")
+        app_id = payload.get("app_id")
+
+        job = autofill_tracker.create_compilation_job(
+            company=company,
+            role=role,
+            url=url,
+            html=html,
+            app_id=app_id,
+        )
+
+        queue = self._get_compile_queue()
+        queue_size = queue.qsize()
+        active_job = autofill_tracker.get_active_compilation_job()
+
+        if (active_job and active_job.status == "running" and active_job.job_id != job.job_id) or queue_size > 0:
+            job.status = "queued"
+            job.detail = f"Queued (position #{queue_size + 1}) — Waiting for active compilation to finish..."
+        else:
+            job.status = "running"
+            job.detail = f"Queued for agy compilation..."
+
+        await queue.put((job, payload))
+        self._ensure_compile_worker()
+
+        return {
+            "status": job.status,
+            "job_id": job.job_id,
+            "job": job.to_dict(),
+            "queue_position": queue_size + 1,
+            "message": "HTML compilation queued. You can move freely around the app while agy compiles.",
         }
 
     async def run_batch_autofill(self, job_id: str):

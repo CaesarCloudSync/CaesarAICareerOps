@@ -81,6 +81,19 @@ async def compile_html_script(payload: CompileHtmlRequest):
     )
 
 
+@router.post("/compile-html-async")
+async def compile_html_async(payload: CompileHtmlRequest):
+    """
+    Asynchronous Queue for HTML Script Compilation:
+    Enqueues the HTML snapshot into the FIFO background worker queue.
+    If another compilation is running, marks this job as 'queued' and starts automatically
+    once the previous job completes. Tracks progress via autofill_tracker so the user can navigate anywhere.
+    """
+    if not payload.html or not payload.html.strip():
+        raise HTTPException(status_code=400, detail="HTML snapshot is required.")
+    return await autofill_service.queue_compile_html_job(payload.dict())
+
+
 @router.post("/resolve-live")
 async def resolve_live(payload: ResolveLiveRequest):
     """
@@ -829,6 +842,10 @@ async def get_saved_answers(
                         "answers": data.get("answers", []),
                         "cover_letter": data.get("cover_letter"),
                         "has_cover_letter": data.get("has_cover_letter", False),
+                        "script": data.get("script"),
+                        "raw_html": data.get("raw_html"),
+                        "is_compiled": bool(data.get("is_compiled") or data.get("script")),
+                        "compiled_at": data.get("compiled_at"),
                     }
                 elif isinstance(data, list):
                     return {
