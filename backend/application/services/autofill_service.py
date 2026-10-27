@@ -528,14 +528,49 @@ class AutofillService:
                 pgid = None
 
             start_t = time.time()
-            # Wait for agy to complete without any timeouts or premature cutoffs
+            # Wait for agy to complete without any timeouts, updating live stream progress every second
             while proc.returncode is None:
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=1.0)
                     break
                 except asyncio.TimeoutError:
                     if job:
-                        job.detail = f"AI DOM reasoning in progress ({int(time.time() - start_t)}s elapsed)..."
+                        elapsed = int(time.time() - start_t)
+                        if os.path.exists(out_path):
+                            try:
+                                size_bytes = os.path.getsize(out_path)
+                                size_kb = f"{size_bytes / 1024:.1f} KB"
+                                with open(out_path, "r", encoding="utf-8", errors="replace") as f:
+                                    content = f.read()
+
+                                actions_count = content.count('"selector":') or content.count('"type":')
+                                answers_count = content.count('"question":')
+                                has_cover_letter = '"cover_letter":' in content
+
+                                latest_q = ""
+                                if answers_count > 0:
+                                    matches = re.findall(r'"question":\s*"([^"\\]*(?:\\.[^"\\]*)*)"', content)
+                                    if matches:
+                                        latest_q = matches[-1].strip()
+                                        if len(latest_q) > 36:
+                                            latest_q = latest_q[:33] + "..."
+
+                                if has_cover_letter:
+                                    job.detail = f"✍️ Drafting tailored cover letter ({size_kb} • {elapsed}s)..."
+                                elif latest_q:
+                                    job.detail = f"📝 Answering: \"{latest_q}\" ({actions_count} fields mapped • {size_kb})..."
+                                elif answers_count > 0:
+                                    job.detail = f"📝 Formulating screening answer #{answers_count} ({actions_count} fields mapped • {size_kb})..."
+                                elif actions_count > 0:
+                                    job.detail = f"⚡ Mapping DOM fields ({actions_count} inputs resolved • {size_kb} • {elapsed}s)..."
+                                elif size_bytes > 0:
+                                    job.detail = f"🧠 AI inspecting form architecture ({size_kb} generated • {elapsed}s)..."
+                                else:
+                                    job.detail = f"🧠 AI analyzing form snapshot with agy ({elapsed}s elapsed)..."
+                            except Exception:
+                                job.detail = f"AI DOM reasoning in progress ({elapsed}s elapsed)..."
+                        else:
+                            job.detail = f"AI DOM reasoning in progress ({elapsed}s elapsed)..."
 
             result_content = ""
             if os.path.exists(out_path):

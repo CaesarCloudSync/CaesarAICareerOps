@@ -94,7 +94,7 @@ export default function PipelineProgressCard({
       </div>
 
       {(currentTarget || detail) && (
-        <div className="text-[11px] font-mono text-slate-300 flex items-center justify-between gap-2">
+        <div className="text-[11px] font-mono text-slate-300 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5 pt-0.5">
           <div className="truncate">
             {currentTarget && (
               <>
@@ -103,8 +103,9 @@ export default function PipelineProgressCard({
             )}
           </div>
           {detail && (
-            <div className="text-slate-400 shrink-0 text-[10px]">
-              {detail}
+            <div className="text-indigo-300 font-semibold text-[11px] flex items-center gap-1.5 truncate">
+              {isRunning && <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-ping inline-block shrink-0" />}
+              <span className="truncate">{detail}</span>
             </div>
           )}
         </div>
