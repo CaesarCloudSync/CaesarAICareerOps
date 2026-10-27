@@ -775,11 +775,11 @@ async def save_answers(
                 "cover_letter": payload.cover_letter
             }
 
-    # If no existing application, create one with status 'Application in progress'
+    # If no existing application, create one with status 'Application Generated'
     new_app = await repo.create_application(ApplicationCreate(
         company=payload.company or "Target Company",
         role=payload.role or "Target Role",
-        status="Application in progress",
+        status="Application Generated",
         url=payload.url or "",
         answers=answers_json,
     ))
@@ -839,12 +839,13 @@ async def get_saved_answers(
                 if isinstance(data, dict):
                     return {
                         "found": True,
+                        "actions": data.get("actions", []) or data.get("fields", []),
                         "answers": data.get("answers", []),
                         "cover_letter": data.get("cover_letter"),
                         "has_cover_letter": data.get("has_cover_letter", False),
                         "script": data.get("script"),
                         "raw_html": data.get("raw_html"),
-                        "is_compiled": bool(data.get("is_compiled") or data.get("script")),
+                        "is_compiled": bool(data.get("is_compiled") or data.get("script") or data.get("actions")),
                         "compiled_at": data.get("compiled_at"),
                     }
                 elif isinstance(data, list):

@@ -191,6 +191,16 @@ class AutofillBatchTracker:
         job = self._jobs.get(job_id)
         if job and job.status in ("running", "queued"):
             job.cancel()
+            proc = getattr(job, "proc", None)
+            if proc:
+                try:
+                    import os, signal
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
             return True
         return False
 

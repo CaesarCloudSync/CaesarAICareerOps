@@ -79,35 +79,50 @@ def find_matching_application(
     2. Exact Company + Role match (when both provided)
     3. Company match (fallback, only if URL is blank or candidate application has no URL set)
     """
-    all_apps = session.exec(select(Application)).all()
+    all_apps = session.exec(select(Application).order_by(Application.id.desc())).all()
 
-    # 1. Match by whole URL first
+    # 1. Match by whole URL first (prefer newest with answers)
     if url and url.startswith("http"):
-        for a in all_apps:
-            if a.url and _is_url_match(url, a.url):
-                return a
+        matched = [a for a in all_apps if a.url and _is_url_match(url, a.url)]
+        if matched:
+            for a in matched:
+                if a.answers or a.status == "Application Generated":
+                    return a
+            return matched[0]
 
     norm_comp = (company or "").strip().lower()
     norm_role = (role or "").strip().lower()
 
-    # 2. Match by Company + Role
+    # 2. Match by Company + Role (prefer newest with answers)
     if norm_comp and norm_role:
+        matched = []
         for a in all_apps:
             a_comp = (a.company or "").strip().lower()
             a_role = (a.role or "").strip().lower()
             if (norm_comp == a_comp or norm_comp in a_comp or a_comp in norm_comp) and (
                 norm_role == a_role or norm_role in a_role or a_role in norm_role
             ):
-                return a
+                matched.append(a)
+        if matched:
+            for a in matched:
+                if a.answers or a.status == "Application Generated":
+                    return a
+            return matched[0]
 
     # 3. Match by Company only (fallback, only if URL is blank or application has no URL set)
     if norm_comp:
+        matched = []
         for a in all_apps:
             a_comp = (a.company or "").strip().lower()
             if norm_comp == a_comp or norm_comp in a_comp or a_comp in norm_comp:
                 if url and a.url and not _is_url_match(url, a.url):
                     continue
-                return a
+                matched.append(a)
+        if matched:
+            for a in matched:
+                if a.answers or a.status == "Application Generated":
+                    return a
+            return matched[0]
 
     return None
 
@@ -476,6 +491,74 @@ class AutofillService:
             "custom_questions": custom_questions,
         }
 
+    async def _run_agy_prompt(self, prompt: str, job: Optional[Any] = None) -> str:
+        """
+        Executes agy CLI with the given prompt.
+        To avoid the OS Pipe EOF deadlock caused by background daemons inheriting file descriptors:
+        - Writes stdout directly to a temporary file in /tmp.
+        - Waits for the agy process itself to complete execution (no timeouts, no early polling cutoffs).
+        - Cleans up child background daemons in the process group upon completion.
+        - Reads the output from the temporary file and unlinks the file in a finally block.
+        """
+        import tempfile, signal
+        out_path = None
+        proc = None
+        pgid = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w+", prefix="caesar_agy_", suffix=".json", delete=False) as out_f:
+                out_path = out_f.name
+
+            with open(out_path, "w") as out_f:
+                proc = await asyncio.create_subprocess_exec(
+                    "agy",
+                    "--dangerously-skip-permissions",
+                    "--disable-slash-commands",
+                    "-p", prompt,
+                    stdin=asyncio.subprocess.DEVNULL,
+                    stdout=out_f,
+                    stderr=asyncio.subprocess.DEVNULL,
+                    cwd=str(self.career_ops_dir),
+                    start_new_session=True,
+                )
+            if job:
+                job.proc = proc
+            try:
+                pgid = os.getpgid(proc.pid)
+            except Exception:
+                pgid = None
+
+            start_t = time.time()
+            # Wait for agy to complete without any timeouts or premature cutoffs
+            while proc.returncode is None:
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=1.0)
+                    break
+                except asyncio.TimeoutError:
+                    if job:
+                        job.detail = f"AI DOM reasoning in progress ({int(time.time() - start_t)}s elapsed)..."
+
+            result_content = ""
+            if os.path.exists(out_path):
+                with open(out_path, "r", encoding="utf-8", errors="replace") as f:
+                    result_content = f.read().strip()
+
+            return result_content
+        except Exception as e:
+            print(f"[AutofillService] _run_agy_prompt error: {e}")
+            return ""
+        finally:
+            target_pgid = pgid or (os.getpgid(proc.pid) if proc else None)
+            if target_pgid:
+                try:
+                    os.killpg(target_pgid, signal.SIGKILL)
+                except Exception:
+                    pass
+            if out_path and os.path.exists(out_path):
+                try:
+                    os.unlink(out_path)
+                except Exception:
+                    pass
+
     async def generate_autofill_answers(
         self,
         url: str = "",
@@ -583,31 +666,7 @@ Do NOT output any conversational text or markdown code fences outside the JSON. 
         answers = []
         cover_letter = None
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "agy",
-                "--dangerously-skip-permissions",
-                "--disable-slash-commands",
-                "--effort", "medium",
-                "--print-timeout", "75s",
-                "-p", prompt,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=str(self.career_ops_dir)
-            )
-            try:
-                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=85.0)
-            except asyncio.TimeoutError:
-                print("[AutofillService] agy timed out in generate_autofill_answers, killing process...")
-                try:
-                    proc.kill()
-                    await proc.wait()
-                except Exception:
-                    pass
-                stdout, stderr = b"", b"Timeout"
-
-            raw = stdout.decode("utf-8", errors="replace").strip()
-
+            raw = await self._run_agy_prompt(prompt)
             cleaned = raw
             if "```" in cleaned:
                 cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.MULTILINE)
@@ -751,31 +810,7 @@ Return ONLY JSON. No conversational text or markdown code fences outside JSON.
             return None
 
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "agy",
-                "--dangerously-skip-permissions",
-                "--disable-slash-commands",
-                "--effort", "medium",
-                "--print-timeout", "75s",
-                "-p", prompt,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=str(self.career_ops_dir)
-            )
-            try:
-                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=85.0)
-            except asyncio.TimeoutError:
-                print("[AutofillService] agy timed out in compile_html_to_autofill_script, killing process...")
-                try:
-                    proc.kill()
-                    await proc.wait()
-                except Exception:
-                    pass
-                stdout, stderr = b"", b"Timeout"
-
-            raw = stdout.decode("utf-8", errors="replace").strip()
-
+            raw = await self._run_agy_prompt(prompt, job=job)
             parsed = _extract_json_object(raw)
             if parsed:
                 actions = parsed.get("actions", []) or []
@@ -882,6 +917,7 @@ Return ONLY JSON. No conversational text or markdown code fences outside JSON.
         role: str = "",
         page_title: str = "",
         app_id: Optional[int] = None,
+        job: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """
         Takes a raw HTML dump from the CaesarAI Bridge Bookmarklet:
@@ -898,17 +934,15 @@ Return ONLY JSON. No conversational text or markdown code fences outside JSON.
         demographics = cand.get("demographics", {})
         cv_payload = self.get_cv_base64_payload()
 
-        # Truncate HTML if excessively long (e.g. > 60,000 chars) while preserving form inputs
+        # Clean HTML (strip outer whitespace, never truncate inputs)
         cleaned_html = html.strip()
-        if len(cleaned_html) > 60000:
-            cleaned_html = cleaned_html[:60000] + "\n<!-- truncated -->"
 
         detected_company = company or ""
         detected_role = role or ""
 
         prompt = f"""You are an elite Web Automation and Career Operations AI Copilot.
 You have been provided with the raw rendered HTML of an active job application form.
-Your task is to analyze the HTML, draft high-impact answers grounded in the candidate's CV, and compile a self-contained, browser-executable JavaScript IIFE that populates the live form.
+Your task is to analyze the HTML on the fly, understand all questions and interactive elements, draft high-impact answers grounded in the candidate's CV, and compile an exact deterministic Action Plan for the browser autofill bookmarklet.
 
 Target Job Information:
 - Company: {detected_company or 'Infer from HTML title/headings'}
@@ -935,71 +969,31 @@ Candidate Master CV / Experience:
 Raw Application Form HTML:
 {cleaned_html}
 
-INSTRUCTIONS FOR GENERATING THE JAVASCRIPT CODE:
-1. Examine the HTML. Identify inputs for Name (First/Last or Full), Email, Phone, LinkedIn, GitHub, Portfolio, Location, and Work Authorization.
-2. For custom essay/screening questions (e.g., 'Why this company?', 'Tell us about a technical challenge', 'What is your greatest accomplishment?'):
-   - Draft tailored, compelling first-person STAR answers grounded strictly in the candidate's real CV achievements.
-3. The JavaScript snippet MUST be a self-contained IIFE:
-   (function() {{
-     function setVal(el, val) {{
-       if (!el || val === undefined || val === null) return;
-       el.focus();
-       const proto = el instanceof HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
-       const s = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-       if (s) s.call(el, val); else el.value = val;
-       el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-       el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-       el.dispatchEvent(new Event('blur', {{ bubbles: true }}));
-     }}
+MANDATORY INSTRUCTIONS:
+1. Examine the HTML carefully on the fly. Identify every input, textarea, select/combobox, radio group, and checkbox:
+   - Identify Name, Email, Phone, LinkedIn, GitHub, Portfolio, Location, Salary Expectations.
+   - For custom essay/screening questions (e.g. 'Why us?', 'Tell us about a technical challenge', 'Why would we regret not hiring you?'):
+     Draft authentic, persuasive first-person STAR answers grounded strictly in the candidate's real CV achievements.
+   - For screening radios / checkboxes (e.g. visa sponsorship, right to work, criminal convictions, former employee):
+     Match candidate screening facts (e.g. sponsorship: No, legally authorized: Yes, criminal record: No, former employee: No).
+2. For EVERY single field on the form, produce an entry in `actions`:
+   - Text inputs & textareas: {{"id": "<field_id>", "name": "<field_name>", "selector": "<exact CSS selector e.g. #CA_19347>", "type": "fill", "value": "<tailored answer or profile value>"}}
+   - Radio buttons: {{"id": "<radio_id>", "name": "<radio_name>", "selector": "<selector of option e.g. #NuJrurTXlRQmIQMu or [name='...'][value='false']>", "type": "radio", "value": "<option value e.g. true/false or label text>"}}
+   - Checkboxes: {{"id": "<checkbox_id>", "name": "<name>", "selector": "<selector e.g. input[name='gdpr']>", "type": "checkbox", "value": "true"}}
+   - Dropdowns / comboboxes: {{"id": "<id>", "name": "<name>", "selector": "<selector>", "type": "select", "value": "<option text to choose e.g. LinkedIn>"}}
+3. For custom essay / screening questions, also output an entry in `answers`:
+   {{"question": "<question text>", "field_id": "<field_id>", "selector": "<selector>", "answer": "<drafted answer>"}}
+4. If a cover letter field (textarea or upload) is detected, draft a tailored 3-paragraph cover letter in `cover_letter`. Otherwise set `cover_letter` to null.
 
-     // Set fields using exact selectors found in the HTML:
-     // e.g. setVal(document.querySelector('...'), '...');
-
-     // For radios / checkboxes:
-     // document.querySelector('...')?.click();
-
-     // For custom <select> dropdowns:
-     // select element by exact option value or index
-
-     // PDF CV Attachment:
-     const cvBase64 = "__CV_BASE64_PLACEHOLDER__";
-     const cvFilename = "__CV_FILENAME_PLACEHOLDER__";
-     try {{
-       const fileInp = document.querySelector('input[type="file"]');
-       if (fileInp && cvBase64 && cvBase64 !== "__CV_BASE64_PLACEHOLDER__") {{
-         const bytes = Uint8Array.from(atob(cvBase64), c => c.charCodeAt(0));
-         const file = new File([bytes], cvFilename, {{ type: 'application/pdf' }});
-         const dt = new DataTransfer();
-         dt.items.add(file);
-         fileInp.files = dt.files;
-         fileInp.dispatchEvent(new Event('input', {{ bubbles: true }}));
-         fileInp.dispatchEvent(new Event('change', {{ bubbles: true }}));
-       }}
-     }} catch(e) {{}}
-
-     // Floating Toast notification on page
-     const toast = document.createElement('div');
-     toast.innerText = '⚡ CaesarAI: Application successfully filled & CV attached!';
-     Object.assign(toast.style, {{
-       position: 'fixed', top: '20px', right: '20px', zIndex: '2147483647',
-       padding: '14px 20px', background: '#0f172a', color: '#10b981',
-       border: '1px solid #10b981', borderRadius: '12px', fontWeight: 'bold',
-       fontFamily: 'system-ui, sans-serif', fontSize: '13px',
-       boxShadow: '0 20px 40px rgba(0,0,0,0.6)'
-     }});
-     document.body.appendChild(toast);
-     setTimeout(() => toast.remove(), 4000);
-   }})();
-
-IMPORTANT:
-- Use placeholder "__CV_BASE64_PLACEHOLDER__" and "__CV_FILENAME_PLACEHOLDER__" for the CV file variables. Do NOT invent your own base64 string.
-- Output MUST be a valid JSON object matching this schema:
+Output STRICTLY a valid JSON object matching this schema:
 {{
   "company": "Company Name",
   "role": "Job Role",
-  "script": "(function() {{ ... }})();",
+  "actions": [
+    {{ "id": "...", "name": "...", "selector": "...", "type": "fill" | "radio" | "select" | "checkbox", "value": "..." }}
+  ],
   "answers": [
-    {{ "question": "Question text", "answer": "Drafted answer" }}
+    {{ "question": "Question text", "field_id": "...", "selector": "...", "answer": "Drafted answer" }}
   ],
   "cover_letter": "Cover letter if requested, else null"
 }}
@@ -1007,6 +1001,7 @@ Return ONLY JSON. No conversational preamble or code blocks outside the JSON obj
 """
 
         compiled_script = ""
+        actions = []
         answers = []
         cover_letter = None
 
@@ -1024,42 +1019,29 @@ Return ONLY JSON. No conversational preamble or code blocks outside the JSON obj
             start = stripped.find("{")
             end = stripped.rfind("}")
             if start != -1 and end != -1 and end > start:
+                snippet = stripped[start:end+1]
                 try:
-                    return json.loads(stripped[start:end+1])
+                    d = json.loads(snippet)
+                    if isinstance(d, dict):
+                        return d
                 except Exception:
-                    pass
+                    cleaned = re.sub(r",\s*([\}\]])", r"\1", snippet)
+                    try:
+                        d = json.loads(cleaned)
+                        if isinstance(d, dict):
+                            return d
+                    except Exception:
+                        pass
             return None
 
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "agy",
-                "--dangerously-skip-permissions",
-                "--disable-slash-commands",
-                "--effort", "medium",
-                "--print-timeout", "75s",
-                "-p", prompt,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=str(self.career_ops_dir)
-            )
-            try:
-                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=85.0)
-            except asyncio.TimeoutError:
-                print("[AutofillService] agy timed out in compile_html_to_autofill_script, killing process...")
-                try:
-                    proc.kill()
-                    await proc.wait()
-                except Exception:
-                    pass
-                stdout, stderr = b"", b"Timeout"
-
-            raw = stdout.decode("utf-8", errors="replace").strip()
+            raw = await self._run_agy_prompt(prompt, job=job)
             parsed = _extract_json_object(raw)
             if parsed:
                 detected_company = parsed.get("company") or detected_company
                 detected_role = parsed.get("role") or detected_role
                 compiled_script = parsed.get("script", "")
+                actions = parsed.get("actions", []) or parsed.get("fields", [])
                 answers = parsed.get("answers", [])
                 cover_letter = parsed.get("cover_letter")
         except Exception as e:
@@ -1101,7 +1083,8 @@ Return ONLY JSON. No conversational preamble or code blocks outside the JSON obj
         storage_dict = {
             "is_compiled": True,
             "script": compiled_script,
-            "raw_html": cleaned_html[:50000],
+            "raw_html": cleaned_html,
+            "actions": actions,
             "answers": answers,
             "cover_letter": cover_letter,
             "has_cover_letter": bool(cover_letter),
@@ -1117,17 +1100,16 @@ Return ONLY JSON. No conversational preamble or code blocks outside the JSON obj
                 matching_app = None
                 if app_id:
                     matching_app = session.get(Application, app_id)
-                if not matching_app and url:
-                    matching_app = find_matching_application(session, url)
-                if not matching_app and (detected_company or detected_role):
-                    stmt = select(Application).where(Application.company == detected_company)
-                    matching_app = session.exec(stmt).first()
+                if not matching_app and (url or detected_company or detected_role):
+                    matching_app = find_matching_application(
+                        session, url=url or "", company=detected_company or "", role=detected_role or ""
+                    )
 
                 if matching_app:
                     matching_app.company = detected_company or matching_app.company
                     matching_app.role = detected_role or matching_app.role
                     matching_app.url = url or matching_app.url
-                    matching_app.status = "Application in progress"
+                    matching_app.status = "Application Generated"
                     matching_app.answers = stored_answers_json
                     session.add(matching_app)
                     session.commit()
@@ -1136,7 +1118,7 @@ Return ONLY JSON. No conversational preamble or code blocks outside the JSON obj
                         company=detected_company,
                         role=detected_role,
                         url=url,
-                        status="Application in progress",
+                        status="Application Generated",
                         date_applied=date.today().isoformat(),
                         answers=stored_answers_json,
                     )
@@ -1151,15 +1133,22 @@ Return ONLY JSON. No conversational preamble or code blocks outside the JSON obj
             "role": detected_role,
             "url": url,
             "script": compiled_script,
+            "actions": actions,
             "answers": answers,
             "cover_letter": cover_letter,
-            "raw_html": cleaned_html[:50000],
+            "raw_html": cleaned_html,
             "is_compiled": True,
             "payload": {
                 "__CAESAR_AUTOFILL_PAYLOAD__": True,
-                "script": compiled_script,
                 "company": detected_company,
                 "role": detected_role,
+                "profile": profile,
+                "actions": actions,
+                "fields": actions,
+                "answers": answers,
+                "cover_letter": cover_letter,
+                "cv": cv_payload,
+                "script": compiled_script,
             }
         }
 
@@ -1205,12 +1194,13 @@ Return ONLY JSON. No conversational preamble or code blocks outside the JSON obj
                         role=payload.get("role", ""),
                         page_title=payload.get("page_title", ""),
                         app_id=payload.get("app_id"),
+                        job=job,
                     )
 
                     job.results.append(result)
                     job.complete()
                     ans_count = len(result.get("answers", []))
-                    job.detail = f"Compiled successfully! {ans_count} answers generated. Ready for 2️⃣ Caesar Fill."
+                    job.detail = f"Application prepared! {ans_count} answers generated. Ready for ⚡ 2️⃣ CaesarAI Fill."
                 except Exception as e:
                     print(f"[AutofillService] Compilation error for {job.job_id}: {e}")
                     job.fail(str(e))
@@ -1453,7 +1443,7 @@ Return ONLY JSON. No conversational preamble or code blocks outside the JSON obj
             company=clean_company or "Unknown Company",
             role=clean_role or "Software Engineer",
             url=url or "",
-            status="Application in progress",
+            status="Application Generated",
             score=0.0,
             date_applied=today_str,
             notes="Applied directly from Pipeline Inbox",
@@ -1494,7 +1484,7 @@ Return ONLY JSON. No conversational preamble or code blocks outside the JSON obj
 
         return {
             "status": "success",
-            "message": f"Moved {clean_company} — {clean_role} to Applications with status 'Application in progress'",
+            "message": f"Moved {clean_company} — {clean_role} to Applications with status 'Application Generated'",
             "application": created_app,
             "autofill": autofill_data,
         }

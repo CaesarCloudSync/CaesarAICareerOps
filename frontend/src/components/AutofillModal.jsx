@@ -26,9 +26,8 @@ export const EXTRACT_BOOKMARKLET_RAW = `(function() {
   try {
     const container = document.querySelector('form') || document.querySelector('main, [role="main"], #app, #root') || document.body;
     const clone = container.cloneNode(true);
-    clone.querySelectorAll('script, style, svg, noscript, iframe, link, meta').forEach(el => el.remove());
+    clone.querySelectorAll('script, style, svg, noscript, iframe, link, meta, img, .iti__country-list').forEach(el => el.remove());
     let cleanHtml = clone.innerHTML.trim();
-    if (cleanHtml.length > 200000) cleanHtml = cleanHtml.slice(0, 200000);
 
     const payload = JSON.stringify({
       __CAESAR_HTML_DUMP__: true,
@@ -42,15 +41,15 @@ export const EXTRACT_BOOKMARKLET_RAW = `(function() {
       if (old) old.remove();
       const toast = document.createElement('div');
       toast.id = 'caesar-extract-toast';
-      toast.style.cssText = 'position:fixed;top:20px;right:20px;z-index:2147483647;background:#0f172a;color:#f8fafc;border:2px solid #10b981;border-radius:12px;padding:14px 18px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:13px;box-shadow:0 20px 40px rgba(0,0,0,0.6);line-height:1.4;max-width:350px;';
-      toast.innerHTML = '<div style="font-weight:700;color:#10b981;font-size:14px;margin-bottom:4px;">' + title + '</div><div style="color:#cbd5e1;font-size:12px;">' + msg + '</div>';
+      toast.style.cssText = 'position:fixed!important;top:24px!important;right:24px!important;z-index:2147483647!important;background:#0f172a!important;color:#f8fafc!important;border:2px solid #10b981!important;border-radius:12px!important;padding:14px 18px!important;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif!important;font-size:13px!important;box-shadow:0 20px 40px rgba(0,0,0,0.6)!important;display:flex!important;flex-direction:column!important;gap:6px!important;max-width:350px!important;box-sizing:border-box!important;line-height:1.4!important;';
+      toast.innerHTML = '<div style="font-weight:700!important;color:#10b981!important;font-size:14px!important;display:block!important;margin:0!important;padding:0!important;line-height:1.3!important;">' + title + '</div><div style="color:#cbd5e1!important;font-size:12px!important;display:block!important;margin:0!important;padding:0!important;line-height:1.4!important;">' + msg + '</div>';
       document.body.appendChild(toast);
       setTimeout(() => { if (toast.parentNode) toast.remove(); }, 5000);
     }
 
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(payload).then(() => {
-        showToast('⚡ 1️⃣ Form HTML Copied!', 'Switch to Caesar & click <b>"Compile with agy"</b>.');
+        showToast('📋 1️⃣ Form Questions Copied!', 'Switch to CaesarAI & click <b>"✨ Prepare Answers"</b>.');
       }).catch(() => fallbackCopy(payload));
     } else {
       fallbackCopy(payload);
@@ -65,10 +64,10 @@ export const EXTRACT_BOOKMARKLET_RAW = `(function() {
       ta.select();
       document.execCommand('copy');
       ta.remove();
-      showToast('⚡ 1️⃣ Form HTML Copied!', 'Switch to Caesar & click <b>"Compile with agy"</b>.');
+      showToast('📋 1️⃣ Form Questions Copied!', 'Switch to CaesarAI & click <b>"✨ Prepare Answers"</b>.');
     }
   } catch(err) {
-    alert('Caesar Extract Error: ' + err.message);
+    alert('CaesarAI Extract Error: ' + err.message);
   }
 })();`;
 
@@ -81,28 +80,283 @@ export const FILL_BOOKMARKLET_RAW = `(async function() {
       clip = (await navigator.clipboard.readText()) || '';
     } catch(e) {
       if (e && e.name === 'NotAllowedError') {
-        const manual = prompt('⚡ CaesarAI: Clipboard read permission was blocked.\\n\\nPaste the compiled script here to autofill (Ctrl+V):');
+        const manual = prompt('⚡ CaesarAI: Clipboard read permission was blocked.\\n\\nPaste the prepared data here (Ctrl+V):');
         if (manual) clip = manual;
       }
     }
 
     if (!clip || !clip.trim()) {
-      alert('⚠️ Caesar: Clipboard is empty! In Caesar, click "Compile with agy" or "Copy Script" first, then click 2️⃣ Fill.');
+      alert('⚠️ CaesarAI: Clipboard is empty! In CaesarAI, click "Prepare Answers" or "Copy to Clipboard" first, then click ⚡ 2️⃣ CaesarAI Fill.');
       return;
     }
 
-    let scriptToRun = clip;
+    let payload = null;
     try {
-      const parsed = JSON.parse(clip);
-      if (parsed && parsed.script) {
-        scriptToRun = parsed.script;
-      }
-    } catch(e) {}
+      payload = JSON.parse(clip);
+    } catch(e) {
+      alert('⚠️ CaesarAI: Clipboard does not contain valid CaesarAI data. Click "Copy to Clipboard" in CaesarAI first.');
+      return;
+    }
 
-    const runner = new Function(scriptToRun);
-    runner();
+    if (!payload) return;
+
+    function setVal(el, val) {
+      if (!el || val === undefined || val === null) return;
+      try {
+        const tag = el.tagName ? el.tagName.toLowerCase() : '';
+        const type = (el.type || '').toLowerCase();
+        if (tag === 'input' && (type === 'file' || type === 'submit' || type === 'button' || type === 'image' || type === 'reset')) return;
+        el.focus();
+        const proto = el instanceof HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+        const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+        if (setter) { setter.call(el, val); } else { el.value = val; }
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        el.dispatchEvent(new Event('blur', { bubbles: true }));
+      } catch(e) {
+        console.warn('Field fill warning:', e);
+      }
+    }
+
+    let filledCount = 0;
+    const profile = payload.profile || {};
+    const answers = payload.answers || [];
+    const coverLetter = payload.cover_letter || payload.coverLetter || '';
+    const cv = payload.cv || {};
+    const fields = payload.fields || payload.actions || [];
+
+    // 1. Fill exact fields if specified in payload
+    if (Array.isArray(fields) && fields.length > 0) {
+      fields.forEach(f => {
+        if (!f) return;
+        try {
+          let el = null;
+          if (f.selector) {
+            try { el = document.querySelector(f.selector); } catch(e) {}
+          }
+          if (!el && f.id) el = document.getElementById(f.id);
+          if (!el && f.id) {
+            try { el = document.querySelector('[data-ui="' + CSS.escape(f.id) + '"]'); } catch(e) {}
+          }
+          if (!el && f.name) {
+            try { el = document.querySelector('[name="' + CSS.escape(f.name) + '"]'); } catch(e) {}
+          }
+          if (!el && f.id) {
+            try { el = document.querySelector('[aria-labelledby*="' + CSS.escape(f.id) + '"]'); } catch(e) {}
+          }
+
+          if (!el) return;
+          const elType = (el.type || '').toLowerCase();
+          const role = (el.getAttribute?.('role') || '').toLowerCase();
+          const tag = (el.tagName || '').toLowerCase();
+
+          if (elType === 'file') return;
+
+          // Radio handling
+          if (f.type === 'radio' || elType === 'radio' || role === 'radio' || role === 'radiogroup' || tag === 'fieldset') {
+            let targetRadio = el;
+            if (role === 'radiogroup' || tag === 'fieldset' || el.children.length > 0) {
+              const valStr = String(f.value || '').toLowerCase();
+              const subRadios = el.querySelectorAll('input[type="radio"], [role="radio"]');
+              subRadios.forEach(r => {
+                const rVal = String(r.value || r.getAttribute('value') || '').toLowerCase();
+                const rText = (r.closest('label, div')?.textContent || '').toLowerCase().trim();
+                if (rVal === valStr || rText === valStr || (valStr === 'false' && rText.includes('no')) || (valStr === 'true' && rText.includes('yes'))) {
+                  targetRadio = r;
+                }
+              });
+            }
+            if (targetRadio.tagName === 'INPUT' && targetRadio.type === 'radio') {
+              targetRadio.checked = true;
+              targetRadio.dispatchEvent(new Event('input', { bubbles: true }));
+              targetRadio.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            targetRadio.click();
+            const rWrap = targetRadio.closest('label, [role="radio"]');
+            if (rWrap && rWrap !== targetRadio) rWrap.click();
+            filledCount++;
+          }
+          // Checkbox handling
+          else if (f.type === 'checkbox' || elType === 'checkbox' || role === 'checkbox') {
+            const shouldCheck = f.value === undefined || f.value === true || String(f.value).toLowerCase() === 'true' || String(f.value).toLowerCase() === 'yes';
+            if (el.tagName === 'INPUT' && el.type === 'checkbox') {
+              el.checked = shouldCheck;
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            el.click();
+            const chkWrap = el.closest('label, [role="checkbox"]');
+            if (chkWrap && chkWrap !== el) chkWrap.click();
+            filledCount++;
+          }
+          // Dropdown / Combobox handling
+          else if (f.type === 'select' || tag === 'select' || role === 'combobox') {
+            if (tag === 'select') {
+              const valStr = String(f.value || '').toLowerCase();
+              for (let i = 0; i < el.options.length; i++) {
+                const opt = el.options[i];
+                if (opt.value.toLowerCase() === valStr || opt.text.trim().toLowerCase() === valStr) {
+                  el.selectedIndex = i;
+                  opt.selected = true;
+                  break;
+                }
+              }
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+            } else {
+              setVal(el, f.value);
+              const hidden = (f.name ? document.querySelector('input[type="hidden"][name="' + CSS.escape(f.name) + '"], input.styles--3eBMS[name="' + CSS.escape(f.name) + '"]') : null) ||
+                             (f.id ? document.querySelector('input[type="hidden"][name*="' + CSS.escape(f.id) + '"]') : null);
+              if (hidden) setVal(hidden, f.value);
+            }
+            filledCount++;
+          }
+          // Standard text / textarea
+          else if (f.value !== undefined) {
+            setVal(el, f.value);
+            filledCount++;
+          }
+        } catch(e) {}
+      });
+    }
+
+    // 2. Fill standard profile fields
+    document.querySelectorAll('input, textarea').forEach(el => {
+      const type = (el.type || '').toLowerCase();
+      if (type === 'hidden' || type === 'submit' || type === 'button' || type === 'file') return;
+      const key = ((el.name || '') + ' ' + (el.id || '') + ' ' + (el.placeholder || '') + ' ' + (el.getAttribute('aria-label') || '')).toLowerCase();
+
+      if (key.includes('first') && key.includes('name') && profile.firstName) {
+        setVal(el, profile.firstName); filledCount++;
+      } else if (key.includes('last') && key.includes('name') && profile.lastName) {
+        setVal(el, profile.lastName); filledCount++;
+      } else if ((key.includes('full') && key.includes('name') || key === 'name' || key.includes('candidate_name')) && profile.fullName) {
+        setVal(el, profile.fullName); filledCount++;
+      } else if (key.includes('email') && profile.email) {
+        setVal(el, profile.email); filledCount++;
+      } else if ((key.includes('phone') || key.includes('mobile')) && profile.phone) {
+        setVal(el, profile.phone); filledCount++;
+      } else if (key.includes('linkedin') && profile.linkedin) {
+        setVal(el, profile.linkedin); filledCount++;
+      } else if (key.includes('github') && profile.github) {
+        setVal(el, profile.github); filledCount++;
+      } else if ((key.includes('portfolio') || key.includes('website')) && profile.portfolio) {
+        setVal(el, profile.portfolio); filledCount++;
+      } else if ((key.includes('location') || key.includes('city') || key.includes('address')) && profile.location) {
+        setVal(el, profile.location); filledCount++;
+      } else if (key.includes('cover') && key.includes('letter') && coverLetter) {
+        setVal(el, coverLetter); filledCount++;
+      }
+    });
+
+    // 3. Fill custom essay / screening questions
+    if (Array.isArray(answers)) {
+      answers.forEach(item => {
+        if (!item || !item.answer) return;
+        let target = null;
+        if (item.selector) {
+          try { target = document.querySelector(item.selector); } catch(e) {}
+        }
+        if (!target && item.field_id) target = document.getElementById(item.field_id);
+        if (!target && item.field_id) {
+          try { target = document.querySelector('[data-ui="' + CSS.escape(item.field_id) + '"]'); } catch(e) {}
+        }
+        if (!target && item.field_name) {
+          try { target = document.querySelector('[name="' + CSS.escape(item.field_name) + '"]'); } catch(e) {}
+        }
+        if (!target && item.question) {
+          const qText = item.question.toLowerCase().slice(0, 35);
+          // Query leaf labels, headings, legends, spans with IDs ending in _label
+          document.querySelectorAll('span[id*="label"], [role="heading"], label, legend, strong, p, h1, h2, h3, h4').forEach(lbl => {
+            if (target) return;
+            const txt = (lbl.textContent || '').toLowerCase();
+            if (txt && txt.includes(qText)) {
+              // Workable pattern: <span id="FIELDID_label"> links to element with id="FIELDID" or aria-labelledby="FIELDID_label"
+              if (lbl.id && lbl.id.endsWith('_label')) {
+                const pureId = lbl.id.replace(/_label$/, '');
+                target = document.getElementById(pureId) || 
+                         document.querySelector('[data-ui="' + CSS.escape(pureId) + '"]') ||
+                         document.querySelector('[aria-labelledby="' + CSS.escape(lbl.id) + '"]');
+              }
+              if (!target) {
+                const forId = lbl.getAttribute('for');
+                if (forId) target = document.getElementById(forId);
+              }
+              if (!target) {
+                const container = lbl.closest('.styles--3IYUq, [data-ui], fieldset, label, .field, .form-group, li');
+                if (container) {
+                  // Check if container has radio buttons matching answer
+                  const radios = container.querySelectorAll('input[type="radio"], [role="radio"]');
+                  if (radios.length > 0) {
+                    const ansLower = String(item.answer).toLowerCase();
+                    radios.forEach(r => {
+                      if (target) return;
+                      const rVal = String(r.value || r.getAttribute('value') || '').toLowerCase();
+                      const rTxt = (r.closest('label, div')?.textContent || '').toLowerCase().trim();
+                      if (rVal === ansLower || rTxt === ansLower || (ansLower.includes('no') && (rVal === 'false' || rTxt.includes('no'))) || (ansLower.includes('yes') && (rVal === 'true' || rTxt.includes('yes')))) {
+                        target = r;
+                      }
+                    });
+                  }
+                  if (!target) {
+                    target = container.querySelector('textarea, input:not([type="hidden"]):not([type="file"]):not([type="submit"]):not([type="button"]):not([type="image"])');
+                  }
+                }
+              }
+            }
+          });
+        }
+        if (target) {
+          const tType = (target.type || '').toLowerCase();
+          const tRole = (target.getAttribute?.('role') || '').toLowerCase();
+          if (tType === 'radio' || tRole === 'radio') {
+            if (target.tagName === 'INPUT') {
+              target.checked = true;
+              target.dispatchEvent(new Event('input', { bubbles: true }));
+              target.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            target.click();
+            const rW = target.closest('label, [role="radio"]');
+            if (rW && rW !== target) rW.click();
+            filledCount++;
+          } else if (tType !== 'file') {
+            setVal(target, item.answer);
+            filledCount++;
+          }
+        }
+      });
+    }
+
+    // 4. Attach CV PDF (Zero-CSP native File creation)
+    if (cv && cv.base64) {
+      try {
+        const fileInp = document.querySelector('input[type="file"][data-ui="resume"], input[type="file"][accept*="pdf"], input[type="file"][id*="resume" i], input[type="file"][name*="resume" i], input[type="file"]:not([data-ui="avatar"]):not([accept*="image"])') || document.querySelector('input[type="file"]');
+        if (fileInp) {
+          const bytes = Uint8Array.from(atob(cv.base64), c => c.charCodeAt(0));
+          const file = new File([bytes], cv.filename || 'Bob_Hillus_CV.pdf', { type: 'application/pdf' });
+          const dt = new DataTransfer();
+          dt.items.add(file);
+          fileInp.files = dt.files;
+          fileInp.dispatchEvent(new Event('input', { bubbles: true }));
+          fileInp.dispatchEvent(new Event('change', { bubbles: true }));
+          filledCount++;
+        }
+      } catch(e) {
+        console.warn('PDF attach notice:', e);
+      }
+    }
+
+    // 5. Floating Toast Notification on Page
+    const oldToast = document.getElementById('caesar-fill-toast');
+    if (oldToast) oldToast.remove();
+    const toast = document.createElement('div');
+    toast.id = 'caesar-fill-toast';
+    toast.style.cssText = 'position:fixed!important;top:24px!important;right:24px!important;z-index:2147483647!important;background:#0f172a!important;color:#f8fafc!important;border:2px solid #10b981!important;border-radius:12px!important;padding:14px 18px!important;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif!important;font-size:13px!important;box-shadow:0 20px 40px rgba(0,0,0,0.7)!important;display:flex!important;flex-direction:column!important;gap:6px!important;max-width:360px!important;box-sizing:border-box!important;line-height:1.4!important;';
+    toast.innerHTML = '<div style="font-weight:700!important;color:#10b981!important;font-size:14px!important;line-height:1.3!important;margin:0!important;display:block!important;">⚡ CaesarAI: Autofill Complete!</div><div style="color:#cbd5e1!important;font-size:12px!important;line-height:1.4!important;margin:0!important;display:block!important;">Filled ' + filledCount + ' fields & attached CV.<br><b style="color:#94a3b8;">Review your answers before clicking submit.</b></div>';
+    document.body.appendChild(toast);
+    setTimeout(() => { if (toast.parentNode) toast.remove(); }, 5000);
   } catch(err) {
-    alert('Caesar Fill Error: ' + err.message);
+    alert('CaesarAI Fill Error: ' + err.message);
   }
 })();`;
 
@@ -117,9 +371,11 @@ export default function AutofillModal({
 }) {
   const [loading, setLoading] = useState(false);
   const [singleJobProgress, setSingleJobProgress] = useState(null);
+  const [activeJobId, setActiveJobId] = useState(null);
   const [savingAnswers, setSavingAnswers] = useState(false);
   const [savedAnswersSuccess, setSavedAnswersSuccess] = useState(false);
   const [profile, setProfile] = useState({});
+  const [actions, setActions] = useState([]);
   const [answers, setAnswers] = useState([]);
   const [coverLetter, setCoverLetter] = useState('');
   const [hasCoverLetter, setHasCoverLetter] = useState(false);
@@ -148,39 +404,79 @@ export default function AutofillModal({
 
   // Initialize modal state on open:
   useEffect(() => {
-    if (!isOpen) return;
-
-    // Reset local transient notices
+    // 1. Reset all job-specific state immediately on open or job switch
+    setIsCompiled(false);
+    setGeneratedScript('');
+    setActions([]);
+    setAnswers([]);
+    setCoverLetter('');
+    setHasCoverLetter(false);
+    setStoredHtml('');
+    setShowStoredHtml(false);
+    setManualHtml('');
+    setShowManualPaste(false);
+    setSingleJobProgress(null);
+    setActiveJobId(null);
     setCompileError(null);
     setCompileSuccess(null);
+    setLoading(false);
+    setCompilingHtml(false);
+
+    if (!isOpen) return;
+
+    let isSubscribed = true;
 
     // Fetch candidate CV base64 for reliable zero-CSP upload
     fetch('/api/autofill/cv-base64')
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
-        if (data && data.base64) {
+        if (isSubscribed && data && data.base64) {
           setCvData(data);
         }
       })
       .catch((err) => console.error('Failed to load CV base64:', err));
 
-    // If initialData already has answers or cover letter, use them
-    if (initialData.cover_letter) {
-      setCoverLetter(initialData.cover_letter);
-      setHasCoverLetter(true);
-    }
-    if (initialData.script) {
-      setGeneratedScript(initialData.script);
-      setIsCompiled(true);
+    // If initialData already has answers or cover letter, parse and use them
+    let preAnswers = initialData.answers;
+    let preActions = initialData.actions;
+    let preScript = initialData.script;
+    let preCoverLetter = initialData.cover_letter;
+
+    if (typeof preAnswers === 'string') {
+      try {
+        const parsed = JSON.parse(preAnswers);
+        if (parsed && typeof parsed === 'object') {
+          if (Array.isArray(parsed)) {
+            preAnswers = parsed;
+          } else {
+            preAnswers = parsed.answers || [];
+            preActions = preActions || parsed.actions || parsed.fields || [];
+            preScript = preScript || parsed.script || '';
+            preCoverLetter = preCoverLetter || parsed.cover_letter || '';
+          }
+        }
+      } catch (e) {}
     }
 
-    if (initialData.answers && initialData.answers.length > 0) {
-      setAnswers(initialData.answers);
+    if (preCoverLetter) {
+      setCoverLetter(preCoverLetter);
+      setHasCoverLetter(true);
+    }
+    if (preScript) {
+      setGeneratedScript(preScript);
+      setIsCompiled(true);
+    }
+    if (preActions && preActions.length > 0) {
+      setActions(preActions);
+    }
+
+    if (preAnswers && Array.isArray(preAnswers) && preAnswers.length > 0) {
+      setAnswers(preAnswers);
       setProfile(initialData.profile || {});
       setIsCompiled(true);
     }
 
-    // Check for previously saved answers, script, and raw HTML snapshot in database for this job
+    // Check for previously saved answers, script, and raw HTML snapshot in database for this specific job
     fetch(
       `/api/autofill/saved-answers?company=${encodeURIComponent(company)}&role=${encodeURIComponent(
         role
@@ -188,9 +484,14 @@ export default function AutofillModal({
     )
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
+        if (!isSubscribed) return;
         if (data && data.found) {
+          if (data.actions && data.actions.length > 0) {
+            setActions(data.actions);
+          }
           if (data.answers && data.answers.length > 0) {
             setAnswers(data.answers);
+            setIsCompiled(true);
           }
           if (data.cover_letter) {
             setCoverLetter(data.cover_letter);
@@ -207,20 +508,40 @@ export default function AutofillModal({
       })
       .catch(() => {});
 
-    // Fetch candidate profile immediately
+    // Check candidate profile immediately
     if (initialData.profile && Object.keys(initialData.profile).length > 0) {
       setProfile(initialData.profile);
     } else {
       fetch('/api/autofill/candidate')
         .then((res) => (res.ok ? res.json() : null))
         .then((data) => {
-          if (data?.profile) setProfile(data.profile);
+          if (isSubscribed && data?.profile) setProfile(data.profile);
         })
         .catch((err) => console.error('Failed to load candidate profile:', err));
     }
-  }, [isOpen, initialData, company, role, url]);
 
-  const [activeJobId, setActiveJobId] = useState(null);
+    // Check if there is already an active or queued compilation job for this specific company / role
+    fetch('/api/autofill/jobs/active')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!isSubscribed || !data || !data.jobs) return;
+        const comp = (company || '').toLowerCase();
+        const matchingJob = data.jobs.find((j) => {
+          if (j.status !== 'running' && j.status !== 'queued') return false;
+          const target = (j.current_target || j.target || '').toLowerCase();
+          return comp && target.includes(comp);
+        });
+        if (matchingJob) {
+          setActiveJobId(matchingJob.job_id);
+          setSingleJobProgress(matchingJob);
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      isSubscribed = false;
+    };
+  }, [isOpen, initialData, company, role, url]);
 
   // Poll live progress of async autofill / compilation job
   useEffect(() => {
@@ -245,42 +566,74 @@ export default function AutofillModal({
           if (job.status === 'completed') {
             setActiveJobId(null);
             setLoading(false);
-            setIsCompiled(true);
-            onApplicationCreated?.();
+            if (!isCancelled) {
+              setIsCompiled(true);
+              onApplicationCreated?.();
+            }
 
-            // Fetch newly saved answers, script, and HTML snapshot
-            fetch(`/api/autofill/saved-answers?company=${encodeURIComponent(company)}&role=${encodeURIComponent(role)}&url=${encodeURIComponent(url)}`)
+            // Immediately extract results directly from the completed job
+            const completedResult = job.results && job.results.length > 0 ? job.results[job.results.length - 1] : null;
+            const targetCompany = completedResult?.company || company;
+            const targetRole = completedResult?.role || role;
+            const targetUrl = completedResult?.url || url;
+            const resolvedActions = completedResult?.actions || [];
+            const resolvedAnswers = completedResult?.answers || [];
+            const resolvedCoverLetter = completedResult?.cover_letter || '';
+            const resolvedScript = completedResult?.script || '';
+            const resolvedHtml = completedResult?.raw_html || '';
+
+            if (resolvedActions.length > 0) setActions(resolvedActions);
+            if (resolvedAnswers.length > 0) setAnswers(resolvedAnswers);
+            if (resolvedCoverLetter) {
+              setCoverLetter(resolvedCoverLetter);
+              setHasCoverLetter(true);
+            }
+            if (resolvedScript) setGeneratedScript(resolvedScript);
+            if (resolvedHtml) setStoredHtml(resolvedHtml);
+
+            // Automatically put static data payload onto clipboard (Zero-CSP)
+            const payloadToCopy = completedResult?.payload || {
+              __CAESAR_AUTOFILL_PAYLOAD__: true,
+              company: targetCompany,
+              role: targetRole,
+              profile: profile || {},
+              actions: resolvedActions,
+              fields: resolvedActions,
+              answers: resolvedAnswers,
+              cover_letter: resolvedCoverLetter,
+              cv: {
+                filename: cvData?.filename || 'Bob_Hillus_CV.pdf',
+                base64: cvData?.base64 || '',
+              },
+            };
+
+            try {
+              navigator.clipboard.writeText(JSON.stringify(payloadToCopy));
+              setCopiedScript(true);
+              setTimeout(() => setCopiedScript(false), 3000);
+            } catch (e) {}
+
+            // Also refresh saved-answers in background using the detected company/role/url
+            fetch(`/api/autofill/saved-answers?company=${encodeURIComponent(targetCompany)}&role=${encodeURIComponent(targetRole)}&url=${encodeURIComponent(targetUrl)}`)
               .then((r) => (r.ok ? r.json() : null))
               .then((saved) => {
-                if (saved && saved.found) {
-                  if (saved.answers && saved.answers.length > 0) setAnswers(saved.answers);
-                  if (saved.cover_letter) {
-                    setCoverLetter(saved.cover_letter);
-                    setHasCoverLetter(true);
-                  }
-                  if (saved.script) {
-                    setGeneratedScript(saved.script);
-                    setIsCompiled(true);
-                    // Automatically put payload onto clipboard
-                    try {
-                      navigator.clipboard.writeText(JSON.stringify({
-                        __CAESAR_AUTOFILL_PAYLOAD__: true,
-                        company,
-                        role,
-                        script: saved.script,
-                      }));
-                      setCopiedScript(true);
-                      setTimeout(() => setCopiedScript(false), 3000);
-                    } catch (e) {}
-                  }
-                  if (saved.raw_html) setStoredHtml(saved.raw_html);
+                if (isCancelled || !saved || !saved.found) return;
+                if (saved.actions && saved.actions.length > 0) setActions(saved.actions);
+                if (saved.answers && saved.answers.length > 0) setAnswers(saved.answers);
+                if (saved.cover_letter) {
+                  setCoverLetter(saved.cover_letter);
+                  setHasCoverLetter(true);
                 }
+                if (saved.script) setGeneratedScript(saved.script);
+                if (saved.raw_html) setStoredHtml(saved.raw_html);
               })
               .catch(() => {});
 
-            setCompileSuccess(
-              `✅ Compilation complete! The autofill payload is now in your clipboard — switch to the job tab and click 2️⃣ Caesar Fill!`
-            );
+            if (!isCancelled) {
+              setCompileSuccess(
+                `✅ Application prepared! Answers copied to clipboard — switch to the job tab and click ⚡ 2️⃣ CaesarAI Fill!`
+              );
+            }
 
             setTimeout(() => {
               setSingleJobProgress((prev) => (prev?.status === 'completed' ? null : prev));
@@ -395,7 +748,7 @@ export default function AutofillModal({
       if (!htmlText || !htmlText.trim()) {
         setShowManualPaste(true);
         throw new Error(
-          'Clipboard is empty or does not contain HTML. On the job page, click "1️⃣ Caesar Extract" first, or paste the form HTML into the box below.'
+          'Clipboard is empty or does not contain HTML. On the job page, click "📋 1️⃣ CaesarAI Extract" first, or paste the form HTML into the box below.'
         );
       }
 
@@ -454,14 +807,37 @@ export default function AutofillModal({
     }
   };
 
-  // 1-Click Load compiled payload into clipboard for 2️⃣ Fill
+  // 1-Click Load compiled static payload into clipboard for ⚡ 2️⃣ CaesarAI Fill
   const handleLoadPayloadToClipboard = () => {
-    const scriptToUse = generatedScript || buildAutofillCode();
+    let payloadActions = actions;
+    let payloadAnswers = answers;
+    let payloadCoverLetter = coverLetter;
+
+    // Fallback to initialData if state hasn't updated yet
+    if ((!payloadActions || payloadActions.length === 0) && initialData.answers) {
+      try {
+        const d = typeof initialData.answers === 'string' ? JSON.parse(initialData.answers) : initialData.answers;
+        if (d && typeof d === 'object') {
+          payloadActions = d.actions || d.fields || payloadActions;
+          payloadAnswers = d.answers || payloadAnswers;
+          payloadCoverLetter = d.cover_letter || payloadCoverLetter;
+        }
+      } catch (e) {}
+    }
+
     const payload = JSON.stringify({
       __CAESAR_AUTOFILL_PAYLOAD__: true,
       company: company || '',
       role: role || '',
-      script: scriptToUse,
+      profile: profile || {},
+      actions: payloadActions || [],
+      fields: payloadActions || [],
+      answers: payloadAnswers || [],
+      cover_letter: payloadCoverLetter || '',
+      cv: {
+        filename: cvData?.filename || 'Bob_Hillus_CV.pdf',
+        base64: cvData?.base64 || '',
+      },
     });
     navigator.clipboard.writeText(payload);
     setCopiedScript(true);
@@ -616,7 +992,7 @@ export default function AutofillModal({
     // 3. Attach CV PDF
     if (cvBase64) {
       try {
-        const fileInp = document.querySelector('input[type="file"]');
+        const fileInp = document.querySelector('input[type="file"][data-ui="resume"], input[type="file"][accept*="pdf"], input[type="file"][id*="resume" i], input[type="file"][name*="resume" i], input[type="file"]:not([data-ui="avatar"]):not([accept*="image"])') || document.querySelector('input[type="file"]');
         if (fileInp && (!fileInp.files || fileInp.files.length === 0)) {
           const byteChars = atob(cvBase64);
           const byteNums = new Array(byteChars.length);
@@ -704,25 +1080,25 @@ export default function AutofillModal({
               </span>
               <div>
                 <h2 className="text-base sm:text-lg font-bold text-white tracking-wide flex items-center gap-2">
-                  <span>Application Auto-Fill & Tailoring</span>
+                  <span>Job Application Assistant</span>
                   {singleJobProgress?.status === 'queued' ? (
                     <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-amber-500/15 border border-amber-500/30 text-amber-300 font-semibold flex items-center gap-1 animate-pulse">
                       <Clock className="w-3 h-3 text-amber-400" />
-                      Queued for Compilation
+                      Queued
                     </span>
                   ) : singleJobProgress?.status === 'running' || compilingHtml ? (
                     <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 font-semibold flex items-center gap-1 animate-pulse">
                       <Sparkles className="w-3 h-3 text-indigo-400" />
-                      Compiling HTML with agy
+                      Preparing Answers...
                     </span>
                   ) : isCompiled || (answers && answers.length > 0) || hasCoverLetter ? (
                     <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 font-semibold flex items-center gap-1">
                       <Check className="w-3 h-3 text-emerald-400" />
-                      Ready for 2️⃣ Fill
+                      Ready to Fill
                     </span>
                   ) : (
                     <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-slate-800 border border-slate-700 text-slate-400 font-semibold">
-                      Bookmarklets Ready
+                      Setup Ready
                     </span>
                   )}
                 </h2>
@@ -789,7 +1165,7 @@ export default function AutofillModal({
             }`}
           >
             <Zap className="w-3.5 h-3.5 text-amber-400" />
-            <span>⚡ Bookmarklets (Extract & Fill)</span>
+            <span>⚡ Fill Guide</span>
           </button>
 
           <button
@@ -802,7 +1178,7 @@ export default function AutofillModal({
             }`}
           >
             <User className="w-3.5 h-3.5" />
-            <span>Candidate Profile</span>
+            <span>👤 Your Profile</span>
           </button>
 
           <button
@@ -818,12 +1194,12 @@ export default function AutofillModal({
             }`}
             title={
               answers.length === 0 && !coverLetter
-                ? 'Click "Paste HTML & Compile with agy" to inspect form and unlock tailored answers'
-                : 'View AI written fields'
+                ? 'Prepare the form to see your tailored answers'
+                : 'View your tailored answers'
             }
           >
             <Sparkles className="w-3.5 h-3.5" />
-            <span>AI Written Fields (agy)</span>
+            <span>✍️ Tailored Answers</span>
             {(answers.length > 0 || coverLetter) && (
               <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-indigo-500/30 text-indigo-200 ml-0.5">
                 {answers.length + (coverLetter ? 1 : 0)}
@@ -846,22 +1222,21 @@ export default function AutofillModal({
             </div>
           ) : activeTab === 'bookmarklets' ? (
             <div className="space-y-4 p-1">
-              {/* If Already Compiled for this Job: 1-Click Load to Clipboard Card */}
+              {/* If Already Prepared: Clean 1-Click Fill Card */}
               {(isCompiled || generatedScript) && (
                 <div className="p-4 rounded-xl bg-gradient-to-r from-emerald-950/70 via-indigo-950/60 to-slate-900 border-2 border-emerald-500/60 shadow-xl shadow-emerald-950/50 space-y-3">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <span className="w-6 h-6 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-bold text-xs">✓</span>
-                      <span className="font-bold text-white text-sm">Compilation Ready & Saved in Database</span>
+                      <span className="font-bold text-white text-sm">Application Ready to Fill!</span>
                     </div>
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
-                      ⚡ Ready for 2️⃣ Fill
+                    <span className="px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                      {answers.length > 0 ? `${answers.length} custom answers ready` : 'Form prepared'}
                     </span>
                   </div>
 
                   <p className="text-slate-300 text-xs leading-relaxed">
-                    This job application form HTML has already been compiled with agy ({answers.length} custom answers drafted).
-                    Click below to copy the execution payload to your clipboard, then click <strong>2️⃣ Caesar Fill</strong> on the job page!
+                    Caesar has drafted answers tailored to your CV and prepared your form. To fill the application:
                   </p>
 
                   <div className="flex flex-wrap items-center gap-2.5 pt-1">
@@ -870,20 +1245,35 @@ export default function AutofillModal({
                       onClick={handleLoadPayloadToClipboard}
                       className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-extrabold text-xs flex items-center gap-2 shadow-lg shadow-emerald-950/60 transition-all hover:scale-105 active:scale-95"
                     >
-                      {copiedScript ? <Check className="w-4 h-4 text-slate-950" /> : <Zap className="w-4 h-4 text-slate-950 fill-slate-950" />}
-                      <span>{copiedScript ? 'Payload Loaded into Clipboard!' : '⚡ Copy Payload to Clipboard for 2️⃣ Fill'}</span>
+                      {copiedScript ? <Check className="w-4 h-4 text-slate-950" /> : <Copy className="w-4 h-4 text-slate-950" />}
+                      <span>{copiedScript ? '✓ Copied to Clipboard!' : '1. 📋 Copy Answers to Clipboard'}</span>
                     </button>
 
                     {url && (
                       <button
                         type="button"
                         onClick={handleLaunchJob}
-                        className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-semibold text-xs flex items-center gap-1.5 transition-colors"
+                        className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs flex items-center gap-1.5 transition-colors shadow-md"
                       >
-                        <span>Open Job Page</span>
-                        <ExternalLink className="w-3.5 h-3.5 text-slate-400" />
+                        <span>2. 🌐 Open Job Page</span>
+                        <ExternalLink className="w-3.5 h-3.5 text-indigo-200" />
                       </button>
                     )}
+
+                    {answers.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('answers')}
+                        className="px-3.5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 font-semibold text-xs transition-colors"
+                      >
+                        <span>Review Answers ({answers.length}) →</span>
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="text-[11px] text-emerald-300/90 pt-1 flex items-center gap-1.5">
+                    <span>👉</span>
+                    <span><strong>Final Step:</strong> On the job page, click <strong className="text-white underline">⚡ 2️⃣ CaesarAI Fill</strong> in your browser bookmarks bar!</span>
                   </div>
 
                   {/* Collapsible Stored HTML Inspector */}
@@ -894,17 +1284,17 @@ export default function AutofillModal({
                         onClick={() => setShowStoredHtml(!showStoredHtml)}
                         className="text-[11px] text-slate-400 hover:text-slate-200 flex items-center gap-1 transition-colors"
                       >
-                        <span>{showStoredHtml ? '▼ Hide stored form HTML snapshot' : '▶ View stored form HTML snapshot (' + Math.round(storedHtml.length / 1024) + ' KB)'}</span>
+                        <span>{showStoredHtml ? '▼ Hide saved form details' : '▶ View saved form details (Optional)'}</span>
                       </button>
                       {showStoredHtml && (
                         <div className="mt-2 space-y-1.5 animate-in fade-in">
                           <div className="flex justify-between items-center text-[10px] text-slate-500">
-                            <span>Raw DOM snapshot saved during compilation:</span>
+                            <span>Form structure saved for this job:</span>
                             <button
                               type="button"
                               onClick={() => {
                                 navigator.clipboard.writeText(storedHtml);
-                                alert('Stored HTML copied to clipboard');
+                                alert('Form HTML copied to clipboard');
                               }}
                               className="text-indigo-400 hover:text-indigo-300"
                             >
@@ -922,31 +1312,31 @@ export default function AutofillModal({
               )}
 
               {/* Primary: Two Companion Bookmarklets */}
-              <div className="p-4 rounded-xl bg-gradient-to-r from-emerald-950/40 via-indigo-950/30 to-slate-900 border border-emerald-500/40 space-y-3.5">
+              <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800 space-y-3.5">
                 <div className="flex items-center justify-between">
                   <div className="font-bold text-white text-sm flex items-center gap-2">
-                    <span className="text-emerald-400 text-base">⚡</span>
-                    <span>Two Companion Bookmarklets (Zero-CSP · 100% Deterministic)</span>
+                    <span className="text-amber-400 text-base">📌</span>
+                    <span>Browser Setup (Do This Once)</span>
                   </div>
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-800 text-slate-300 border border-slate-700">
                     No Extension Needed
                   </span>
                 </div>
 
                 <p className="text-slate-300 text-xs leading-relaxed">
-                  Drag both buttons below into your browser's <strong className="text-white">Bookmarks Bar</strong>. Separation of concerns guarantees zero cross-job conflicts and avoids invasive browser clipboard permission prompts.
+                  Drag these two buttons up into your browser's <strong className="text-white">Bookmarks Bar</strong>. You will use them to read and fill any job application.
                 </p>
 
                 {/* The Two Draggable Buttons */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                   {/* Button 1: Extract */}
-                  <div className="p-3.5 bg-slate-950/80 border border-emerald-500/30 rounded-xl space-y-2.5 flex flex-col justify-between shadow-inner">
+                  <div className="p-3.5 bg-slate-900/90 border border-emerald-500/30 rounded-xl space-y-2.5 flex flex-col justify-between shadow-inner">
                     <div className="space-y-1">
-                      <div className="text-[11px] font-bold text-emerald-400 flex items-center gap-1.5">
-                        <span>1️⃣ Extract Form Snapshot</span>
+                      <div className="text-[12px] font-bold text-emerald-400 flex items-center gap-1.5">
+                        <span>📋 1️⃣ Read Job Form</span>
                       </div>
                       <p className="text-[11px] text-slate-400 leading-normal">
-                        Click on any job board (Ashby, Greenhouse, Lever, Workday) to copy clean form HTML to your clipboard.
+                        Click on any job page so CaesarAI can see the questions.
                       </p>
                     </div>
 
@@ -965,14 +1355,14 @@ export default function AutofillModal({
                         title="Drag this button to your Bookmarks Bar (or click to copy code)"
                       >
                         <Copy className="w-3.5 h-3.5 text-white" />
-                        <span>1️⃣ Caesar Extract</span>
+                        <span>📋 1️⃣ CaesarAI Extract</span>
                       </a>
 
                       <button
                         type="button"
                         onClick={handleCopyExtractCode}
                         className="px-2.5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl border border-slate-700 text-xs font-semibold transition-colors shrink-0"
-                        title="Copy Extract Bookmarklet javascript URL"
+                        title="Copy Extract Bookmarklet code"
                       >
                         {copiedExtractCode ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
                       </button>
@@ -980,13 +1370,13 @@ export default function AutofillModal({
                   </div>
 
                   {/* Button 2: Fill */}
-                  <div className="p-3.5 bg-slate-950/80 border border-indigo-500/30 rounded-xl space-y-2.5 flex flex-col justify-between shadow-inner">
+                  <div className="p-3.5 bg-slate-900/90 border border-indigo-500/30 rounded-xl space-y-2.5 flex flex-col justify-between shadow-inner">
                     <div className="space-y-1">
-                      <div className="text-[11px] font-bold text-indigo-400 flex items-center gap-1.5">
-                        <span>2️⃣ Autofill & Attach CV</span>
+                      <div className="text-[12px] font-bold text-indigo-400 flex items-center gap-1.5">
+                        <span>⚡ 2️⃣ Fill Form & Attach CV</span>
                       </div>
                       <p className="text-[11px] text-slate-400 leading-normal">
-                        Click on the job board after compiling in Caesar. Executes script, populates fields, and attaches CV PDF.
+                        Click on the job page to fill in the boxes and attach your CV PDF.
                       </p>
                     </div>
 
@@ -1005,14 +1395,14 @@ export default function AutofillModal({
                         title="Drag this button to your Bookmarks Bar (or click to copy code)"
                       >
                         <Zap className="w-3.5 h-3.5 text-amber-300 fill-amber-300" />
-                        <span>2️⃣ Caesar Fill</span>
+                        <span>⚡ 2️⃣ CaesarAI Fill</span>
                       </a>
 
                       <button
                         type="button"
                         onClick={handleCopyFillCode}
                         className="px-2.5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl border border-slate-700 text-xs font-semibold transition-colors shrink-0"
-                        title="Copy Fill Bookmarklet javascript URL"
+                        title="Copy Fill Bookmarklet code"
                       >
                         {copiedFillCode ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
                       </button>
@@ -1020,51 +1410,51 @@ export default function AutofillModal({
                   </div>
                 </div>
 
-                <div className="text-[10px] text-slate-500 text-center pt-0.5">
-                  💡 Tip: Press <kbd className="bg-slate-800 text-slate-300 px-1 py-0.5 rounded border border-slate-700 font-mono">Ctrl+Shift+B</kbd> (or <kbd className="bg-slate-800 text-slate-300 px-1 py-0.5 rounded border border-slate-700 font-mono">Cmd+Shift+B</kbd> on Mac) if your Bookmarks Bar is hidden.
+                <div className="text-[11px] text-slate-500 text-center pt-0.5">
+                  💡 Don't see your bookmarks bar? Press <kbd className="bg-slate-800 text-slate-300 px-1.5 py-0.5 rounded border border-slate-700 font-mono">Ctrl+Shift+B</kbd> (or <kbd className="bg-slate-800 text-slate-300 px-1.5 py-0.5 rounded border border-slate-700 font-mono">Cmd+Shift+B</kbd> on Mac).
                 </div>
 
                 {/* 3-Step Simple Instructions */}
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1 text-[11px]">
                   <div className="p-3 bg-slate-900/90 border border-slate-800 rounded-lg space-y-1">
                     <div className="font-bold text-emerald-400 flex items-center gap-1">
-                      <span>1️⃣</span> <span>Click "Extract"</span>
+                      <span>1️⃣</span> <span>Read Form</span>
                     </div>
                     <p className="text-slate-400 leading-normal">
-                      On the job application page, click <strong className="text-slate-200">1️⃣ Caesar Extract</strong>. Copies raw form HTML snapshot silently.
+                      On the job page, click <strong className="text-slate-200">📋 1️⃣ CaesarAI Extract</strong> in your browser bar.
                     </p>
                   </div>
 
                   <div className="p-3 bg-slate-900/90 border border-slate-800 rounded-lg space-y-1">
                     <div className="font-bold text-indigo-400 flex items-center gap-1">
-                      <span>2️⃣</span> <span>Compile in Caesar</span>
+                      <span>2️⃣</span> <span>Prepare Answers</span>
                     </div>
                     <p className="text-slate-400 leading-normal">
-                      Click the button below. agy reasons on the DOM, drafts custom answers from your CV, and puts the script on your clipboard.
+                      Click <strong className="text-slate-200">Prepare Answers</strong> below. CaesarAI drafts answers from your CV.
                     </p>
                   </div>
 
                   <div className="p-3 bg-slate-900/90 border border-slate-800 rounded-lg space-y-1">
                     <div className="font-bold text-amber-400 flex items-center gap-1">
-                      <span>3️⃣</span> <span>Click "Fill"</span>
+                      <span>3️⃣</span> <span>Fill & Submit</span>
                     </div>
                     <p className="text-slate-400 leading-normal">
-                      Return to the job page and click <strong className="text-slate-200">2️⃣ Caesar Fill</strong>. All fields populate and your CV PDF attaches!
+                      Return to the job page and click <strong className="text-slate-200">⚡ 2️⃣ CaesarAI Fill</strong>. All fields are filled!
                     </p>
                   </div>
                 </div>
               </div>
 
-              {/* Action Panel: Paste & Compile with agy */}
+              {/* Action Panel: Prepare Answers */}
               <div className="p-4 bg-slate-950/70 border border-indigo-500/30 rounded-xl space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="space-y-0.5">
                     <div className="text-xs font-bold text-white flex items-center gap-2">
                       <Sparkles className="w-4 h-4 text-indigo-400" />
-                      <span>{isCompiled ? 'Re-compile Form HTML Snapshot' : 'Step 2: Compile Form HTML with agy'}</span>
+                      <span>{isCompiled ? 'Refresh Answers from Job Form' : 'Step 2: Prepare Answers for this Job'}</span>
                     </div>
                     <div className="text-[11px] text-slate-400">
-                      Enqueues the HTML snapshot into the background queue. agy analyzes the DOM, drafts answers, and stores the script for instant 1-click loading.
+                      Reads the form questions you extracted and writes tailored answers matching your real CV experience.
                     </div>
                   </div>
 
@@ -1083,10 +1473,10 @@ export default function AutofillModal({
                       {singleJobProgress?.status === 'queued'
                         ? 'Queued in Background...'
                         : compilingHtml || singleJobProgress?.status === 'running'
-                        ? 'Compiling in Background...'
+                        ? 'Preparing Answers in Background...'
                         : isCompiled
-                        ? '🔄 Re-compile Form HTML'
-                        : '📋 Paste HTML & Compile with agy'}
+                        ? '🔄 Re-write Answers'
+                        : '✨ Prepare Answers & Form'}
                     </span>
                   </button>
                 </div>
@@ -1104,14 +1494,14 @@ export default function AutofillModal({
                             onClick={() => setActiveTab('answers')}
                             className="px-2.5 py-1 rounded bg-emerald-800/60 hover:bg-emerald-700/80 text-emerald-100 text-[11px] font-semibold transition-colors"
                           >
-                            Review & Edit Answers →
+                            Review Your Answers →
                           </button>
                           <button
                             type="button"
                             onClick={handleLoadPayloadToClipboard}
                             className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-medium transition-colors"
                           >
-                            {copiedScript ? 'Copied!' : 'Copy Payload Again'}
+                            {copiedScript ? 'Copied!' : 'Copy to Clipboard Again'}
                           </button>
                         </div>
                       )}
@@ -1124,7 +1514,7 @@ export default function AutofillModal({
                   <div className="p-3 rounded-lg bg-rose-950/50 border border-rose-500/40 text-rose-200 text-xs flex items-start gap-2 animate-in fade-in">
                     <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
                     <div className="space-y-1 flex-1">
-                      <div className="font-semibold text-rose-300">Compilation notice:</div>
+                      <div className="font-semibold text-rose-300">Notice:</div>
                       <div>{compileError}</div>
                       <div className="pt-1">
                         <button
@@ -1132,33 +1522,33 @@ export default function AutofillModal({
                           onClick={() => setShowManualPaste(!showManualPaste)}
                           className="text-xs text-indigo-300 underline hover:text-indigo-200"
                         >
-                          {showManualPaste ? 'Hide manual paste box' : 'Open manual HTML paste box'}
+                          {showManualPaste ? 'Hide manual paste box' : 'Need to paste questions manually?'}
                         </button>
                       </div>
                     </div>
                   </div>
                 )}
 
-                {/* Manual HTML Paste Option (Fallback for browser clipboard permissions) */}
+                {/* Manual HTML Paste Option (Fallback) */}
                 <div className="pt-1">
                   <button
                     type="button"
                     onClick={() => setShowManualPaste(!showManualPaste)}
                     className="text-[11px] text-slate-400 hover:text-slate-200 flex items-center gap-1 transition-colors"
                   >
-                    <span>{showManualPaste ? '▼ Hide manual HTML paste' : '▶ Or paste HTML snapshot manually (if clipboard blocked)'}</span>
+                    <span>{showManualPaste ? '▼ Hide manual paste' : '▶ Need to paste the form questions manually?'}</span>
                   </button>
 
                   {showManualPaste && (
                     <div className="mt-2.5 space-y-2 p-3 bg-slate-900 border border-slate-800 rounded-lg animate-in fade-in">
                       <div className="text-[11px] text-slate-400">
-                        Paste the form HTML snippet copied from your browser DevTools or bookmarklet:
+                        Paste the form HTML snippet copied from your browser:
                       </div>
                       <textarea
                         rows={4}
                         value={manualHtml}
                         onChange={(e) => setManualHtml(e.target.value)}
-                        placeholder="<form id='application-form'>...</form>"
+                        placeholder="<form>...</form>"
                         className="w-full p-2 bg-slate-950 border border-slate-700 rounded-lg text-slate-200 text-xs font-mono focus:outline-none focus:border-indigo-500"
                       />
                       <div className="flex justify-end">
@@ -1168,7 +1558,7 @@ export default function AutofillModal({
                           disabled={compilingHtml || !manualHtml.trim()}
                           className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs disabled:opacity-50 transition-colors"
                         >
-                          Compile Pasted HTML with agy
+                          Prepare Pasted Form
                         </button>
                       </div>
                     </div>
@@ -1181,13 +1571,10 @@ export default function AutofillModal({
               <div className="p-3 rounded-xl bg-gradient-to-r from-indigo-950/50 to-slate-900 border border-indigo-500/30 text-slate-300 flex flex-wrap items-center justify-between gap-3 shadow-sm">
                 <div className="space-y-0.5">
                   <div className="text-[11px] font-bold text-white flex items-center gap-1.5">
-                    <span>💡 Tailored Form Responses</span>
-                    <span className="text-[10px] font-mono text-indigo-400 bg-indigo-500/15 px-2 py-0.5 rounded border border-indigo-500/30">
-                      Engine: agy
-                    </span>
+                    <span>💡 Tailored Answers</span>
                   </div>
                   <div className="text-[11px] text-slate-400">
-                    Edit any answer below. Click <strong>Save Answers</strong> to persist changes to this job application.
+                    You can edit any answer below. Click <strong>Save Answers</strong> when you're done.
                   </div>
                 </div>
 
@@ -1197,10 +1584,10 @@ export default function AutofillModal({
                     onClick={() => setShowClearConfirm(true)}
                     disabled={answers.length === 0 && !coverLetter}
                     className="px-2.5 py-1.5 rounded-lg bg-rose-950/40 hover:bg-rose-900/60 border border-rose-500/30 text-rose-300 font-medium text-xs flex items-center gap-1.5 transition-all disabled:opacity-40"
-                    title="Clear agy generation for this job with confirmation"
+                    title="Reset saved answers for this job"
                   >
                     <Trash2 className="w-3.5 h-3.5 text-rose-400" />
-                    <span>Clear AGY</span>
+                    <span>Reset Answers</span>
                   </button>
 
                   <button
@@ -1217,7 +1604,7 @@ export default function AutofillModal({
                     ) : (
                       <Save className="w-3.5 h-3.5 text-white" />
                     )}
-                    <span>{savedAnswersSuccess ? 'Saved to Tracker!' : 'Save Answers'}</span>
+                    <span>{savedAnswersSuccess ? 'Saved!' : 'Save Answers'}</span>
                   </button>
                 </div>
               </div>
@@ -1229,10 +1616,7 @@ export default function AutofillModal({
                     <div className="flex items-center gap-1.5">
                       <FileText className="w-3.5 h-3.5 text-indigo-400" />
                       <span className="font-semibold text-white tracking-wide text-xs">
-                        Tailored Cover Letter (agy)
-                      </span>
-                      <span className="px-1.5 py-0.5 rounded text-[10px] bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 font-mono">
-                        Form Field Detected
+                        Tailored Cover Letter
                       </span>
                     </div>
                     <button
@@ -1359,41 +1743,19 @@ export default function AutofillModal({
         <div className="pt-3 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-2 shrink-0">
           <div className="text-[11px] text-slate-400 flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
-            <span>Human-in-the-loop: You always review and click Submit yourself.</span>
+            <span>🔒 You're always in control: Caesar fills the form for you, but you review and click Submit.</span>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {/* Manual Generate with agy button */}
-            <button
-              type="button"
-              onClick={handleGenerateAnswers}
-              disabled={loading}
-              className="px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-md shadow-indigo-950/40 transition-all hover:scale-[1.02] disabled:opacity-60"
-              title="Generate tailored application answers using agy CLI"
-            >
-              {loading ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <Sparkles className="w-3.5 h-3.5 text-amber-300" />
-              )}
-              <span>
-                {loading
-                  ? 'Generating with agy...'
-                  : answers.length > 0
-                  ? '🔄 Re-generate with agy'
-                  : '✨ Generate with agy'}
-              </span>
-            </button>
-
             {/* Copy Autofill Script */}
             <button
               type="button"
               onClick={handleLoadPayloadToClipboard}
               className="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold flex items-center gap-1.5 transition-colors"
-              title="Copy the complete autofill script ready for execution"
+              title="Copy the prepared answers and CV to your clipboard"
             >
               {copiedScript ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-              <span>{copiedScript ? 'Payload Copied!' : 'Copy Payload'}</span>
+              <span>{copiedScript ? 'Copied to Clipboard!' : '📋 Copy to Clipboard'}</span>
             </button>
 
             {/* Launch Application Page */}
@@ -1403,14 +1765,14 @@ export default function AutofillModal({
                 onClick={handleLaunchJob}
                 className="px-4 py-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold flex items-center gap-1.5 shadow-md shadow-emerald-950/50 transition-all hover:scale-[1.02] active:scale-[0.98]"
               >
-                <span>Launch Application Page</span>
+                <span>🌐 Open Job Page</span>
                 <ExternalLink className="w-3.5 h-3.5" />
               </button>
             )}
           </div>
         </div>
 
-        {/* Clear AGY Confirmation Dialog Overlay */}
+        {/* Clear Answers Confirmation Dialog Overlay */}
         {showClearConfirm && (
           <div className="absolute inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-sm rounded-2xl animate-in fade-in duration-150">
             <div className="bg-slate-900 border border-rose-500/40 rounded-2xl p-5 sm:p-6 max-w-sm w-full shadow-2xl space-y-4 text-center ring-1 ring-rose-500/20">
@@ -1418,9 +1780,9 @@ export default function AutofillModal({
                 <AlertTriangle className="w-6 h-6" />
               </div>
               <div className="space-y-1.5">
-                <h3 className="text-base font-bold text-white">Clear AGY Generation?</h3>
+                <h3 className="text-base font-bold text-white">Reset Form Answers?</h3>
                 <p className="text-xs text-slate-300 leading-relaxed">
-                  This will permanently delete all AI-generated form answers and the tailored cover letter for{' '}
+                  This will remove the drafted answers and cover letter for{' '}
                   <strong className="text-white">{company || 'this role'}</strong> from your local database.
                 </p>
               </div>
@@ -1440,7 +1802,7 @@ export default function AutofillModal({
                   className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 active:bg-rose-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-lg shadow-rose-950/60 transition-all hover:scale-[1.02] disabled:opacity-50"
                 >
                   {clearingAgy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
-                  <span>{clearingAgy ? 'Clearing...' : 'Yes, Clear AGY'}</span>
+                  <span>{clearingAgy ? 'Resetting...' : 'Yes, Reset Answers'}</span>
                 </button>
               </div>
             </div>

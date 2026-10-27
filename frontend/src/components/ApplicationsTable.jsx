@@ -748,9 +748,11 @@ export default function ApplicationsTable({
                           onClick={() => setAutofillModalConfig({
                             isOpen: true,
                             data: {
+                              id: app.id,
                               url: app.url,
                               company: app.company,
                               role: cleanRole(app.role),
+                              answers: app.answers,
                             }
                           })}
                           title="Auto-Fill Application with agy"
