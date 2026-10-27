@@ -833,6 +833,266 @@ Return ONLY JSON. No conversational text or markdown code fences outside JSON.
             "cvFilename": cv_payload.get("filename", "Bob_Hillus_CV.pdf"),
         }
 
+    async def compile_html_to_autofill_script(
+        self,
+        html: str,
+        url: str = "",
+        company: str = "",
+        role: str = "",
+        page_title: str = "",
+        app_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Takes a raw HTML dump from the CaesarAI Bridge Bookmarklet:
+        1. Gives the HTML directly to agy (Gemini 2.0) with candidate profile & CV.
+        2. agy reasons over the DOM, maps out every field and answer, and writes a self-contained JS IIFE.
+        3. Replaces CV placeholder with real Base64 PDF so the script is 100% self-contained and zero-CSP.
+        4. Saves application answers to DB.
+        5. Returns { status, company, role, script, answers, cover_letter, payload }.
+        """
+        cand = self.get_candidate_data()
+        profile = cand["profile"]
+        cv_text = cand["cv"]
+        screening = cand.get("screening", {})
+        demographics = cand.get("demographics", {})
+        cv_payload = self.get_cv_base64_payload()
+
+        # Truncate HTML if excessively long (e.g. > 60,000 chars) while preserving form inputs
+        cleaned_html = html.strip()
+        if len(cleaned_html) > 60000:
+            cleaned_html = cleaned_html[:60000] + "\n<!-- truncated -->"
+
+        detected_company = company or ""
+        detected_role = role or ""
+
+        prompt = f"""You are an elite Web Automation and Career Operations AI Copilot.
+You have been provided with the raw rendered HTML of an active job application form.
+Your task is to analyze the HTML, draft high-impact answers grounded in the candidate's CV, and compile a self-contained, browser-executable JavaScript IIFE that populates the live form.
+
+Target Job Information:
+- Company: {detected_company or 'Infer from HTML title/headings'}
+- Role: {detected_role or 'Infer from HTML title/headings'}
+- URL: {url or 'Not specified'}
+- Page Title: {page_title or 'Job Application'}
+
+Candidate Profile:
+{json.dumps(profile, indent=2)}
+
+Candidate Screening Facts:
+- Authorized to work in target location: {'Yes' if screening.get('legally_authorized') else 'No'}
+- Requires visa sponsorship: {'Yes' if screening.get('requires_sponsorship') else 'No'}
+- Notice period: {screening.get('notice_period', '1 month')}
+- Former employee: {'Yes' if screening.get('former_employee') else 'No'}
+- How did you hear: {screening.get('how_did_you_hear', 'LinkedIn')}
+
+Demographics Preferences:
+{json.dumps(demographics, indent=2)}
+
+Candidate Master CV / Experience:
+{cv_text[:3500]}
+
+Raw Application Form HTML:
+{cleaned_html}
+
+INSTRUCTIONS FOR GENERATING THE JAVASCRIPT CODE:
+1. Examine the HTML. Identify inputs for Name (First/Last or Full), Email, Phone, LinkedIn, GitHub, Portfolio, Location, and Work Authorization.
+2. For custom essay/screening questions (e.g., 'Why this company?', 'Tell us about a technical challenge', 'What is your greatest accomplishment?'):
+   - Draft tailored, compelling first-person STAR answers grounded strictly in the candidate's real CV achievements.
+3. The JavaScript snippet MUST be a self-contained IIFE:
+   (function() {{
+     function setVal(el, val) {{
+       if (!el || val === undefined || val === null) return;
+       el.focus();
+       const proto = el instanceof HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+       const s = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+       if (s) s.call(el, val); else el.value = val;
+       el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+       el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+       el.dispatchEvent(new Event('blur', {{ bubbles: true }}));
+     }}
+
+     // Set fields using exact selectors found in the HTML:
+     // e.g. setVal(document.querySelector('...'), '...');
+
+     // For radios / checkboxes:
+     // document.querySelector('...')?.click();
+
+     // For custom <select> dropdowns:
+     // select element by exact option value or index
+
+     // PDF CV Attachment:
+     const cvBase64 = "__CV_BASE64_PLACEHOLDER__";
+     const cvFilename = "__CV_FILENAME_PLACEHOLDER__";
+     try {{
+       const fileInp = document.querySelector('input[type="file"]');
+       if (fileInp && cvBase64 && cvBase64 !== "__CV_BASE64_PLACEHOLDER__") {{
+         const bytes = Uint8Array.from(atob(cvBase64), c => c.charCodeAt(0));
+         const file = new File([bytes], cvFilename, {{ type: 'application/pdf' }});
+         const dt = new DataTransfer();
+         dt.items.add(file);
+         fileInp.files = dt.files;
+         fileInp.dispatchEvent(new Event('input', {{ bubbles: true }}));
+         fileInp.dispatchEvent(new Event('change', {{ bubbles: true }}));
+       }}
+     }} catch(e) {{}}
+
+     // Floating Toast notification on page
+     const toast = document.createElement('div');
+     toast.innerText = '⚡ CaesarAI: Application successfully filled & CV attached!';
+     Object.assign(toast.style, {{
+       position: 'fixed', top: '20px', right: '20px', zIndex: '2147483647',
+       padding: '14px 20px', background: '#0f172a', color: '#10b981',
+       border: '1px solid #10b981', borderRadius: '12px', fontWeight: 'bold',
+       fontFamily: 'system-ui, sans-serif', fontSize: '13px',
+       boxShadow: '0 20px 40px rgba(0,0,0,0.6)'
+     }});
+     document.body.appendChild(toast);
+     setTimeout(() => toast.remove(), 4000);
+   }})();
+
+IMPORTANT:
+- Use placeholder "__CV_BASE64_PLACEHOLDER__" and "__CV_FILENAME_PLACEHOLDER__" for the CV file variables. Do NOT invent your own base64 string.
+- Output MUST be a valid JSON object matching this schema:
+{{
+  "company": "Company Name",
+  "role": "Job Role",
+  "script": "(function() {{ ... }})();",
+  "answers": [
+    {{ "question": "Question text", "answer": "Drafted answer" }}
+  ],
+  "cover_letter": "Cover letter if requested, else null"
+}}
+Return ONLY JSON. No conversational preamble or code blocks outside the JSON object.
+"""
+
+        compiled_script = ""
+        answers = []
+        cover_letter = None
+
+        def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
+            if not text:
+                return None
+            stripped = re.sub(r"^```(?:json)?\s*", "", text.strip(), flags=re.MULTILINE)
+            stripped = re.sub(r"```\s*$", "", stripped, flags=re.MULTILINE).strip()
+            try:
+                d = json.loads(stripped)
+                if isinstance(d, dict):
+                    return d
+            except Exception:
+                pass
+            start = stripped.find("{")
+            end = stripped.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                try:
+                    return json.loads(stripped[start:end+1])
+                except Exception:
+                    pass
+            return None
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "agy", "-p", prompt, "--dangerously-skip-permissions", "--disable-slash-commands", "--effort", "medium",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(self.career_ops_dir)
+            )
+            stdout, stderr = await proc.communicate()
+            raw = stdout.decode("utf-8", errors="replace").strip()
+            parsed = _extract_json_object(raw)
+            if parsed:
+                detected_company = parsed.get("company") or detected_company
+                detected_role = parsed.get("role") or detected_role
+                compiled_script = parsed.get("script", "")
+                answers = parsed.get("answers", [])
+                cover_letter = parsed.get("cover_letter")
+        except Exception as e:
+            print(f"[AutofillService] compile_html_to_autofill_script agy error: {e}")
+
+        # If agy didn't produce a full script or failed, generate a guaranteed fallback script
+        if not compiled_script:
+            compiled_script = f"""(function() {{
+  function setVal(el, val) {{
+    if (!el || val === undefined || val === null) return;
+    el.focus();
+    const proto = el instanceof HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+    const s = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+    if (s) s.call(el, val); else el.value = val;
+    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+  }}
+  const profile = {json.dumps(profile)};
+  document.querySelectorAll('input, textarea').forEach(el => {{
+    const key = (el.name || el.id || el.placeholder || '').toLowerCase();
+    if (key.includes('first') && key.includes('name')) setVal(el, profile.firstName);
+    else if (key.includes('last') && key.includes('name')) setVal(el, profile.lastName);
+    else if (key.includes('name')) setVal(el, profile.fullName);
+    else if (key.includes('email')) setVal(el, profile.email);
+    else if (key.includes('phone') || key.includes('mobile')) setVal(el, profile.phone);
+    else if (key.includes('linkedin')) setVal(el, profile.linkedin);
+    else if (key.includes('github')) setVal(el, profile.github);
+    else if (key.includes('location') || key.includes('city')) setVal(el, profile.location);
+  }});
+  alert('⚡ CaesarAI: Autofill complete!');
+}})();"""
+
+        # Replace CV placeholders with real base64
+        if cv_payload.get("base64"):
+            compiled_script = compiled_script.replace("__CV_BASE64_PLACEHOLDER__", cv_payload["base64"])
+            compiled_script = compiled_script.replace("__CV_FILENAME_PLACEHOLDER__", cv_payload.get("filename", "Bob_Hillus_CV.pdf"))
+
+        # Persist or update Application in SQLite/Postgres
+        try:
+            with Session(engine) as session:
+                matching_app = None
+                if app_id:
+                    matching_app = session.get(Application, app_id)
+                if not matching_app and url:
+                    matching_app = find_matching_application(session, url)
+                if not matching_app and (detected_company or detected_role):
+                    stmt = select(Application).where(Application.company == detected_company)
+                    matching_app = session.exec(stmt).first()
+
+                if matching_app:
+                    matching_app.company = detected_company or matching_app.company
+                    matching_app.role = detected_role or matching_app.role
+                    matching_app.url = url or matching_app.url
+                    matching_app.status = "Application in progress"
+                    matching_app.autofill_answers_json = json.dumps(answers)
+                    if cover_letter:
+                        matching_app.cover_letter_text = cover_letter
+                    session.add(matching_app)
+                    session.commit()
+                elif detected_company and detected_role:
+                    new_app = Application(
+                        company=detected_company,
+                        role=detected_role,
+                        url=url,
+                        status="Application in progress",
+                        date_applied=date.today().isoformat(),
+                        autofill_answers_json=json.dumps(answers),
+                        cover_letter_text=cover_letter,
+                    )
+                    session.add(new_app)
+                    session.commit()
+        except Exception as e:
+            print(f"[AutofillService] DB persistence warning: {e}")
+
+        return {
+            "status": "success",
+            "company": detected_company,
+            "role": detected_role,
+            "url": url,
+            "script": compiled_script,
+            "answers": answers,
+            "cover_letter": cover_letter,
+            "payload": {
+                "__CAESAR_AUTOFILL_PAYLOAD__": True,
+                "script": compiled_script,
+                "company": detected_company,
+                "role": detected_role,
+            }
+        }
+
     async def run_batch_autofill(self, job_id: str):
         """
         Background worker that processes selected applications one by one:

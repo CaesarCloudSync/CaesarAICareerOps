@@ -51,6 +51,36 @@ class ResolveLiveRequest(BaseModel):
     fields: List[Dict[str, Any]] = []
 
 
+class CompileHtmlRequest(BaseModel):
+    html: str
+    url: Optional[str] = ""
+    company: Optional[str] = ""
+    role: Optional[str] = ""
+    page_title: Optional[str] = ""
+    app_id: Optional[int] = None
+
+
+@router.post("/compile-html-script")
+async def compile_html_script(payload: CompileHtmlRequest):
+    """
+    AI HTML-to-Script Compiler for Universal Bookmarklet:
+    Takes raw form HTML snapshot from the dumb bridge bookmarklet,
+    uses `agy` (Gemini 2.0) to understand the DOM and write a surgical, self-contained
+    JavaScript execution snippet that directly populates the live form and attaches CV.
+    Zero CSP restrictions.
+    """
+    if not payload.html or not payload.html.strip():
+        raise HTTPException(status_code=400, detail="HTML snapshot is required.")
+    return await autofill_service.compile_html_to_autofill_script(
+        html=payload.html,
+        url=payload.url or "",
+        company=payload.company or "",
+        role=payload.role or "",
+        page_title=payload.page_title or "",
+        app_id=payload.app_id,
+    )
+
+
 @router.post("/resolve-live")
 async def resolve_live(payload: ResolveLiveRequest):
     """
