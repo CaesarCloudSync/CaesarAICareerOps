@@ -590,6 +590,7 @@ export default function AutofillModal({
             }
             if (resolvedScript) setGeneratedScript(resolvedScript);
             if (resolvedHtml) setStoredHtml(resolvedHtml);
+            setActiveTab('answers');
 
             // Automatically put static data payload onto clipboard (Zero-CSP)
             const payloadToCopy = completedResult?.payload || {
@@ -1183,26 +1184,19 @@ export default function AutofillModal({
 
           <button
             type="button"
-            disabled={answers.length === 0 && !coverLetter && !loading}
-            onClick={() => (answers.length > 0 || coverLetter || loading) && setActiveTab('answers')}
+            onClick={() => setActiveTab('answers')}
             className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors ${
               activeTab === 'answers'
                 ? 'bg-indigo-600 text-white shadow-sm'
-                : answers.length === 0 && !coverLetter && !loading
-                ? 'bg-slate-800/30 text-slate-500 cursor-not-allowed border border-slate-800/50'
                 : 'bg-slate-800/80 text-slate-400 hover:text-slate-200'
             }`}
-            title={
-              answers.length === 0 && !coverLetter
-                ? 'Prepare the form to see your tailored answers'
-                : 'View your tailored answers'
-            }
+            title="View prepared form fields and answers"
           >
             <Sparkles className="w-3.5 h-3.5" />
             <span>✍️ Tailored Answers</span>
-            {(answers.length > 0 || coverLetter) && (
+            {(answers.length > 0 || coverLetter || actions.length > 0) && (
               <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-indigo-500/30 text-indigo-200 ml-0.5">
-                {answers.length + (coverLetter ? 1 : 0)}
+                {answers.length + (coverLetter ? 1 : 0) || actions.length}
               </span>
             )}
           </button>
@@ -1568,13 +1562,36 @@ export default function AutofillModal({
             </div>
           ) : activeTab === 'answers' ? (
             <div className="space-y-3.5">
+              {/* Active Compilation Live Banner */}
+              {(compilingHtml || singleJobProgress?.status === 'running') && (
+                <div className="p-3.5 rounded-xl bg-indigo-950/50 border border-indigo-500/40 flex items-center gap-3 shadow-md animate-pulse">
+                  <Loader2 className="w-5 h-5 text-indigo-400 animate-spin shrink-0" />
+                  <div className="space-y-0.5">
+                    <div className="text-xs font-bold text-white flex items-center gap-2">
+                      <span>AI Reasoning in Progress</span>
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-indigo-500/30 text-indigo-200">
+                        {singleJobProgress?.elapsed_seconds || 0}s elapsed
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-indigo-300 font-mono">
+                      {singleJobProgress?.detail || 'Inspecting form inputs and drafting answers grounded in your CV...'}
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <div className="p-3 rounded-xl bg-gradient-to-r from-indigo-950/50 to-slate-900 border border-indigo-500/30 text-slate-300 flex flex-wrap items-center justify-between gap-3 shadow-sm">
                 <div className="space-y-0.5">
                   <div className="text-[11px] font-bold text-white flex items-center gap-1.5">
-                    <span>💡 Tailored Answers</span>
+                    <span>💡 Tailored Answers & Mapped Inputs</span>
+                    {actions.length > 0 && (
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                        {actions.length} inputs resolved
+                      </span>
+                    )}
                   </div>
                   <div className="text-[11px] text-slate-400">
-                    You can edit any answer below. Click <strong>Save Answers</strong> when you're done.
+                    You can edit any screening answer or cover letter below. Click <strong>Save Answers</strong> when you're done.
                   </div>
                 </div>
 
@@ -1582,7 +1599,7 @@ export default function AutofillModal({
                   <button
                     type="button"
                     onClick={() => setShowClearConfirm(true)}
-                    disabled={answers.length === 0 && !coverLetter}
+                    disabled={answers.length === 0 && !coverLetter && actions.length === 0}
                     className="px-2.5 py-1.5 rounded-lg bg-rose-950/40 hover:bg-rose-900/60 border border-rose-500/30 text-rose-300 font-medium text-xs flex items-center gap-1.5 transition-all disabled:opacity-40"
                     title="Reset saved answers for this job"
                   >
@@ -1690,13 +1707,39 @@ export default function AutofillModal({
                 </div>
               ))}
 
-              {/* Empty state when form has no custom essay questions */}
-              {answers.length === 0 && !coverLetter && (
+              {/* Mapped Form Inputs Inspection List */}
+              {actions && actions.length > 0 && (
+                <div className="p-3 bg-slate-950/70 border border-slate-800 rounded-xl space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <div className="font-semibold text-white tracking-wide text-xs flex items-center gap-1.5">
+                      <Zap className="w-3.5 h-3.5 text-amber-400" />
+                      <span>Mapped Form Inputs ({actions.length})</span>
+                    </div>
+                    <span className="text-[10px] text-emerald-400 font-mono">⚡ Handled by bookmarklet fill</span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {actions.map((act, i) => (
+                      <div key={i} className="p-2.5 bg-slate-900/80 border border-slate-800 rounded-lg text-xs space-y-1">
+                        <div className="text-slate-400 font-mono text-[10px] truncate flex items-center justify-between">
+                          <span>{act.name || act.id || act.selector}</span>
+                          <span className="text-slate-500 uppercase text-[9px]">{act.type || 'fill'}</span>
+                        </div>
+                        <div className="text-slate-200 font-medium text-[11px] truncate" title={String(act.value || '')}>
+                          {String(act.value || '—')}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Empty state when form has no custom essay questions and no actions */}
+              {answers.length === 0 && !coverLetter && actions.length === 0 && !compilingHtml && singleJobProgress?.status !== 'running' && (
                 <div className="p-6 text-center border border-dashed border-slate-800 rounded-xl space-y-2 bg-slate-950/40">
-                  <Check className="w-8 h-8 text-emerald-400 mx-auto" />
-                  <div className="text-xs font-semibold text-white">No Custom Essay Questions Found</div>
+                  <Clock className="w-8 h-8 text-indigo-400 mx-auto" />
+                  <div className="text-xs font-semibold text-white">No Prepared Form Answers Yet</div>
                   <div className="text-[11px] text-slate-400 max-w-sm mx-auto">
-                    This job application does not require essay questions or a cover letter. Candidate profile contact fields and Master CV PDF are ready for 1-click autofill.
+                    Click <strong>"✨ Prepare Answers"</strong> in the Fill Guide tab to let CaesarAI inspect the form and draft your answers.
                   </div>
                 </div>
               )}
