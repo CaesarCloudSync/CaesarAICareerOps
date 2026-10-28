@@ -127,12 +127,16 @@ def find_matching_application(
     return None
 
 
+MAX_CONCURRENT_COMPILATIONS = 4
+
+
 class AutofillService:
     def __init__(self):
         self.career_ops_dir = BACKEND_DIR / "career-ops"
         self.profile_path = self.career_ops_dir / "config" / "profile.yml"
         self.cv_path = self.career_ops_dir / "cv.md"
         self._compile_queue: Optional[asyncio.Queue] = None
+        self._compile_worker_tasks: List[asyncio.Task] = []
         self._compile_worker_task: Optional[asyncio.Task] = None
         self._is_compile_worker_running: bool = False
 
@@ -504,6 +508,7 @@ class AutofillService:
         out_path = None
         proc = None
         pgid = None
+        result_content = ""
         try:
             with tempfile.NamedTemporaryFile(mode="w+", prefix="caesar_agy_", suffix=".json", delete=False) as out_f:
                 out_path = out_f.name
@@ -528,9 +533,7 @@ class AutofillService:
                 pgid = None
 
             start_t = time.time()
-            last_size = -1
-            stable_count = 0
-            # Wait for agy to complete, updating live stream progress every second and exiting as soon as JSON is complete
+            # Wait for agy to complete, updating live stream progress every second and exiting as soon as root JSON is closed
             while proc.returncode is None:
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=1.0)
@@ -539,37 +542,33 @@ class AutofillService:
                     elapsed = int(time.time() - start_t)
                     if os.path.exists(out_path):
                         try:
-                            size_bytes = os.path.getsize(out_path)
-                            size_kb = f"{size_bytes / 1024:.1f} KB"
-                            if size_bytes > 0 and size_bytes == last_size:
-                                stable_count += 1
-                            else:
-                                stable_count = 0
-                            last_size = size_bytes
-
                             with open(out_path, "r", encoding="utf-8", errors="replace") as f:
                                 content = f.read()
 
-                            # Check if agy has finished streaming the complete JSON object
-                            s = content.find("{")
-                            e = content.rfind("}")
+                            # Deterministic structural check:
+                            # Verify if the stream has finished emitting the root closing brace
+                            clean_text = content.strip()
+                            s = clean_text.find("{")
+                            e = clean_text.rfind("}")
                             if s != -1 and e != -1 and e > s:
-                                snippet = content[s:e+1]
-                                try:
-                                    d = json.loads(snippet)
-                                    if isinstance(d, dict) and "actions" in d:
-                                        # Complete if either:
-                                        # 1. Contains cover_letter or answers (the final keys in the schema)
-                                        # 2. Or the file has stopped growing for 2 seconds
-                                        if ("cover_letter" in d or "answers" in d) or stable_count >= 2:
+                                after_e = clean_text[e+1:].strip()
+                                if after_e in ("", "```"):
+                                    snippet = clean_text[s:e+1]
+                                    try:
+                                        d = json.loads(snippet)
+                                        if isinstance(d, dict) and "actions" in d:
                                             result_content = content
                                             break
-                                except Exception:
-                                    pass
+                                    except Exception:
+                                        pass
+
+                            size_bytes = os.path.getsize(out_path)
+                            size_kb = f"{size_bytes / 1024:.1f} KB"
 
                             actions_count = content.count('"selector":') or content.count('"type":')
                             answers_count = content.count('"question":')
-                            has_cover_letter = '"cover_letter":' in content
+                            is_drafting_letter = bool(re.search(r'"cover_letter":\s*"[^"]{3,}', content))
+                            has_cover_letter_key = '"cover_letter":' in content
 
                             latest_q = ""
                             if answers_count > 0:
@@ -580,8 +579,10 @@ class AutofillService:
                                         latest_q = latest_q[:33] + "..."
 
                             if job:
-                                if has_cover_letter:
+                                if is_drafting_letter:
                                     job.detail = f"✍️ Drafting tailored cover letter ({size_kb} • {elapsed}s)..."
+                                elif has_cover_letter_key:
+                                    job.detail = f"⚡ Finalizing autofill script ({actions_count} fields mapped • {size_kb})..."
                                 elif latest_q:
                                     job.detail = f"📝 Answering: \"{latest_q}\" ({actions_count} fields mapped • {size_kb})..."
                                 elif answers_count > 0:
@@ -1213,25 +1214,42 @@ Return ONLY JSON. No conversational preamble or code blocks outside the JSON obj
             }
         }
 
-    def _ensure_compile_worker(self):
-        """Ensures the background FIFO compilation worker loop is actively running."""
-        if not self._is_compile_worker_running or not self._compile_worker_task or self._compile_worker_task.done():
-            self._is_compile_worker_running = True
-            self._compile_worker_task = asyncio.create_task(self._run_compile_worker())
-
-    async def _run_compile_worker(self):
+    def _ensure_compile_workers(self):
         """
-        Background FIFO worker for HTML script compilation:
-        Processes jobs one by one so that if multiple compilations are triggered,
-        subsequent ones are neatly queued and start as soon as the previous one finishes.
+        Ensures up to MAX_CONCURRENT_COMPILATIONS workers are active
+        to process queued HTML compilation jobs concurrently in parallel.
+        """
+        self._compile_worker_tasks = [t for t in self._compile_worker_tasks if not t.done()]
+        queue = self._get_compile_queue()
+        queue_len = queue.qsize()
+        active_count = len(self._compile_worker_tasks)
+        needed = min(MAX_CONCURRENT_COMPILATIONS, queue_len + active_count)
+        if needed == 0 and active_count == 0:
+            needed = 1
+
+        while len(self._compile_worker_tasks) < min(MAX_CONCURRENT_COMPILATIONS, max(1, needed)):
+            worker_id = len(self._compile_worker_tasks) + 1
+            task = asyncio.create_task(self._run_compile_worker(worker_id))
+            self._compile_worker_tasks.append(task)
+            self._compile_worker_task = task
+            self._is_compile_worker_running = True
+
+    def _ensure_compile_worker(self):
+        """Backward-compatible proxy to _ensure_compile_workers."""
+        self._ensure_compile_workers()
+
+    async def _run_compile_worker(self, worker_id: int = 1):
+        """
+        Concurrent worker for HTML script compilation:
+        Processes jobs concurrently up to MAX_CONCURRENT_COMPILATIONS (4).
+        Exits when idle for 60 seconds to release system resources.
         """
         queue = self._get_compile_queue()
         while True:
             try:
                 try:
-                    job, payload = await asyncio.wait_for(queue.get(), timeout=120.0)
+                    job, payload = await asyncio.wait_for(queue.get(), timeout=60.0)
                 except asyncio.TimeoutError:
-                    self._is_compile_worker_running = False
                     break
 
                 if job.cancelled:
@@ -1263,20 +1281,27 @@ Return ONLY JSON. No conversational preamble or code blocks outside the JSON obj
                     ans_count = len(result.get("answers", []))
                     job.detail = f"Application prepared! {ans_count} answers generated. Ready for ⚡ 2️⃣ CaesarAI Fill."
                 except Exception as e:
-                    print(f"[AutofillService] Compilation error for {job.job_id}: {e}")
+                    print(f"[AutofillService][Worker #{worker_id}] Compilation error for {job.job_id}: {e}")
                     job.fail(str(e))
                 finally:
                     queue.task_done()
 
+            except asyncio.CancelledError:
+                break
             except Exception as outer_err:
-                print(f"[AutofillService] Compile worker loop error: {outer_err}")
+                print(f"[AutofillService][Worker #{worker_id}] Worker loop error: {outer_err}")
                 await asyncio.sleep(1)
+
+        self._compile_worker_tasks = [t for t in self._compile_worker_tasks if not t.done()]
+        if not self._compile_worker_tasks:
+            self._is_compile_worker_running = False
 
     async def queue_compile_html_job(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Enqueues an HTML snapshot compilation job into the FIFO background worker:
-        - If another compilation is actively compiling, this job is marked 'queued' with its position.
-        - The user can move freely around the application while jobs process in the background.
+        Enqueues an HTML snapshot compilation job into the concurrent compilation pool:
+        - Allows up to MAX_CONCURRENT_COMPILATIONS (4) jobs to run simultaneously.
+        - If all 4 slots are occupied, subsequent jobs are marked 'queued' with their position.
+        - As soon as any worker completes, queued jobs start automatically.
         """
         company = payload.get("company", "")
         role = payload.get("role", "")
@@ -1295,17 +1320,23 @@ Return ONLY JSON. No conversational preamble or code blocks outside the JSON obj
 
         queue = self._get_compile_queue()
         queue_size = queue.qsize()
-        active_job = autofill_tracker.get_active_compilation_job()
 
-        if (active_job and active_job.status == "running" and active_job.job_id != job.job_id) or queue_size > 0:
+        # Count currently running compilation jobs (excluding this new job)
+        running_compilations = [
+            j for j in autofill_tracker.get_running_jobs()
+            if j.job_type == "compile_html" and j.status == "running" and j.job_id != job.job_id
+        ]
+
+        if len(running_compilations) >= MAX_CONCURRENT_COMPILATIONS:
+            queue_pos = queue_size + 1
             job.status = "queued"
-            job.detail = f"Queued (position #{queue_size + 1}) — Waiting for active compilation to finish..."
+            job.detail = f"Queued (position #{queue_pos}) — Waiting for an available worker slot (max {MAX_CONCURRENT_COMPILATIONS} concurrent)..."
         else:
             job.status = "running"
-            job.detail = f"Queued for agy compilation..."
+            job.detail = "Queued for agy compilation..."
 
         await queue.put((job, payload))
-        self._ensure_compile_worker()
+        self._ensure_compile_workers()
 
         return {
             "status": job.status,
