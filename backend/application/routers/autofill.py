@@ -11,7 +11,7 @@ from sqlmodel import Session, select
 from backend.application.repository.base import BaseRepository
 from backend.application.dependencies import get_career_repository
 from backend.application.database import engine
-from backend.application.models import Application, ApplicationCreate
+from backend.application.models import Application, ApplicationCreate, PipelineItem
 from backend.application.services.autofill_service import (
     autofill_service,
     normalize_job_url,
@@ -277,6 +277,17 @@ async def resolve_live_async(payload: ResolveLiveRequest):
             session.commit()
             session.refresh(new_app)
             target_app_id = new_app.id
+
+            # Clean up from pipeline inbox if present
+            if payload.url:
+                try:
+                    p_items = session.exec(select(PipelineItem)).all()
+                    for pi in p_items:
+                        if payload.url in pi.raw_text:
+                            session.delete(pi)
+                    session.commit()
+                except Exception:
+                    pass
 
     job = autofill_tracker.create_job(app_ids=[target_app_id])
     target_name = f"{detected_company} — {detected_role}"
@@ -547,6 +558,17 @@ async def generate_async(payload: AutofillGenerateRequest):
             session.commit()
             session.refresh(new_app)
             target_app_id = new_app.id
+
+            # Clean up from pipeline inbox if present
+            if payload.url:
+                try:
+                    p_items = session.exec(select(PipelineItem)).all()
+                    for pi in p_items:
+                        if payload.url in pi.raw_text:
+                            session.delete(pi)
+                    session.commit()
+                except Exception:
+                    pass
 
     job = autofill_tracker.create_job(app_ids=[target_app_id])
     target_name = f"{payload.company or 'Target Company'} — {payload.role or 'Software Engineer'}"

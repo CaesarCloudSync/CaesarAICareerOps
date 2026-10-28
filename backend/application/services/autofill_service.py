@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 from sqlmodel import Session, select
 
 from backend.application.settings import BACKEND_DIR, ROOT_DIR
-from backend.application.models import ApplicationCreate, Application
+from backend.application.models import ApplicationCreate, Application, PipelineItem
 from backend.application.repository.base import BaseRepository
 from backend.application.database import engine
 from backend.application.services.autofill_tracker import autofill_tracker
@@ -1186,6 +1186,27 @@ Return ONLY JSON. No conversational preamble or code blocks outside the JSON obj
                     )
                     session.add(new_app)
                     session.commit()
+
+                    # Clean up from pipeline inbox if present
+                    if url:
+                        try:
+                            p_items = session.exec(select(PipelineItem)).all()
+                            for pi in p_items:
+                                if url in pi.raw_text:
+                                    session.delete(pi)
+                            session.commit()
+                        except Exception:
+                            pass
+
+                        try:
+                            p_file = self.career_ops_dir / "data" / "pipeline.md"
+                            if p_file.exists():
+                                p_lines = p_file.read_text(encoding="utf-8", errors="replace").splitlines()
+                                filtered = [l for l in p_lines if url not in l]
+                                if len(filtered) != len(p_lines):
+                                    p_file.write_text("\n".join(filtered) + "\n", encoding="utf-8")
+                        except Exception:
+                            pass
         except Exception as e:
             print(f"[AutofillService] DB persistence warning: {e}")
 
