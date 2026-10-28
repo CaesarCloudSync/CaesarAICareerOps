@@ -528,33 +528,58 @@ class AutofillService:
                 pgid = None
 
             start_t = time.time()
-            # Wait for agy to complete without any timeouts, updating live stream progress every second
+            last_size = -1
+            stable_count = 0
+            # Wait for agy to complete, updating live stream progress every second and exiting as soon as JSON is complete
             while proc.returncode is None:
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=1.0)
                     break
                 except asyncio.TimeoutError:
-                    if job:
-                        elapsed = int(time.time() - start_t)
-                        if os.path.exists(out_path):
-                            try:
-                                size_bytes = os.path.getsize(out_path)
-                                size_kb = f"{size_bytes / 1024:.1f} KB"
-                                with open(out_path, "r", encoding="utf-8", errors="replace") as f:
-                                    content = f.read()
+                    elapsed = int(time.time() - start_t)
+                    if os.path.exists(out_path):
+                        try:
+                            size_bytes = os.path.getsize(out_path)
+                            size_kb = f"{size_bytes / 1024:.1f} KB"
+                            if size_bytes > 0 and size_bytes == last_size:
+                                stable_count += 1
+                            else:
+                                stable_count = 0
+                            last_size = size_bytes
 
-                                actions_count = content.count('"selector":') or content.count('"type":')
-                                answers_count = content.count('"question":')
-                                has_cover_letter = '"cover_letter":' in content
+                            with open(out_path, "r", encoding="utf-8", errors="replace") as f:
+                                content = f.read()
 
-                                latest_q = ""
-                                if answers_count > 0:
-                                    matches = re.findall(r'"question":\s*"([^"\\]*(?:\\.[^"\\]*)*)"', content)
-                                    if matches:
-                                        latest_q = matches[-1].strip()
-                                        if len(latest_q) > 36:
-                                            latest_q = latest_q[:33] + "..."
+                            # Check if agy has finished streaming the complete JSON object
+                            s = content.find("{")
+                            e = content.rfind("}")
+                            if s != -1 and e != -1 and e > s:
+                                snippet = content[s:e+1]
+                                try:
+                                    d = json.loads(snippet)
+                                    if isinstance(d, dict) and "actions" in d:
+                                        # Complete if either:
+                                        # 1. Contains cover_letter or answers (the final keys in the schema)
+                                        # 2. Or the file has stopped growing for 2 seconds
+                                        if ("cover_letter" in d or "answers" in d) or stable_count >= 2:
+                                            result_content = content
+                                            break
+                                except Exception:
+                                    pass
 
+                            actions_count = content.count('"selector":') or content.count('"type":')
+                            answers_count = content.count('"question":')
+                            has_cover_letter = '"cover_letter":' in content
+
+                            latest_q = ""
+                            if answers_count > 0:
+                                matches = re.findall(r'"question":\s*"([^"\\]*(?:\\.[^"\\]*)*)"', content)
+                                if matches:
+                                    latest_q = matches[-1].strip()
+                                    if len(latest_q) > 36:
+                                        latest_q = latest_q[:33] + "..."
+
+                            if job:
                                 if has_cover_letter:
                                     job.detail = f"✍️ Drafting tailored cover letter ({size_kb} • {elapsed}s)..."
                                 elif latest_q:
@@ -567,13 +592,14 @@ class AutofillService:
                                     job.detail = f"🧠 AI inspecting form architecture ({size_kb} generated • {elapsed}s)..."
                                 else:
                                     job.detail = f"🧠 AI analyzing form snapshot with agy ({elapsed}s elapsed)..."
-                            except Exception:
+                        except Exception:
+                            if job:
                                 job.detail = f"AI DOM reasoning in progress ({elapsed}s elapsed)..."
-                        else:
+                    else:
+                        if job:
                             job.detail = f"AI DOM reasoning in progress ({elapsed}s elapsed)..."
 
-            result_content = ""
-            if os.path.exists(out_path):
+            if not result_content and os.path.exists(out_path):
                 with open(out_path, "r", encoding="utf-8", errors="replace") as f:
                     result_content = f.read().strip()
 
