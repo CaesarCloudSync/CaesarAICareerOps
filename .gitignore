@@ -1,8 +1,52 @@
-# Data Layer (User Private Data)
+# Data Storage & Databases (User Private Data, Backups & State)
 data/
+**/data/
+database.db
 *.db
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
+*.sql
+*.dump
+*.migrated_backup
+backups/
+**/backups/
+postgres_data/
+**/postgres_data/
+pgdata/
+**/pgdata/
+reports/
+output/
+pdfs/
+
+# YAML Configuration & Data Files Used
+*.yml
+*.yaml
+*.yml.tmp
+*.yaml.tmp
+*.bak*
+*.tmp*
+portals.yml
+**/portals.yml
+profile.yml
+**/profile.yml
+plugins.yml
+**/plugins.yml
+benchmarks.yml
+**/benchmarks.yml
+
+# Whitelist CI/CD workflows, Docker Compose, and template/example configurations
+!.github/
+!.github/**
+!docker-compose.yml
+!docker-compose*.yml
+!**/docker-compose.yml
+!**/docker-compose*.yml
+!*.example.yml
+!*.example.yaml
+!**/*.example.yml
+!**/*.example.yaml
 
 # Environment & Secrets
 .env
