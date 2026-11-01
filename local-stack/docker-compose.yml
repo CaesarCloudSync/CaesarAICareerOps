@@ -60,8 +60,10 @@ services:
 volumes:
   caesar_postgres_data:
     name: caesar_postgres_data
+    external: true
   caesar_app_data:
     name: caesar_app_data
+    external: true
 
 networks:
   caesar-network:
