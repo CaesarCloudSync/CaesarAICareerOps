@@ -30,9 +30,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Install career-ops dependencies
-COPY backend/career-ops/package.json ./backend/career-ops/
-RUN cd backend/career-ops && npm install --omit=dev
+# Install career-ops dependencies (if package.json present)
+# COPY backend/career-ops/package.json ./backend/career-ops/
+# RUN cd backend/career-ops && npm install --omit=dev
 
 # Copy application code and built frontend
 COPY backend/ ./backend/

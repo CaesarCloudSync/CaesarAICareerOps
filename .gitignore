@@ -52,6 +52,12 @@ benchmarks.yml
 .env
 .env.*
 !.env.example
+*.token
+*token*
+*.key
+*.pem
+credentials*.json
+service_account*.json
 
 # Python
 __pycache__/

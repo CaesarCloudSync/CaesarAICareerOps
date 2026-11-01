@@ -5,7 +5,7 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: caesar-postgres
-    restart: unless-stopped
+    restart: always
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-caesar}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-caesar_ops_password}
@@ -31,8 +31,8 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    container_name: caesar-app
-    restart: unless-stopped
+    container_name: caesaraicareerops
+    restart: always
     ports:
       - "${PORT:-8000}:8000"
     environment:
@@ -66,3 +66,4 @@ volumes:
 networks:
   caesar-network:
     name: caesar-network
+    external: true
