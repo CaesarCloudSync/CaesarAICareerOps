@@ -915,16 +915,34 @@ CANDIDATE JOB POSTINGS TO EVALUATE:
             return {"status": "cancelled", "message": "Discovery cancelled by user."}
 
         # 4b. Sweep the broader public ATS directory of 15,000+ real companies (Greenhouse, Ashby, Lever)
-        # If user explicitly asks for "all companies" or doesn't pass a specific limit, reverse_limit is None (sweeps all 15,862 companies).
-        reverse_limit = spec.get("ats_scan_limit") if spec and spec.get("ats_scan_limit") else None
-        if "all" in user_prompt.lower() and any(w in user_prompt.lower() for w in ["companies", "boards", "whole", "directory"]):
+        # Check for explicit requests to sweep the entire global directory (e.g., "all companies", "whole directory")
+        explicit_all = bool(re.search(
+            r"\b(?:all\s+companies|all\s+boards|all\s+ats|whole\s+directory|entire\s+directory|full\s+directory|every\s+company|all\s+1[25][,\.]?000)\b",
+            user_prompt.lower()
+        ))
+
+        # Check for explicit company count in prompt (e.g. "from 2000 new companies", "across 500 companies", "limit 1000")
+        extracted_total_cos = None
+        co_m = re.search(r"\b(?:from|across|scan|limit)?\s*(\d+)\s*(?:new\s+)?companies\b", user_prompt.lower())
+        if not co_m:
+            co_m = re.search(r"\b(?:limit|scan)\s*[:=]?\s*(\d+)\b", user_prompt.lower())
+        if co_m:
+            try:
+                extracted_total_cos = int(co_m.group(1))
+            except (ValueError, TypeError):
+                pass
+
+        if explicit_all:
             reverse_limit = None
-        elif not reverse_limit:
-            limit_m = re.search(r"\b(?:limit|scan)\s*[:=]?\s*(\d+)\b", user_prompt.lower())
-            if limit_m:
-                val = int(limit_m.group(1))
-                if val < 10000:
-                    reverse_limit = val
+        elif extracted_total_cos:
+            # Divide across the 3 active single-host providers (Greenhouse, Ashby, Lever)
+            # so the total probed equals the user's requested company count
+            reverse_limit = max(10, extracted_total_cos // 3)
+        elif spec and spec.get("ats_scan_limit"):
+            val = int(spec["ats_scan_limit"])
+            reverse_limit = max(10, val // 3) if val > 100 else val
+        else:
+            reverse_limit = None
 
         await self.run_reverse_ats_scan(job=job, limit_per_ats=reverse_limit)
         if job and getattr(job, "cancelled", False):
