@@ -39,7 +39,8 @@ class DiscoverySettings(SQLModel):
         "London", "Greater London", "United Kingdom", "UK", "Great Britain", "England"
     ]
     allowed_locations: list[str] = [
-        "London", "Greater London", "United Kingdom", "UK", "England", "Remote - UK", "UK - Remote", "UK Remote", "Remote UK"
+        "London", "Greater London", "United Kingdom", "UK", "England",
+        "UK Remote", "Remote - UK", "Remote UK", "Remote, UK", "London (Remote)", "Remote / London"
     ]
     blocked_locations: list[str] = [
         "China", "Beijing", "Shanghai", "Shenzhen", "Hangzhou", "Guangzhou",
