@@ -8,6 +8,7 @@ from backend.application.database import engine
 from backend.application.repository.base import BaseRepository
 from backend.application.dependencies import get_career_repository
 from backend.application.services.discovery_tracker import discovery_tracker
+from backend.application.services.company_naming_service import extract_slug_and_display_name
 
 router = APIRouter(prefix="/api/pipeline", tags=["Pipeline"])
 
@@ -37,14 +38,22 @@ async def get_latest_discovered_jobs() -> Dict[str, Any]:
             parts = it.raw_text.split("|")
             if len(parts) >= 3:
                 url_m = re.search(r"https?://[^\s|]+", parts[0])
-                company = parts[1].strip()
+                url = url_m.group(0) if url_m else ""
+                slug = it.slug
+                display_name = it.display_name
+                if not display_name or not slug:
+                    s, d = extract_slug_and_display_name(parts[1], url)
+                    slug = slug or s
+                    display_name = display_name or d
                 title = parts[2].strip()
                 location = parts[3].strip() if len(parts) > 3 else "London, UK"
                 fallback_roles.append({
-                    "company": company,
+                    "slug": slug,
+                    "company": display_name,
+                    "display_name": display_name,
                     "title": title,
                     "location": location,
-                    "url": url_m.group(0) if url_m else "",
+                    "url": url,
                     "raw_line": it.raw_text,
                     "match_percentage": 92.0,
                     "ats_keywords": ["BACKEND", "API", "CLOUD"]

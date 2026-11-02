@@ -39,6 +39,14 @@ def init_database() -> None:
     except Exception:
         pass
 
+    try:
+        with engine.begin() as conn:
+            from sqlalchemy import text
+            conn.execute(text("ALTER TABLE pipeline_inbox ADD COLUMN IF NOT EXISTS slug VARCHAR(255) NULL;"))
+            conn.execute(text("ALTER TABLE pipeline_inbox ADD COLUMN IF NOT EXISTS display_name VARCHAR(255) NULL;"))
+    except Exception:
+        pass
+
 
 def get_db_session():
     """Dependency provider yielding an active SQLModel Session."""
