@@ -29,9 +29,10 @@ SYSTEM_PARSER_PROMPT = """You are an expert ATS Job Pipeline Architect for Caree
 Analyze the user's natural language search prompt and output ONLY a valid, raw JSON object (no markdown, no backticks, no explanations) matching this exact schema:
 
 {
+  "sweep_all_companies": <boolean, true ONLY if the user prompt explicitly requests to scrape/sweep all companies, all boards, the whole directory, or no company limit. false if a specific number of companies is requested or implied>,
+  "target_companies_count": <integer or null, if sweep_all_companies is false, the exact number of companies requested (e.g. 2000 from "from 2000 new companies", 500 from "across 500 companies", 100 from "100 companies"). null if sweep_all_companies is true or if unspecified>,
   "target_count": <integer, number of jobs requested. If the user mentions a specific number of roles (e.g. "Find 50 roles", "100 jobs", "top 200"), extract that number as an integer. If the user asks for "no limit", "no max limit", "as many as possible", "all roles", or if unspecified, set to 10000 (no artificial ceiling)>,
-  "company_count": <integer, number of target companies to research. If the user prompt mentions a specific number of companies OR a number of roles (e.g. "Find 100...", "200 companies", "500 companies", "1000 companies"), extract that number as company_count (capped at 500 to ensure fast, complete JSON output and prevent ATS rate limits). If no number is mentioned in the prompt, company_count MUST strictly default to 20>,
-  "ats_scan_limit": <integer or null, the reverse ATS directory sweep limit per ATS. If the user prompt asks for a specific limit, number of companies, or volume to scan (e.g. "limit 500", "scan 200 companies", "limit 2000"), extract that number as an integer. If no specific scan limit is asked in the prompt, or if the user asks to scan all/the whole directory, ats_scan_limit MUST be null so the full 15,862 company directory is swept>,
+  "company_count": <integer, number of target companies to research for portals.yml (capped at 500 to ensure fast, complete JSON output and prevent ATS rate limits). If no number is mentioned in the prompt, company_count MUST strictly default to 20>,
   "mode": <"append" | "match", choose "match" ONLY if the user explicitly asks to top up to a fixed total or maintain an exact queue count; choose "append" for all standard discovery and search requests so newly found roles are added without truncation>,
   "industry_sector": <string, e.g. "Healthcare", "FinTech", "CleanTech", "Energy", "Retail", "All Sectors", or whichever industry the user specified>,
   "role_domain": <string, the career or role domain requested by user, e.g. "Project Management", "Software Engineering", "Product Design", "Data Analytics", "Operations", etc.>,
@@ -104,6 +105,19 @@ class NaturalDiscoveryService:
                 # AI determines mode directly: "match" vs "append"
                 parsed["mode"] = "match" if str(parsed.get("mode", "")).lower().strip() == "match" else "append"
 
+                # AI boolean: sweep_all_companies (True if prompt wants all companies / whole directory / no limit)
+                parsed["sweep_all_companies"] = bool(parsed.get("sweep_all_companies", False))
+
+                # AI integer or null: target_companies_count (e.g. 2000 from "from 2000 new companies")
+                tc = parsed.get("target_companies_count")
+                if tc is not None:
+                    try:
+                        parsed["target_companies_count"] = int(tc)
+                    except (ValueError, TypeError):
+                        parsed["target_companies_count"] = None
+                else:
+                    parsed["target_companies_count"] = None
+
                 # AI extracts company_count directly in its JSON; default to 20 if missing or invalid
                 try:
                     parsed["company_count"] = int(parsed.get("company_count") or 20)
@@ -115,12 +129,6 @@ class NaturalDiscoveryService:
                     parsed["target_count"] = int(parsed.get("target_count") or 1000)
                 except (ValueError, TypeError):
                     parsed["target_count"] = 1000
-
-                # Reverse ATS scan limit: amount asked in prompt, otherwise 1000 by default
-                try:
-                    parsed["ats_scan_limit"] = int(parsed.get("ats_scan_limit") or 1000)
-                except (ValueError, TypeError):
-                    parsed["ats_scan_limit"] = 1000
 
                 return parsed
         except Exception as e:
@@ -915,34 +923,21 @@ CANDIDATE JOB POSTINGS TO EVALUATE:
             return {"status": "cancelled", "message": "Discovery cancelled by user."}
 
         # 4b. Sweep the broader public ATS directory of 15,000+ real companies (Greenhouse, Ashby, Lever)
-        # Check for explicit requests to sweep the entire global directory (e.g., "all companies", "whole directory")
-        explicit_all = bool(re.search(
-            r"\b(?:all\s+companies|all\s+boards|all\s+ats|whole\s+directory|entire\s+directory|full\s+directory|every\s+company|all\s+1[25][,\.]?000)\b",
-            user_prompt.lower()
-        ))
-
-        # Check for explicit company count in prompt (e.g. "from 2000 new companies", "across 500 companies", "limit 1000")
-        extracted_total_cos = None
-        co_m = re.search(r"\b(?:from|across|scan|limit)?\s*(\d+)\s*(?:new\s+)?companies\b", user_prompt.lower())
-        if not co_m:
-            co_m = re.search(r"\b(?:limit|scan)\s*[:=]?\s*(\d+)\b", user_prompt.lower())
-        if co_m:
-            try:
-                extracted_total_cos = int(co_m.group(1))
-            except (ValueError, TypeError):
-                pass
-
-        if explicit_all:
+        # Read sweep_all_companies boolean directly from AGY JSON:
+        # If true then sweep all companies (None). If false then do the specified amount.
+        sweep_all = bool(spec.get("sweep_all_companies", False)) if spec else False
+        if sweep_all:
             reverse_limit = None
-        elif extracted_total_cos:
-            # Divide across the 3 active single-host providers (Greenhouse, Ashby, Lever)
-            # so the total probed equals the user's requested company count
-            reverse_limit = max(10, extracted_total_cos // 3)
-        elif spec and spec.get("ats_scan_limit"):
-            val = int(spec["ats_scan_limit"])
-            reverse_limit = max(10, val // 3) if val > 100 else val
         else:
-            reverse_limit = None
+            cos_count = None
+            if spec:
+                cos_count = spec.get("target_companies_count") or spec.get("company_count")
+            if cos_count and int(cos_count) > 0:
+                # Divide across the 3 active single-host providers (Greenhouse, Ashby, Lever)
+                # so the total probed equals the user's requested company count
+                reverse_limit = max(10, int(cos_count) // 3)
+            else:
+                reverse_limit = None
 
         await self.run_reverse_ats_scan(job=job, limit_per_ats=reverse_limit)
         if job and getattr(job, "cancelled", False):
