@@ -32,9 +32,9 @@ if [ -f "$ENV_FILE" ]; then
 fi
 
 POSTGRES_USER="${POSTGRES_USER:-caesar}"
-POSTGRES_DB="${POSTGRES_DB:-caesar_ops}"
-POSTGRES_PORT="${POSTGRES_PORT:-5432}"
-APP_PORT="${PORT:-8000}"
+POSTGRES_DB="${POSTGRES_DB:-caesar_ops_amari}"
+POSTGRES_PORT="${POSTGRES_PORT:-5434}"
+APP_PORT="${PORT:-8002}"
 
 usage() {
   echo -e "${BOLD}CaesarAICareerOps Local Stack CLI${RESET}"
@@ -75,22 +75,22 @@ cmd_local() {
   echo -e "${BOLD}🚀 Starting Persistent PostgreSQL in Docker & Co-Pilot on Host${RESET}"
   echo -e "${CYAN}================================================================${RESET}"
   echo -e "🐘 Database:       ${BOLD}PostgreSQL in Docker (localhost:${POSTGRES_PORT})${RESET}"
-  echo -e "💾 Persistence:    ${BOLD}caesar_postgres_data (Docker volume)${RESET}"
+  echo -e "💾 Persistence:    ${BOLD}caesar_amari_postgres_data (Docker volume)${RESET}"
   echo -e "⚡ AGY Execution:  ${BOLD}Native Host CLI (Google One AI Premium - \$0 per token)${RESET}"
   echo -e "🌐 Web Dashboard:  ${BOLD}http://127.0.0.1:${APP_PORT}${RESET}"
   echo -e "📚 API Docs:       ${BOLD}http://127.0.0.1:${APP_PORT}/docs${RESET}"
   echo -e "${CYAN}----------------------------------------------------------------${RESET}"
 
-  docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d postgres
+  docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d postgres-amari
 
   echo -e "⏳ Waiting for PostgreSQL to be healthy..."
   local retries=20
   local count=0
-  until docker compose -f "$COMPOSE_FILE" exec -T postgres pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null 2>&1; do
+  until docker compose -f "$COMPOSE_FILE" exec -T postgres-amari pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null 2>&1; do
     count=$((count + 1))
     if [ "$count" -ge "$retries" ]; then
       echo -e "${RED}❌ PostgreSQL failed to reach healthy state in time.${RESET}"
-      docker compose -f "$COMPOSE_FILE" logs postgres
+      docker compose -f "$COMPOSE_FILE" logs postgres-amari
       exit 1
     fi
     sleep 1
@@ -122,8 +122,8 @@ cmd_docker() {
   echo -e "${BOLD}🚀 Deploying CaesarAICareerOps in Docker (PostgreSQL + App)${RESET}"
   echo -e "${CYAN}================================================================${RESET}"
 
-  echo -e "🐘 Main Provider:  ${BOLD}PostgreSQL (container: caesar-postgres)${RESET}"
-  echo -e "💾 Persistence:    ${BOLD}Docker volume: caesar_postgres_data${RESET}"
+  echo -e "🐘 Main Provider:  ${BOLD}PostgreSQL (container: caesar-postgres-amari)${RESET}"
+  echo -e "💾 Persistence:    ${BOLD}Docker volume: caesar_amari_postgres_data${RESET}"
   echo -e "🌐 Web Dashboard:  ${BOLD}http://localhost:${APP_PORT}${RESET}"
   echo -e "📚 API Docs:       ${BOLD}http://localhost:${APP_PORT}/docs${RESET}"
   echo -e "🩺 Health Check:   ${BOLD}http://localhost:${APP_PORT}/api/health${RESET}"
@@ -138,11 +138,11 @@ cmd_docker() {
   echo -e "⏳ Waiting for PostgreSQL to be healthy..."
   local retries=20
   local count=0
-  until docker compose -f "$COMPOSE_FILE" exec -T postgres pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null 2>&1; do
+  until docker compose -f "$COMPOSE_FILE" exec -T postgres-amari pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null 2>&1; do
     count=$((count + 1))
     if [ "$count" -ge "$retries" ]; then
       echo -e "${RED}❌ PostgreSQL failed to reach healthy state in time.${RESET}"
-      docker compose -f "$COMPOSE_FILE" logs postgres
+      docker compose -f "$COMPOSE_FILE" logs postgres-amari
       exit 1
     fi
     sleep 1
@@ -155,7 +155,7 @@ cmd_docker() {
     count=$((count + 1))
     if [ "$count" -ge 25 ]; then
       echo -e "${YELLOW}⚠️ App is taking longer than usual. Inspecting logs...${RESET}"
-      docker compose -f "$COMPOSE_FILE" logs app
+      docker compose -f "$COMPOSE_FILE" logs app-amari
       break
     fi
     sleep 1
@@ -210,14 +210,14 @@ cmd_login() {
     agy
   else
     check_docker
-    docker compose -f "$COMPOSE_FILE" exec -it app agy
+    docker compose -f "$COMPOSE_FILE" exec -it app-amari agy
   fi
 }
 
 cmd_db_shell() {
   check_docker
   echo -e "🔌 Opening interactive PostgreSQL shell (${POSTGRES_DB})..."
-  docker compose -f "$COMPOSE_FILE" exec postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+  docker compose -f "$COMPOSE_FILE" exec postgres-amari psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"
 }
 
 cmd_db_backup() {
@@ -228,7 +228,7 @@ cmd_db_backup() {
   local backup_file="$backup_dir/caesar_ops_backup_${timestamp}.sql"
 
   echo -e "💾 Backing up PostgreSQL database '${POSTGRES_DB}' to: $backup_file..."
-  docker compose -f "$COMPOSE_FILE" exec -T postgres pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" > "$backup_file"
+  docker compose -f "$COMPOSE_FILE" exec -T postgres-amari pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" > "$backup_file"
   echo -e "${GREEN}✅ Database backup saved (${backup_file}, $(du -h "$backup_file" | cut -f1))${RESET}"
 }
 
@@ -241,7 +241,7 @@ cmd_db_restore() {
     exit 1
   fi
   echo -e "⚠️  Restoring database '${POSTGRES_DB}' from: $restore_file..."
-  docker compose -f "$COMPOSE_FILE" exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < "$restore_file"
+  docker compose -f "$COMPOSE_FILE" exec -T postgres-amari psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < "$restore_file"
   echo -e "${GREEN}✅ Database restored successfully!${RESET}"
 }
 
@@ -251,7 +251,7 @@ cmd_status() {
   docker compose -f "$COMPOSE_FILE" ps
   echo ""
   echo -e "${BOLD}💾 Volume Persistence:${RESET}"
-  docker volume ls | grep -E "caesar_postgres_data|caesar_app_data" || true
+  docker volume ls | grep -E "caesar_amari_postgres_data|caesar_amari_app_data" || true
   echo ""
   echo -e "${BOLD}🩺 Live Health Check:${RESET}"
   curl -s "http://localhost:${APP_PORT}/api/health" || echo "App not responding on http://localhost:${APP_PORT}"

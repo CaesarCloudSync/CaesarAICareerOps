@@ -45,10 +45,10 @@ RUN useradd -m -u 1000 appuser && \
     chown -R appuser:appuser /app
 USER appuser
 
-EXPOSE 8000
+EXPOSE 8002
 
 ENV HOST=0.0.0.0 \
-    PORT=8000 \
+    PORT=8002 \
     ENVIRONMENT=docker
 
 CMD ["python3", "application.py"]
