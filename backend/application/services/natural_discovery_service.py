@@ -206,17 +206,17 @@ class NaturalDiscoveryService:
 
         content = PORTALS_YML.read_text(encoding="utf-8")
 
-        # 1. Strict London & Remote Geofencing (London and UK Remote roles)
+        # 1. Strict London & UK Geofencing (Zero Remote leak)
         loc_block = (
             "location_filter:\n"
             "  strict: true\n"
+            "  remote_title_fallback: false\n"
             "  always_allow:\n"
             '    - "London"\n'
             '    - "Greater London"\n'
-            '    - "Remote"\n'
-            '    - "UK Remote"\n'
-            '    - "Remote - UK"\n'
-            '    - "Remote UK"\n'
+            '    - "United Kingdom"\n'
+            '    - "UK"\n'
+            '    - "England"\n'
             "  allow:\n"
             '    - "London"\n'
             '    - "Greater London"\n'
@@ -226,17 +226,20 @@ class NaturalDiscoveryService:
             '    - "London Office"\n'
             '    - "London (Hybrid)"\n'
             '    - "London (hybrid)"\n'
-            '    - "London (Remote)"\n'
             '    - "Hybrid - London"\n'
-            '    - "Remote"\n'
+            '    - "United Kingdom"\n'
+            '    - "UK"\n'
+            '    - "England"\n'
+            '    - "Great Britain"\n'
             '    - "UK Remote"\n'
             '    - "Remote - UK"\n'
             '    - "Remote UK"\n'
             '    - "Remote, UK"\n'
             '    - "Remote (UK)"\n'
-            '    - "Remote - London"\n'
-            '    - "London / Remote"\n'
+            '    - "London (Remote)"\n'
             '    - "Remote / London"\n'
+            '    - "London / Remote"\n'
+            '    - "Remote - London"\n'
             "  block_hard:\n"
             '    - "China"\n'
             '    - "Beijing"\n'
