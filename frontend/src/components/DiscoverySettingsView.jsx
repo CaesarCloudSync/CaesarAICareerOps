@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Save,
   ShieldCheck,
@@ -11,6 +11,10 @@ import {
   AlertCircle,
   CheckCircle2,
   Loader2,
+  UploadCloud,
+  Download,
+  Trash2,
+  FileUp,
 } from 'lucide-react';
 
 export default function DiscoverySettingsView() {
@@ -53,6 +57,78 @@ export default function DiscoverySettingsView() {
 
   // Master CV state
   const [cvContent, setCvContent] = useState('');
+  const [pdfStatus, setPdfStatus] = useState({
+    exists: false,
+    filename: null,
+    size_bytes: 0,
+    size_formatted: '0 B',
+    updated_at: null,
+  });
+  const [pdfUploading, setPdfUploading] = useState(false);
+  const [pdfMessage, setPdfMessage] = useState(null);
+  const fileInputRef = useRef(null);
+
+  const fetchPdfStatus = async () => {
+    try {
+      const res = await fetch('/api/cv/pdf/status');
+      if (res.ok) {
+        const d = await res.json();
+        setPdfStatus(d);
+      }
+    } catch (err) {
+      console.error('Error fetching CV PDF status', err);
+    }
+  };
+
+  const handlePdfUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith('.pdf')) {
+      setPdfMessage({ type: 'error', text: 'Please select a valid .pdf file.' });
+      return;
+    }
+    setPdfUploading(true);
+    setPdfMessage(null);
+    const formData = new FormData();
+    formData.append('file', file);
+    try {
+      const res = await fetch('/api/cv/pdf/upload', {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setPdfMessage({
+          type: 'success',
+          text: `Uploaded "${data.filename}" (${data.size_formatted}) successfully!`,
+        });
+        await fetchPdfStatus();
+      } else {
+        setPdfMessage({ type: 'error', text: data.detail || 'Failed to upload PDF.' });
+      }
+    } catch (err) {
+      setPdfMessage({ type: 'error', text: `Upload failed: ${err.message}` });
+    } finally {
+      setPdfUploading(false);
+      if (e.target) e.target.value = '';
+    }
+  };
+
+  const handleDeletePdf = async () => {
+    if (!window.confirm('Are you sure you want to remove the current Master PDF CV?')) return;
+    try {
+      const res = await fetch('/api/cv/pdf', { method: 'DELETE' });
+      if (res.ok) {
+        setPdfMessage({ type: 'success', text: 'Master PDF CV removed.' });
+        await fetchPdfStatus();
+      } else {
+        const data = await res.json();
+        setPdfMessage({ type: 'error', text: data.detail || 'Failed to delete PDF.' });
+      }
+    } catch (err) {
+      setPdfMessage({ type: 'error', text: `Delete failed: ${err.message}` });
+    }
+  };
 
   // Status message
   const [saving, setSaving] = useState(false);
@@ -84,6 +160,9 @@ export default function DiscoverySettingsView() {
       .then((r) => r.json())
       .then((d) => setCvContent(d.content || ''))
       .catch((err) => console.error('Error fetching CV', err));
+
+    // Load Master PDF CV status
+    fetchPdfStatus();
   }, []);
 
   const handleSaveDiscovery = async () => {
@@ -495,19 +574,168 @@ export default function DiscoverySettingsView() {
         </div>
       )}
 
-      {/* TAB 3: Master CV Markdown */}
+      {/* TAB 3: Master CV Markdown & PDF CV */}
       {activeTab === 'cv' && (
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <label className="text-xs font-medium text-slate-300">Master CV Markdown (cv.md)</label>
-            <span className="text-[11px] text-slate-500">Edit markdown content directly</span>
+        <div className="space-y-6">
+          {/* Master PDF CV Upload & Management Card */}
+          <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-5 space-y-4 shadow-sm">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-indigo-500/10 border border-indigo-500/20 rounded-lg text-indigo-400">
+                  <FileUp className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-100 flex items-center gap-2">
+                    Master PDF CV (Autofill & Applications)
+                    {pdfStatus.exists ? (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/10 border border-emerald-500/30 text-emerald-400">
+                        <CheckCircle2 className="w-3 h-3" /> Live & Ready
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-500/10 border border-amber-500/30 text-amber-400">
+                        <AlertCircle className="w-3 h-3" /> Missing PDF
+                      </span>
+                    )}
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    This PDF file is automatically converted and attached into resume dropzones during bookmarklet autofill.
+                  </p>
+                </div>
+              </div>
+
+              {pdfStatus.exists && (
+                <div className="flex items-center gap-2">
+                  <a
+                    href="/api/cv/pdf/download"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
+                  >
+                    <Download className="w-3.5 h-3.5 text-indigo-400" />
+                    Download / Preview
+                  </a>
+                  <button
+                    type="button"
+                    onClick={handleDeletePdf}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/20 transition cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    Remove
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Status Information Box */}
+            {pdfStatus.exists ? (
+              <div className="p-3.5 rounded-lg bg-emerald-950/20 border border-emerald-500/30 flex flex-wrap items-center justify-between gap-3 text-xs">
+                <div className="flex items-center gap-2.5 text-emerald-300">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <div>
+                    <span className="font-semibold text-slate-200">{pdfStatus.filename}</span>
+                    <span className="text-slate-400 ml-2">({pdfStatus.size_formatted})</span>
+                    {pdfStatus.updated_at && (
+                      <span className="text-slate-500 ml-2 hidden sm:inline">Updated: {pdfStatus.updated_at}</span>
+                    )}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={pdfUploading}
+                  className="text-xs text-indigo-400 hover:text-indigo-300 underline font-medium cursor-pointer"
+                >
+                  Upload a replacement
+                </button>
+              </div>
+            ) : (
+              <div className="p-3.5 rounded-lg bg-amber-950/20 border border-amber-500/30 flex items-start gap-2.5 text-xs text-amber-300">
+                <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-medium text-amber-200">No Master PDF CV found on disk</p>
+                  <p className="text-amber-400/80 mt-0.5">
+                    When autofilling an application, the script looks for your PDF CV to attach to file upload fields. Without a live PDF CV uploaded, the script has to skip attaching your resume. Upload your latest PDF resume below.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Drag & Drop Upload Zone */}
+            <div
+              onClick={() => fileInputRef.current?.click()}
+              className={`border-2 border-dashed rounded-xl p-6 flex flex-col items-center justify-center cursor-pointer transition ${
+                pdfUploading
+                  ? 'border-indigo-500/50 bg-indigo-500/5'
+                  : 'border-slate-800 hover:border-indigo-500/50 hover:bg-slate-900/40 bg-slate-950/40'
+              }`}
+            >
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".pdf,application/pdf"
+                className="hidden"
+                onChange={handlePdfUpload}
+                disabled={pdfUploading}
+              />
+              {pdfUploading ? (
+                <div className="flex flex-col items-center gap-2 text-indigo-400">
+                  <Loader2 className="w-8 h-8 animate-spin" />
+                  <span className="text-xs font-medium">Uploading and validating PDF CV...</span>
+                </div>
+              ) : (
+                <div className="flex flex-col items-center gap-2 text-center">
+                  <div className="p-3 rounded-full bg-slate-900 border border-slate-800 text-slate-400 group-hover:text-indigo-400">
+                    <UploadCloud className="w-6 h-6 text-indigo-400" />
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold text-slate-200">
+                      Click to upload or drag & drop your Master CV
+                    </p>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      Accepts Adobe PDF format (.pdf) up to 25MB
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Notification alert banner */}
+            {pdfMessage && (
+              <div
+                className={`p-3 rounded-lg text-xs flex items-center justify-between border ${
+                  pdfMessage.type === 'success'
+                    ? 'bg-emerald-950/30 border-emerald-500/40 text-emerald-300'
+                    : 'bg-rose-950/30 border-rose-500/40 text-rose-300'
+                }`}
+              >
+                <span>{pdfMessage.text}</span>
+                <button
+                  type="button"
+                  onClick={() => setPdfMessage(null)}
+                  className="text-slate-400 hover:text-slate-200 ml-2"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
           </div>
-          <textarea
-            rows={18}
-            value={cvContent}
-            onChange={(e) => setCvContent(e.target.value)}
-            className="w-full p-4 bg-slate-950 border border-slate-800 rounded-lg font-mono text-xs text-slate-200 focus:outline-none focus:border-indigo-500 leading-relaxed"
-          />
+
+          {/* Master CV Markdown (cv.md) Editor */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-medium text-slate-300 flex items-center gap-2">
+                <FileText className="w-4 h-4 text-indigo-400" />
+                Master CV Markdown (cv.md)
+              </label>
+              <span className="text-[11px] text-slate-500">Edit raw markdown content used by AI tailoring</span>
+            </div>
+            <textarea
+              rows={18}
+              value={cvContent}
+              onChange={(e) => setCvContent(e.target.value)}
+              className="w-full p-4 bg-slate-950 border border-slate-800 rounded-lg font-mono text-xs text-slate-200 focus:outline-none focus:border-indigo-500 leading-relaxed"
+            />
+          </div>
         </div>
       )}
     </div>

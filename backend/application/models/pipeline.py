@@ -8,6 +8,8 @@ class PipelineItem(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     raw_text: str = Field(..., description="Raw line text from inbox")
+    slug: Optional[str] = Field(default=None, description="ATS board slug identifier")
+    display_name: Optional[str] = Field(default=None, description="Formatted company display name")
     status: str = Field(default="pending", description="Status: pending, evaluated, discarded")
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 

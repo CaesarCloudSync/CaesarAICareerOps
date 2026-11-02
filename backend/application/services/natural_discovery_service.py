@@ -15,26 +15,32 @@ from backend.application.settings import settings
 from backend.application.database import engine
 from backend.application.models import PipelineItem, Resume
 from backend.application.services.discovery_tracker import discovery_tracker
+from backend.application.services.company_naming_service import (
+    extract_slug_and_display_name,
+    slug_to_display_name,
+)
 
 CAREER_OPS_DIR = Path(settings.career_ops_dir)
 PORTALS_YML = CAREER_OPS_DIR / "portals.yml"
+PROFILE_YML = CAREER_OPS_DIR / "config" / "profile.yml"
 PIPELINE_MD = CAREER_OPS_DIR / "data" / "pipeline.md"
 
 SYSTEM_PARSER_PROMPT = """You are an expert ATS Job Pipeline Architect for Career-Ops.
 Analyze the user's natural language search prompt and output ONLY a valid, raw JSON object (no markdown, no backticks, no explanations) matching this exact schema:
 
 {
-  "target_count": <integer, number of jobs requested, e.g. 50 or 100>,
+  "target_count": <integer, number of jobs requested. If the user mentions a specific number of roles (e.g. "Find 50 roles", "100 jobs", "top 200"), extract that number as an integer. If the user asks for "no limit", "no max limit", "as many as possible", "all roles", or if unspecified, set to 10000 (no artificial ceiling)>,
   "company_count": <integer, number of target companies to research. If the user prompt mentions a specific number of companies OR a number of roles (e.g. "Find 100...", "200 companies", "500 companies", "1000 companies"), extract that number as company_count (capped at 500 to ensure fast, complete JSON output and prevent ATS rate limits). If no number is mentioned in the prompt, company_count MUST strictly default to 20>,
-  "mode": <"append" | "match", choose "match" if the user wants to maintain, top up, ensure, or keep the queue at a specific total count; choose "append" for all other requests to search for and add roles on top of existing ones. "replace" is completely disabled and must NEVER be used under any circumstances>,
-  "industry_sector": <string, e.g. "Healthcare", "FinTech", "CleanTech", "Cybersecurity", "General Tech">,
-  "role_domain": <string, e.g. "Backend Software Engineering">,
-  "seniority_tier": <string, e.g. "junior-to-mid">,
-  "positive_keywords": [<list of positive title strings to match based on the user's target domain and requested seniority. If the user requests Senior roles, include "Senior Backend Engineer", "Senior Software Engineer", "Senior Developer", etc. Always include standard UK engineering variations: e.g. "Backend Engineer", "Back-End Engineer", "Backend Developer", "Software Engineer", "Software Developer", "Platform Engineer", "API Engineer", "Systems Engineer", and language-specific titles like "Python Engineer", "Java Developer", "C# Developer", "Graduate Software Engineer", "Associate Software Engineer">],
-  "negative_keywords": [<list of title strings to exclude. Include seniority exclusions ("Senior", "Lead", "Staff", "Principal", "Director", "VP", "Head of", "Manager") ONLY IF they were not requested by the user prompt (e.g. if the user explicitly asks for Senior or includes Senior, do NOT exclude "Senior"). Include student exclusions ("word:Intern", "Internship", "Internships") unless requested, and non-tech noise ("Recruiter", "Talent Acquisition", "Account Executive", "Sales", "Retail", "Support", "Customer Success", "Nurse", "Doctor", "Driver", "Warehouse", "Legal Counsel")>],
-  "target_companies": [<list of real-world UK tech/industry employers specifically matching the requested industry or sector. The length of this list MUST equal company_count (default 20, or up to the requested number like 200 to 500). E.g. for healthcare: Accurx, Huma, Cera, Peppy, Zoe, Kheiron Medical, Flo Health, BenevolentAI, etc.>],
-  "tech_stack": [<list of languages and technologies mentioned>],
-  "core_fundamentals": [<list of core domains like "API Development", "Databases", "Microservices">],
+  "ats_scan_limit": <integer or null, the reverse ATS directory sweep limit per ATS. If the user prompt asks for a specific limit, number of companies, or volume to scan (e.g. "limit 500", "scan 200 companies", "limit 2000"), extract that number as an integer. If no specific scan limit is asked in the prompt, or if the user asks to scan all/the whole directory, ats_scan_limit MUST be null so the full 15,862 company directory is swept>,
+  "mode": <"append" | "match", choose "match" ONLY if the user explicitly asks to top up to a fixed total or maintain an exact queue count; choose "append" for all standard discovery and search requests so newly found roles are added without truncation>,
+  "industry_sector": <string, e.g. "Healthcare", "FinTech", "CleanTech", "Energy", "Retail", "All Sectors", or whichever industry the user specified>,
+  "role_domain": <string, the career or role domain requested by user, e.g. "Project Management", "Software Engineering", "Product Design", "Data Analytics", "Operations", etc.>,
+  "seniority_tier": <string, e.g. "junior", "mid", "senior", "lead", or "any" based on user prompt>,
+  "positive_keywords": [<list of title strings matching the specific career requested. Include broad UK synonyms and variations (e.g. for Project Management: "Project Manager", "Delivery Manager", "Technical Project Manager", "Programme Manager", "Program Manager", "Scrum Master", "Agile Coach", "Project Coordinator", "Implementation Manager", "Product Delivery", "PMO Analyst", "Operations Manager", etc.). DO NOT force or restrict to any single career path>],
+  "negative_keywords": [<list of title strings to exclude. ONLY exclude seniority levels like "Senior", "Lead", "Staff", "Director" if the user explicitly requested junior/entry-level only. In all other cases, keep seniority open. Always exclude non-job noise ("word:Intern", "Internship", "Internships") unless requested>],
+  "target_companies": [<list of real-world UK employers matching the requested industry, sector, or role. The length of this list MUST equal company_count (default 20, or up to the requested number like 200 to 500)>],
+  "tech_stack": [<list of tools, technologies, software, or skills mentioned in the prompt or relevant to the requested role>],
+  "core_fundamentals": [<list of core domains or responsibilities relevant to the requested role>],
   "evaluate_against_cv": <boolean, true if evaluation against CV requested>
 }
 """
@@ -104,29 +110,68 @@ class NaturalDiscoveryService:
                 except (ValueError, TypeError):
                     parsed["company_count"] = 20
 
+                # Target count: requested number from prompt, or 1000 by default
+                try:
+                    parsed["target_count"] = int(parsed.get("target_count") or 1000)
+                except (ValueError, TypeError):
+                    parsed["target_count"] = 1000
+
+                # Reverse ATS scan limit: amount asked in prompt, otherwise 1000 by default
+                try:
+                    parsed["ats_scan_limit"] = int(parsed.get("ats_scan_limit") or 1000)
+                except (ValueError, TypeError):
+                    parsed["ats_scan_limit"] = 1000
+
                 return parsed
         except Exception as e:
             print(f"[NaturalDiscovery] AGY parse exception: {e}, falling back to defaults.")
 
         inferred_mode = "append"
 
-        # Robust fallback preserving UK tech employers & backend keywords
+        # Check if user prompt mentions an explicit target role count (e.g. "50 roles", "100 jobs", "top 20")
+        target_m = re.search(r"\b(?:find|get|show|top|target|add)?\s*(\d+)\s*(?:roles|jobs|positions|openings)\b", user_prompt.lower())
+        if not target_m:
+            target_m = re.search(r"\b(\d+)\s*(?:roles|jobs|positions|openings)\b", user_prompt.lower())
+        inferred_target = int(target_m.group(1)) if target_m else 1000
+
+        # Check if user prompt mentions an explicit scan limit or amount (e.g. "limit 500", "scan 200", "500 companies")
+        limit_match = re.search(r"\b(?:limit|scan|companies|boards)\s*[:=]?\s*(\d+)\b", user_prompt.lower())
+        if not limit_match:
+            limit_match = re.search(r"\b(\d+)\s*(?:limit|companies|boards)\b", user_prompt.lower())
+        inferred_scan_limit = int(limit_match.group(1)) if limit_match else 1000
+
+        # Dynamically load candidate profile target roles or portals.yml roles as safe fallback
+        fallback_roles = []
+        if PROFILE_YML.exists():
+            try:
+                prof = yaml.safe_load(PROFILE_YML.read_text(encoding="utf-8")) or {}
+                p_roles = prof.get("target_roles", {})
+                if isinstance(p_roles, dict):
+                    fallback_roles = p_roles.get("primary", [])
+                elif isinstance(p_roles, list):
+                    fallback_roles = p_roles
+            except Exception:
+                pass
+
+        if not fallback_roles and PORTALS_YML.exists():
+            try:
+                p_doc = yaml.safe_load(PORTALS_YML.read_text(encoding="utf-8")) or {}
+                fallback_roles = (p_doc.get("title_filter") or {}).get("positive", [])
+            except Exception:
+                pass
+
+        if not fallback_roles:
+            fallback_roles = ["Project Manager", "Delivery Specialist", "Software Engineer"]
+
         return {
-            "target_count": 50,
+            "target_count": inferred_target,
             "company_count": 20,
+            "ats_scan_limit": inferred_scan_limit,
             "mode": inferred_mode,
-            "role_domain": "Backend Software Engineering",
-            "seniority_tier": "junior-to-mid",
-            "positive_keywords": [
-                "Backend Engineer", "Back-End Engineer", "Backend Developer", "Back-End Developer",
-                "Software Engineer", "Software Developer", "Python Engineer", "Python Developer",
-                "Go Engineer", "Golang Engineer", "Java Engineer", "Java Developer",
-                "API Engineer", "Platform Engineer", "Junior Software Engineer", "Junior Developer"
-            ],
-            "negative_keywords": [
-                "Senior", "Lead", "Staff", "Principal", "Director", "VP", "Manager", "word:Intern",
-                "Frontend", "Front-End", "Designer", "Strategist", "Recruiter", "Customer Success"
-            ],
+            "role_domain": "Cross-Functional Professional",
+            "seniority_tier": "any",
+            "positive_keywords": fallback_roles,
+            "negative_keywords": ["word:Intern", "Internship", "Internships", "Recruiter", "Sales"],
             "target_companies": [
                 "Monzo", "StarlingBank", "Revolut", "Wise", "Checkout.com", "Deliveroo", "OcadoTechnology",
                 "Synthesia", "ElevenLabs", "Wayve", "Darktrace", "Snyk", "GoCardless", "TrueLayer",
@@ -137,8 +182,8 @@ class NaturalDiscoveryService:
                 "Permutive", "Tessian", "Netcraft", "Bumble", "Depop", "Vinted", "Gymshark",
                 "Farfetch", "ASOS", "Trainline", "Citymapper", "OctopusEnergy"
             ],
-            "tech_stack": ["Python", "Go", "Java", "Node.js"],
-            "core_fundamentals": ["API Development", "Databases", "Microservices"],
+            "tech_stack": [],
+            "core_fundamentals": [],
             "evaluate_against_cv": True
         }
 
@@ -153,27 +198,37 @@ class NaturalDiscoveryService:
 
         content = PORTALS_YML.read_text(encoding="utf-8")
 
-        # 1. Ensure location_filter is strict UK
+        # 1. Strict London & Remote Geofencing (London and UK Remote roles)
         loc_block = (
             "location_filter:\n"
             "  strict: true\n"
             "  always_allow:\n"
             '    - "London"\n'
             '    - "Greater London"\n'
-            '    - "United Kingdom"\n'
-            '    - "UK"\n'
-            '    - "Great Britain"\n'
-            '    - "England"\n'
+            '    - "Remote"\n'
+            '    - "UK Remote"\n'
+            '    - "Remote - UK"\n'
+            '    - "Remote UK"\n'
             "  allow:\n"
             '    - "London"\n'
             '    - "Greater London"\n'
-            '    - "United Kingdom"\n'
-            '    - "UK"\n'
-            '    - "England"\n'
-            '    - "Remote - UK"\n'
-            '    - "UK - Remote"\n'
+            '    - "London, UK"\n'
+            '    - "London, United Kingdom"\n'
+            '    - "London, England"\n'
+            '    - "London Office"\n'
+            '    - "London (Hybrid)"\n'
+            '    - "London (hybrid)"\n'
+            '    - "London (Remote)"\n'
+            '    - "Hybrid - London"\n'
+            '    - "Remote"\n'
             '    - "UK Remote"\n'
+            '    - "Remote - UK"\n'
             '    - "Remote UK"\n'
+            '    - "Remote, UK"\n'
+            '    - "Remote (UK)"\n'
+            '    - "Remote - London"\n'
+            '    - "London / Remote"\n'
+            '    - "Remote / London"\n'
             "  block_hard:\n"
             '    - "China"\n'
             '    - "Beijing"\n'
@@ -194,8 +249,12 @@ class NaturalDiscoveryService:
             content = content.replace("tracked_companies:", f"{loc_block}\n\ntracked_companies:", 1)
 
         # 2. Update title_filter block
-        positives = spec.get("positive_keywords", ["Backend Engineer", "Software Engineer"])
-        negatives = spec.get("negative_keywords", ["Senior", "Lead", "Staff", "Principal", "Director", "VP", "Manager", "word:Intern", "Frontend"])
+        positives = spec.get("positive_keywords") or [
+            "Project Manager", "Delivery Manager", "Technical Project Manager",
+            "Programme Manager", "Program Manager", "Scrum Master", "Agile Coach",
+            "Project Coordinator", "Implementation Manager", "Product Delivery"
+        ]
+        negatives = spec.get("negative_keywords") or ["word:Intern", "Internship", "Internships"]
 
         positives_yaml = "\n".join([f'    - "{kw}"' for kw in positives])
         negatives_yaml = "\n".join([f'    - "{kw}"' for kw in negatives])
@@ -375,6 +434,16 @@ class NaturalDiscoveryService:
 
     async def run_ats_scan(self, job: Optional[Any] = None) -> int:
         """Step 4: Executes untouched scan.mjs across registered boards streaming stdout live."""
+        tracked_count = 0
+        if PORTALS_YML.exists():
+            try:
+                cfg = yaml.safe_load(PORTALS_YML.read_text(encoding="utf-8")) or {}
+                tracked_count = len(cfg.get("tracked_companies", []))
+            except Exception:
+                pass
+        co_label = f"({tracked_count} Companies)" if tracked_count else ""
+        step_title = f"Crawling ATS Boards & Staging {co_label}".strip()
+
         proc = await asyncio.create_subprocess_exec(
             "node", "scan.mjs",
             cwd=str(CAREER_OPS_DIR),
@@ -383,26 +452,21 @@ class NaturalDiscoveryService:
         )
         if job:
             job._process = proc
+            job.update(
+                3,
+                step_title,
+                f"Crawling {tracked_count} tracked employer boards across Greenhouse, Ashby, Lever, SmartRecruiters...",
+                substep="3.1",
+                substep_name=f"3.1 Multi-Board Parallel Crawl {co_label}".strip(),
+            )
 
         captured_stdout = []
         captured_stderr = []
         start_time = time.time()
         last_line_time = [time.time()]
 
-        companies_count = [None]
-        summary_header = ["Scanning UK employer boards..."]
-
-        # Pre-seed count from portals.yml if possible
-        try:
-            if PORTALS_YML.exists():
-                with open(PORTALS_YML, "r", encoding="utf-8") as f:
-                    cfg = yaml.safe_load(f) or {}
-                approx_count = len(cfg.get("tracked_companies", []))
-                if approx_count > 0:
-                    companies_count[0] = str(approx_count)
-                    summary_header[0] = f"Scanning {approx_count} companies"
-        except Exception:
-            pass
+        companies_count = [str(tracked_count) if tracked_count else None]
+        summary_header = [f"Scanning {tracked_count} companies" if tracked_count else "Scanning UK employer boards..."]
 
         def _is_feed_worthy(text: str) -> bool:
             """Filters out raw CLI noise, maintenance warnings, and websearch dorks from UI feed."""
@@ -458,12 +522,14 @@ class NaturalDiscoveryService:
                         status_detail = decoded
                         if companies_count[0] and "Scanning" not in decoded:
                             status_detail = f"[{summary_header[0]}] {decoded}"
+                        current_co_count = companies_count[0] or str(tracked_count) or ""
+                        current_title = f"Crawling ATS Boards & Staging ({current_co_count} Companies)" if current_co_count else "Crawling ATS Boards & Staging"
                         job.update(
                             3,
-                            "Crawling ATS Boards & Staging",
+                            current_title,
                             status_detail,
                             substep="3.1",
-                            substep_name=f"3.1 Multi-Board Crawl ({summary_header[0]})" if companies_count[0] else "3.1 Multi-Board Parallel Crawl",
+                            substep_name=f"3.1 Multi-Board Crawl ({current_co_count} Portals)" if current_co_count else "3.1 Multi-Board Parallel Crawl",
                         )
 
         async def _read_stderr():
@@ -493,14 +559,16 @@ class NaturalDiscoveryService:
                     tick_idx += 1
                     co_prefix = f" [{summary_header[0]}]" if companies_count[0] else ""
                     msg = f"⏳ [Active Crawl{co_prefix}] {phase} ({elapsed}s elapsed)"
+                    current_co_count = companies_count[0] or str(tracked_count) or ""
+                    current_title = f"Crawling ATS Boards & Staging ({current_co_count} Companies)" if current_co_count else "Crawling ATS Boards & Staging"
                     if job:
                         job.add_feed_line(msg)
                         job.update(
                             3,
-                            "Crawling ATS Boards & Staging",
+                            current_title,
                             msg,
                             substep="3.1",
-                            substep_name=f"3.1 Multi-Board Crawl ({summary_header[0]})" if companies_count[0] else "3.1 Multi-Board Parallel Crawl",
+                            substep_name=f"3.1 Multi-Board Crawl ({current_co_count} Portals)" if current_co_count else "3.1 Multi-Board Parallel Crawl",
                         )
 
         heartbeat_task = asyncio.create_task(_heartbeat())
@@ -518,6 +586,101 @@ class NaturalDiscoveryService:
         if ret != 0:
             err_details = "\n".join(captured_stderr) or "\n".join(captured_stdout)
             raise RuntimeError(f"scan.mjs failed with exit code {ret}: {err_details[:500]}")
+        return ret
+
+    async def run_reverse_ats_scan(self, job: Optional[Any] = None, limit_per_ats: Optional[int] = None) -> int:
+        """
+        Step 4b: Executes reverse ATS discovery scanner (scan-ats-full.mjs) across
+        the public ATS directory of 15,000+ real companies (Greenhouse, Ashby, Lever).
+        Discovers brand new live roles from companies not previously listed in portals.yml!
+        """
+        providers = ["greenhouse", "ashby", "lever"]
+        if limit_per_ats and limit_per_ats < 10000:
+            total_estimated = len(providers) * limit_per_ats
+            co_label = f"({total_estimated:,} Companies)"
+            detail_msg = f"Sweeping public ATS directory: {total_estimated:,} companies across {', '.join(providers)} ({limit_per_ats}/ATS, shuffled A-Z)..."
+            limit_args = ["--limit", str(limit_per_ats)]
+        else:
+            co_label = "(15,862 Companies)"
+            detail_msg = f"Sweeping entire global ATS directory: all 15,862 companies across {', '.join(providers)} (All Companies)..."
+            limit_args = []
+
+        step_title = f"Crawling ATS Boards & Staging {co_label}"
+
+        if job:
+            job.update(
+                3,
+                step_title,
+                detail_msg,
+                substep="3.2",
+                substep_name=f"3.2 Broad ATS Public Directory Sweep {co_label}",
+            )
+            job.add_feed_line(f"🌐 [scan-ats-full.mjs] {detail_msg}")
+
+        cmd = [
+            "node", "scan-ats-full.mjs",
+            "--ats", ",".join(providers),
+            "--since", "30",
+            "--include-undated",
+            "--shuffle",
+            *limit_args,
+        ]
+
+        scan_env = {**os.environ, "CAREER_OPS_DNS_LOOKUPS_PER_MIN": "0"}
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=str(CAREER_OPS_DIR),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=scan_env,
+        )
+        if job:
+            job._process = proc
+
+        async def _read_out():
+            while True:
+                if job and getattr(job, "cancelled", False):
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+                    break
+                line = await proc.stdout.readline()
+                if not line:
+                    break
+                decoded = line.decode("utf-8", errors="replace").strip()
+                if decoded:
+                    print(f"[scan-ats-full.mjs] {decoded}", flush=True)
+                    if job:
+                        p_match = re.search(r"(\d+)/(\d+)\s+scanned", decoded)
+                        if p_match:
+                            scanned_so_far, total_target = p_match.group(1), p_match.group(2)
+                            live_title = f"Crawling ATS Boards & Staging ({scanned_so_far}/{total_target} Companies)"
+                            job.update(
+                                3,
+                                live_title,
+                                f"🌐 {decoded}",
+                                substep="3.2",
+                                substep_name=f"3.2 Broad Directory Sweep {co_label}",
+                            )
+                        if "⚙" in decoded or "New offers" in decoded or "matches" in decoded or "+" in decoded or "scanned" in decoded:
+                            job.add_feed_line(decoded)
+
+        async def _read_err():
+            while True:
+                line = await proc.stderr.readline()
+                if not line:
+                    break
+                decoded = line.decode("utf-8", errors="replace").strip()
+                if decoded:
+                    print(f"[scan-ats-full.mjs stderr] {decoded}", flush=True)
+
+        try:
+            await asyncio.gather(_read_out(), _read_err())
+        except Exception as e:
+            print(f"[Warning] Error streaming scan-ats-full.mjs: {e}")
+
+        ret = await proc.wait()
         return ret
 
     async def verify_url_active(self, url: str, timeout_sec: float = 3.0) -> bool:
@@ -538,86 +701,124 @@ class NaturalDiscoveryService:
                 return True
         return await loop.run_in_executor(None, _check)
 
-    def score_posting_against_cv(self, posting: Dict[str, Any], cv_text: str, spec: Dict[str, Any]) -> Dict[str, Any]:
-        """Step 6: Evaluates ATS keyword match and calculates match percentage."""
-        title_comp = f"{posting['title']} {posting['company']}".lower()
-        score = 68.0  # Base score for valid UK geofence & junior-mid level
-        matched_ats_keywords = []
+    async def evaluate_postings_with_agy(
+        self,
+        postings: List[Dict[str, Any]],
+        cv_text: str,
+        user_prompt: str,
+        spec: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """
+        Evaluates candidate job postings semantically with AGY against the candidate CV and user prompt.
+        Produces genuine semantic match percentage, fit rationale, and ATS alignment keywords.
+        """
+        if not postings:
+            return []
 
-        # Check core fundamentals requested (from spec or engineering/delivery defaults)
-        fundamentals = spec.get("core_fundamentals", []) or [
-            "api", "microservice", "database", "sql", "rest", "postgres", "redis", "kafka"
-        ]
-        for fund in fundamentals:
-            if isinstance(fund, str) and (fund.lower() in title_comp or fund.lower() in cv_text.lower()):
-                matched_ats_keywords.append(fund)
-                score += 3.2
+        # Prepare clean, indexed summary for AGY to evaluate
+        postings_summary = []
+        for idx, p in enumerate(postings):
+            postings_summary.append({
+                "id": idx,
+                "title": p.get("title", ""),
+                "company": p.get("company", ""),
+                "location": p.get("location", ""),
+            })
 
-        # Check tech stack from spec
-        tech_stack = spec.get("tech_stack", []) or ["python", "go", "golang", "java", "node"]
-        for tech in tech_stack:
-            if isinstance(tech, str) and tech.lower() in title_comp:
-                matched_ats_keywords.append(tech)
-                score += 4.5
+        cv_summary = (cv_text[:3000] if cv_text else "").strip()
+        roles_json = json.dumps(postings_summary, indent=2)
 
-        # Also match positive keywords in title
-        for kw in spec.get("positive_keywords", []):
-            if isinstance(kw, str) and kw.lower() in title_comp:
-                matched_ats_keywords.append(kw)
-                score += 5.0
+        eval_prompt = f"""You are an expert talent scout and ATS evaluator for Career-Ops.
+Evaluate each of the following {len(postings)} job postings against the candidate's CV and the user search prompt.
+Return ONLY a valid, raw JSON array of objects (no markdown, no backticks, no preamble) matching this schema:
+[
+  {{
+    "id": <integer matching the input id>,
+    "match_percentage": <float between 55.0 and 99.0 representing genuine fit to candidate's background>,
+    "fit_reason": <string, 1-2 concise sentences explaining why this role matches candidate's experience and archetypes>,
+    "ats_keywords": [<list of 3-6 specific relevant skills/domain keywords>]
+  }}
+]
 
-        final_score = min(98.0, round(score, 1))
-        posting["match_percentage"] = final_score
-        posting["ats_keywords"] = list(dict.fromkeys(matched_ats_keywords))[:6]
-        return posting
+CANDIDATE CV / PROFILE:
+{cv_summary or "Candidate seeking roles aligned with target titles and experience."}
+
+USER SEARCH PROMPT:
+{user_prompt}
+
+CANDIDATE JOB POSTINGS TO EVALUATE:
+{roles_json}
+"""
+        eval_map = {}
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "agy", "-p", eval_prompt, "--dangerously-skip-permissions",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await proc.communicate()
+            raw = stdout.decode("utf-8", errors="replace").strip()
+            if "```" in raw:
+                raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.MULTILINE)
+                raw = re.sub(r"```\s*$", "", raw, flags=re.MULTILINE).strip()
+            match = re.search(r"\[.*\]", raw, re.DOTALL)
+            if match:
+                eval_list = json.loads(match.group(0))
+                for item in eval_list:
+                    if isinstance(item, dict) and "id" in item:
+                        eval_map[item["id"]] = item
+        except Exception as e:
+            print(f"[NaturalDiscovery] AGY evaluation error: {e}")
+
+        scored_postings = []
+        for idx, p in enumerate(postings):
+            item = eval_map.get(idx)
+            if item:
+                p["match_percentage"] = float(item.get("match_percentage", 75.0))
+                p["fit_reason"] = item.get("fit_reason", "Role aligns with candidate's target profile.")
+                p["ats_keywords"] = item.get("ats_keywords", [])[:6]
+            else:
+                p["match_percentage"] = 75.0
+                p["fit_reason"] = "Live verified role matching candidate's search criteria."
+                p["ats_keywords"] = []
+            scored_postings.append(p)
+
+        return scored_postings
 
     def filter_and_diversify_roles(
         self,
         raw_postings: List[Dict[str, Any]],
         spec: Optional[Dict[str, Any]] = None,
-        target_count: int = 50,
+        target_count: int = 1000,
         max_per_company: int = 2,
         existing_company_counts: Optional[Dict[str, int]] = None,
+        min_match_percentage: float = 60.0,
     ) -> List[Dict[str, Any]]:
         """
-        Combats company monopolization and irrelevant role leakage:
-        1. Eliminates non-matching titles, noise roles, and negative keyword violations.
-        2. Supports dynamic prompt targets (software, delivery, consulting, advisory).
-        3. Enforces a per-company cap so no single employer dominates the inbox.
-        4. Guarantees broad market coverage across distinct UK employers.
+        Applies diversity caps across live candidate postings:
+        1. Sorts all discovered roles by AGY semantic match percentage.
+        2. Filters out low-scoring irrelevant roles (match_percentage < min_match_percentage).
+        3. Enforces a strict per-company cap (max_per_company = 2) so no single employer overpopulates the queue.
+        4. Never excludes valid crawled roles using artificial manual whitelists.
         """
-        clean_candidates = []
-        spec = spec or {}
-        industry = (spec.get("industry_sector") or "").strip().lower()
-        target_companies = [c.strip().lower() for c in spec.get("target_companies", []) if c.strip()]
+        candidates = [
+            p for p in raw_postings
+            if float(p.get("match_percentage", 0.0)) >= min_match_percentage
+        ]
+        candidates.sort(key=lambda x: x.get("match_percentage", 0), reverse=True)
 
-        for posting in raw_postings:
-            title = posting.get("title", "").strip()
-
-            # If a specific industry sector (e.g. Healthcare, CleanTech) is requested,
-            # enforce that candidate companies must match the sector's target companies
-            if industry and industry not in ("general", "general tech", "all", "tech") and target_companies:
-                comp_lower = posting.get("company", "").strip().lower()
-                if not any(tc in comp_lower or comp_lower in tc for tc in target_companies):
-                    continue
-
-            clean_candidates.append(posting)
-
-        # Sort candidates by match percentage
-        clean_candidates.sort(key=lambda x: x.get("match_percentage", 0), reverse=True)
-
-        # Enforce Strict Per-Company Diversity Cap (Hard limit: never exceed max_per_company)
         selected_roles = []
         company_counts = defaultdict(int)
         if existing_company_counts:
             for comp_name, count in existing_company_counts.items():
                 company_counts[comp_name.strip().lower()] = count
 
-        for role in clean_candidates:
-            company = role["company"].strip().lower()
-            if company_counts[company] < max_per_company:
+        for role in candidates:
+            # Group by slug or normalized company name so duplicate variants share the 2-per-company cap
+            company_key = (role.get("slug") or role.get("company", "")).strip().lower()
+            if company_counts[company_key] < max_per_company:
                 selected_roles.append(role)
-                company_counts[company] += 1
+                company_counts[company_key] += 1
                 if len(selected_roles) >= target_count:
                     break
 
@@ -691,17 +892,41 @@ class NaturalDiscoveryService:
                 )
             await self.probe_ats_boards(target_companies, job=job)
 
+        tracked_count = 0
+        if PORTALS_YML.exists():
+            try:
+                cfg = yaml.safe_load(PORTALS_YML.read_text(encoding="utf-8")) or {}
+                tracked_count = len(cfg.get("tracked_companies", []))
+            except Exception:
+                pass
+        co_title_31 = f"Crawling ATS Boards & Staging ({tracked_count} Companies)" if tracked_count else "Crawling ATS Boards & Staging"
         if job:
             job.update(
                 3,
-                "Crawling ATS Boards & Staging",
-                "Executing multi-portal parallel crawler across tracked UK employer boards...",
+                co_title_31,
+                f"Executing multi-portal parallel crawler across {tracked_count} tracked UK employer boards...",
                 substep="3.1",
-                substep_name="Multi-Board Parallel Crawl",
+                substep_name=f"3.1 Multi-Board Parallel Crawl ({tracked_count} Companies)" if tracked_count else "3.1 Multi-Board Parallel Crawl",
             )
 
-        # 4. Run ATS scan via scan.mjs (streaming stdout live)
+        # 4a. Run ATS scan via scan.mjs across tracked boards
         await self.run_ats_scan(job=job)
+        if job and getattr(job, "cancelled", False):
+            return {"status": "cancelled", "message": "Discovery cancelled by user."}
+
+        # 4b. Sweep the broader public ATS directory of 15,000+ real companies (Greenhouse, Ashby, Lever)
+        # If user explicitly asks for "all companies" or doesn't pass a specific limit, reverse_limit is None (sweeps all 15,862 companies).
+        reverse_limit = spec.get("ats_scan_limit") if spec and spec.get("ats_scan_limit") else None
+        if "all" in user_prompt.lower() and any(w in user_prompt.lower() for w in ["companies", "boards", "whole", "directory"]):
+            reverse_limit = None
+        elif not reverse_limit:
+            limit_m = re.search(r"\b(?:limit|scan)\s*[:=]?\s*(\d+)\b", user_prompt.lower())
+            if limit_m:
+                val = int(limit_m.group(1))
+                if val < 10000:
+                    reverse_limit = val
+
+        await self.run_reverse_ats_scan(job=job, limit_per_ats=reverse_limit)
         if job and getattr(job, "cancelled", False):
             return {"status": "cancelled", "message": "Discovery cancelled by user."}
 
@@ -729,16 +954,22 @@ class NaturalDiscoveryService:
                 if not url_m:
                     continue
                 url = url_m.group(0)
-                company = parts[1].strip()
+                raw_company = parts[1].strip()
                 title = parts[2].strip()
                 loc = parts[3].strip() if len(parts) > 3 else ""
 
+                slug, display_name = extract_slug_and_display_name(raw_company, url)
+                parts[1] = f" {display_name} "
+                clean_raw_line = "|".join(parts)
+
                 parsed_entries.append({
-                    "company": company,
+                    "slug": slug,
+                    "company": display_name,
+                    "display_name": display_name,
                     "title": title,
                     "location": loc,
                     "url": url,
-                    "raw_line": line
+                    "raw_line": clean_raw_line
                 })
 
         # --- 1. CAPTURE INITIAL STATE BEFORE STAGING ---
@@ -759,21 +990,26 @@ class NaturalDiscoveryService:
             with Session(engine) as session:
                 for entry in parsed_entries:
                     if entry["url"] not in initial_existing_urls:
-                        session.add(PipelineItem(raw_text=entry["raw_line"], status="pending"))
+                        session.add(PipelineItem(
+                            raw_text=entry["raw_line"],
+                            slug=entry.get("slug"),
+                            display_name=entry.get("display_name"),
+                            status="pending"
+                        ))
                         staged_new_urls.add(entry["url"])
                 session.commit()
 
         if job:
             job.update(
                 3,
-                "Crawling ATS Boards & Staging",
+                f"Crawling ATS Boards & Staging ({tracked_count} Companies)",
                 f"Cleansed results against UK geofencing: {len(parsed_entries)} candidates verified.",
                 substep="3.2",
-                substep_name="UK Location Verification",
+                substep_name=f"UK Location Verification ({tracked_count} Companies)",
             )
             job.update(
                 3,
-                "Crawling ATS Boards & Staging",
+                f"Crawling ATS Boards & Staging ({len(parsed_entries)} Candidates)",
                 f"Crawled live portals. Persisted {len(parsed_entries)} live UK roles into write-ahead staging queue.",
                 substep="3.3",
                 substep_name="Write-Ahead Staging Persistence",
@@ -804,39 +1040,34 @@ class NaturalDiscoveryService:
             job.update(
                 4,
                 "Scoring & Diversity Curation",
-                f"Scoring ATS keyword alignment and core fundamentals against candidate profile...",
+                f"Evaluating candidate role alignment with AGY against CV...",
                 substep="4.2",
-                substep_name="CV Fundamentals & Match Scoring",
+                substep_name="AGY Semantic Fit & Match Scoring",
             )
 
-        raw_candidates = []
-        for entry, is_live in zip(evaluation_candidates, liveness_results):
-            if is_live is True or not isinstance(is_live, bool):
-                scored = self.score_posting_against_cv(entry, cv_text, spec)
-                raw_candidates.append(scored)
+        live_candidates = [
+            entry for entry, is_live in zip(evaluation_candidates, liveness_results)
+            if is_live is True or not isinstance(is_live, bool)
+        ]
 
-        # Calculate needed roles
+        raw_candidates = await self.evaluate_postings_with_agy(
+            live_candidates,
+            cv_text=cv_text,
+            user_prompt=user_prompt,
+            spec=spec,
+        )
+
+        # Calculate needed roles: guided by prompt if user specified a count
+        target_count = spec.get("target_count") or 1000
+        if any(phrase in user_prompt.lower() for phrase in ["no limit", "no max", "unlimited", "as many as possible", "all roles", "all jobs"]):
+            target_count = 100000
+
         if mode == "match":
             needed_target = max(0, target_count - initial_count)
+            if needed_target == 0 and target_count >= 1000:
+                needed_target = target_count
         else:  # append
             needed_target = target_count
-
-        # If mode is match and queue already matches or exceeds target
-        if mode == "match" and needed_target == 0:
-            match_res = {
-                "status": "success",
-                "mode": mode,
-                "spec": spec,
-                "total_companies_probed": len(target_companies),
-                "final_count": 0,
-                "total_in_queue": initial_count,
-                "message": f"Autonomous discovery: Queue already matches target ({initial_count} / {target_count} roles).",
-                "roles": []
-            }
-            discovery_tracker.record_discovered_roles(roles=[], query=user_prompt, mode=mode)
-            if job:
-                job.complete(match_res)
-            return match_res
 
         if job:
             job.update(
@@ -853,10 +1084,13 @@ class NaturalDiscoveryService:
             for item in session.exec(select(PipelineItem)).all():
                 url_m = re.search(r"https?://[^\s|]+", item.raw_text)
                 if url_m and url_m.group(0) in initial_existing_urls:
-                    parts = [p.strip() for p in item.raw_text.split("|")]
-                    if len(parts) >= 2:
-                        comp_name = parts[1].strip().lower()
-                        existing_counts[comp_name] += 1
+                    if item.slug:
+                        existing_counts[item.slug.strip().lower()] += 1
+                    else:
+                        parts = [p.strip() for p in item.raw_text.split("|")]
+                        if len(parts) >= 2:
+                            s, _ = extract_slug_and_display_name(parts[1], url_m.group(0))
+                            existing_counts[s.strip().lower()] += 1
 
         final_selected = self.filter_and_diversify_roles(
             raw_candidates,
@@ -864,33 +1098,53 @@ class NaturalDiscoveryService:
             target_count=needed_target,
             max_per_company=2,
             existing_company_counts=existing_counts,
+            min_match_percentage=60.0,
         )
         selected_urls = {r["url"] for r in final_selected}
 
-        # 8. Sync into Database & update pipeline.md (strictly non-destructive: existing inbox items are always preserved)
+        # 8. Sync into Database & update pipeline.md (strictly non-destructive: all qualified crawled roles are kept!)
         role_score_map = {r["url"]: r.get("match_percentage") for r in final_selected if r.get("match_percentage")}
+        role_meta_map = {r["url"]: r for r in final_selected}
         with Session(engine) as session:
-            # Remove unselected staged items from this run, keep initial items + final_selected
             for item in session.exec(select(PipelineItem)).all():
                 url_m = re.search(r"https?://[^\s|]+", item.raw_text)
                 if url_m:
                     item_url = url_m.group(0)
-                    # If it was newly staged in this run but not selected for the top cut, prune it
+                    # Only prune if it was newly staged but failed quality/liveness (not in selected_urls)
                     if item_url in staged_new_urls and item_url not in selected_urls:
                         session.delete(item)
-                    elif item_url in role_score_map:
-                        score = role_score_map[item_url]
-                        if not re.search(r"\d+(\.\d+)?%\s*match", item.raw_text):
-                            parts = [p.strip() for p in item.raw_text.split("|")]
-                            new_parts = [parts[0], parts[1], parts[2]]
-                            if len(parts) > 3 and not "posted:" in parts[3].lower():
-                                new_parts.append(parts[3])
-                            new_parts.append(f"{score}% match")
-                            posted = next((p for p in parts if p.lower().startswith("posted:")), None)
-                            if posted:
-                                new_parts.append(posted)
-                            item.raw_text = " | ".join(new_parts)
-                            session.add(item)
+                    else:
+                        r_meta = role_meta_map.get(item_url)
+                        if r_meta:
+                            if not item.slug and r_meta.get("slug"):
+                                item.slug = r_meta["slug"]
+                            if not item.display_name and r_meta.get("display_name"):
+                                item.display_name = r_meta["display_name"]
+                        parts = [p.strip() for p in item.raw_text.split("|")]
+                        if len(parts) >= 2:
+                            comp_name = item.display_name or (r_meta.get("display_name") if r_meta else None)
+                            if not comp_name:
+                                _, comp_name = extract_slug_and_display_name(parts[1], item_url)
+                            if comp_name:
+                                parts[1] = comp_name
+                                item.display_name = comp_name
+
+                        if item_url in role_score_map:
+                            score = role_score_map[item_url]
+                            if not re.search(r"\d+(\.\d+)?%\s*match", item.raw_text):
+                                new_parts = [parts[0], parts[1], parts[2]]
+                                if len(parts) > 3 and not "posted:" in parts[3].lower():
+                                    new_parts.append(parts[3])
+                                new_parts.append(f"{score}% match")
+                                posted = next((p for p in parts if p.lower().startswith("posted:")), None)
+                                if posted:
+                                    new_parts.append(posted)
+                                item.raw_text = " | ".join(new_parts)
+                            else:
+                                item.raw_text = " | ".join(parts)
+                        else:
+                            item.raw_text = " | ".join(parts)
+                        session.add(item)
             session.commit()
             total_count = len(session.exec(select(PipelineItem)).all())
 
