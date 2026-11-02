@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 CaesarAICareerOps — Launcher
-Runs the local Web Co-Pilot on http://127.0.0.1:8000
+Runs the local Web Co-Pilot on http://127.0.0.1:8001
 """
 
 import os
@@ -45,7 +45,7 @@ def ensure_frontend_built():
 def main():
     ensure_frontend_built()
     host = os.getenv("HOST", "0.0.0.0" if os.getenv("ENVIRONMENT") == "docker" or os.getenv("DOCKER") else "127.0.0.1")
-    port = int(os.getenv("PORT", "8000"))
+    port = int(os.getenv("PORT", "8001"))
     reload = os.getenv("RELOAD", "true").lower() in ("true", "1", "yes")
 
     print("==========================================================")

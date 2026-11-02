@@ -12,7 +12,7 @@ chrome.commands.onCommand.addListener(async (command) => {
         // Check if answers already exist
         let action = 'caesar_queue_generation';
         try {
-          const checkUrl = `http://localhost:8000/api/autofill/check-status?url=${encodeURIComponent(tab.url || '')}&title=${encodeURIComponent(tab.title || '')}`;
+          const checkUrl = `http://localhost:8001/api/autofill/check-status?url=${encodeURIComponent(tab.url || '')}&title=${encodeURIComponent(tab.title || '')}`;
           const res = await fetch(checkUrl);
           if (res.ok) {
             const data = await res.json();

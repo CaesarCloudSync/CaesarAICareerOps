@@ -67,6 +67,6 @@ Even if containers are stopped or rebuilt, all applications, pipelines, reports,
 ## 🌐 Endpoints
 
 Once deployed:
-- **Dashboard:** [http://localhost:8000](http://localhost:8000)
-- **Interactive Swagger Docs:** [http://localhost:8000/docs](http://localhost:8000/docs)
-- **Health Check:** [http://localhost:8000/api/health](http://localhost:8000/api/health)
+- **Dashboard:** [http://localhost:8001](http://localhost:8001)
+- **Interactive Swagger Docs:** [http://localhost:8001/docs](http://localhost:8001/docs)
+- **Health Check:** [http://localhost:8001/api/health](http://localhost:8001/api/health)

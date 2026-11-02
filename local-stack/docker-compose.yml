@@ -1,22 +1,22 @@
 services:
   # ==========================================================
-  # 🐘 PostgreSQL Database (Main Provider with Persistent Volume)
+  # 🐘 PostgreSQL Database (Carl Provider with Persistent Volume)
   # ==========================================================
-  postgres:
+  postgres-carl:
     image: postgres:16-alpine
-    container_name: caesar-postgres
+    container_name: caesar-postgres-carl
     restart: always
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-caesar}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-caesar_ops_password}
-      POSTGRES_DB: ${POSTGRES_DB:-caesar_ops}
+      POSTGRES_DB: ${POSTGRES_DB:-caesar_ops_carl}
       PGDATA: /var/lib/postgresql/data/pgdata
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "${POSTGRES_PORT:-5433}:5432"
     volumes:
-      - caesar_postgres_data:/var/lib/postgresql/data
+      - caesar_carl_postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-caesar} -d ${POSTGRES_DB:-caesar_ops}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-caesar} -d ${POSTGRES_DB:-caesar_ops_carl}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -25,25 +25,25 @@ services:
       - caesar-network
 
   # ==========================================================
-  # 🧠 CaesarAICareerOps Application (FastAPI + React Dashboard)
+  # 🧠 CaesarAICareerOps Application (Carl - Port 8001)
   # ==========================================================
-  app:
+  app-carl:
     build:
       context: ..
       dockerfile: Dockerfile
-    container_name: caesaraicareerops
+    container_name: caesaraicareerops-carl
     restart: always
     ports:
-      - "${PORT:-8000}:8000"
+      - "${PORT:-8001}:8001"
     environment:
-      - PORT=8000
+      - PORT=8001
       - HOST=0.0.0.0
       - ENVIRONMENT=docker
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-caesar}:${POSTGRES_PASSWORD:-caesar_ops_password}@postgres:5432/${POSTGRES_DB:-caesar_ops}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-caesar}:${POSTGRES_PASSWORD:-caesar_ops_password}@postgres-carl:5432/${POSTGRES_DB:-caesar_ops_carl}
       - CAREER_OPS_DIR=/app/backend/career-ops
       - DATA_DIR=/app/data
     volumes:
-      - caesar_app_data:/app/data
+      - caesar_carl_app_data:/app/data
       - ../backend/application:/app/backend/application
       - ../backend/career-ops:/app/backend/career-ops
       # Mount host agy CLI and OAuth session so container has full AGY access
@@ -51,17 +51,17 @@ services:
       - ${HOME:-/home/amari}/.gemini:/home/appuser/.gemini
       - ${HOME:-/home/amari}/.config:/home/appuser/.config:ro
     depends_on:
-      postgres:
+      postgres-carl:
         condition: service_healthy
     networks:
       - caesar-network
 
 volumes:
-  caesar_postgres_data:
-    name: caesar_postgres_data
+  caesar_carl_postgres_data:
+    name: caesar_carl_postgres_data
     external: true
-  caesar_app_data:
-    name: caesar_app_data
+  caesar_carl_app_data:
+    name: caesar_carl_app_data
     external: true
 
 networks:

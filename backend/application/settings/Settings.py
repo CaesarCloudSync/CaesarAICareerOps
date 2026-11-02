@@ -14,8 +14,8 @@ class CORSSettings(BaseModel):
         "http://localhost:5173",
         "http://localhost:5174",
         "http://localhost:3000",
-        "http://127.0.0.1:8000",
-        "http://localhost:8000",
+        "http://127.0.0.1:8001",
+        "http://localhost:8001",
     ]
     allow_origin_regex: str = r".*"
 
@@ -52,7 +52,7 @@ class AppSettings(BaseSettings):
     environment: str = Field(default=os.getenv("ENVIRONMENT", "local"))
     cors: CORSSettings = Field(default_factory=CORSSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
-    port: int = Field(default=int(os.getenv("PORT", "8000")))
+    port: int = Field(default=int(os.getenv("PORT", "8001")))
     career_ops_dir: str = Field(
         default=os.getenv("CAREER_OPS_DIR", str(BACKEND_DIR / "career-ops"))
     )

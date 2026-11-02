@@ -68,7 +68,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // 2. Check CaesarAI server health & tab application status
   async function refreshStatus() {
     try {
-      const healthRes = await fetch('http://localhost:8000/api/health');
+      const healthRes = await fetch('http://localhost:8001/api/health');
       if (!healthRes.ok) throw new Error('Offline');
 
       statusBadge.className = 'status-badge status-online';
@@ -77,7 +77,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       if (!activeTab || !activeTab.url) return;
 
-      const checkUrl = `http://localhost:8000/api/autofill/check-status?url=${encodeURIComponent(activeTab.url)}&title=${encodeURIComponent(activeTab.title || '')}`;
+      const checkUrl = `http://localhost:8001/api/autofill/check-status?url=${encodeURIComponent(activeTab.url)}&title=${encodeURIComponent(activeTab.title || '')}`;
       const statusRes = await fetch(checkUrl);
       if (!statusRes.ok) return;
 
@@ -134,7 +134,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       statusBadge.className = 'status-badge status-offline';
       statusDot.className = 'dot dot-offline';
       statusText.innerText = 'Server Offline';
-      statusDetail.innerText = 'Ensure CaesarAI is running at http://localhost:8000';
+      statusDetail.innerText = 'Ensure CaesarAI is running at http://localhost:8001';
       btnQueue.setAttribute('disabled', 'true');
       btnInstant.setAttribute('disabled', 'true');
     }
