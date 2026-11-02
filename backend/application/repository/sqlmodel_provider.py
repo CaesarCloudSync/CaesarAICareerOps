@@ -8,6 +8,7 @@ from backend.application.settings import settings
 from backend.application.database import engine, init_database
 from backend.application.repository.base import BaseRepository
 from backend.application.services.discovery_tracker import discovery_tracker
+from backend.application.services.company_naming_service import extract_slug_and_display_name
 from backend.application.models import (
     Application,
     ApplicationCreate,
@@ -320,7 +321,16 @@ class SQLModelRepository(BaseRepository):
 
     async def add_to_pipeline(self, item_text: str) -> bool:
         with Session(engine) as session:
-            item = PipelineItem(raw_text=item_text, status="pending")
+            parts = [p.strip() for p in item_text.split("|")]
+            slug = None
+            display_name = None
+            if len(parts) >= 2:
+                url_m = re.search(r"https?://[^\s|]+", parts[0])
+                url = url_m.group(0) if url_m else ""
+                slug, display_name = extract_slug_and_display_name(parts[1], url)
+                parts[1] = f" {display_name} "
+                item_text = "|".join(parts)
+            item = PipelineItem(raw_text=item_text, slug=slug, display_name=display_name, status="pending")
             session.add(item)
             session.commit()
             return True
