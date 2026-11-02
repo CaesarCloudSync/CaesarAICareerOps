@@ -1,5 +1,6 @@
 import re
 import asyncio
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, List
 from fastapi import APIRouter, Depends, HTTPException
@@ -43,6 +44,17 @@ async def get_discovery_settings() -> DiscoverySettings:
     """Retrieve structured discovery settings (UK geo-fence, target roles, location lists)."""
     current = DiscoverySettings()
 
+    # 1. Restore from database if portals.yml doesn't exist yet
+    if not PORTALS_YML.exists():
+        try:
+            with Session(engine) as session:
+                disc_prof = session.exec(select(Profile).where(Profile.name == "discovery").limit(1)).first()
+                if disc_prof and disc_prof.content:
+                    PORTALS_YML.parent.mkdir(parents=True, exist_ok=True)
+                    PORTALS_YML.write_text(disc_prof.content, encoding="utf-8")
+        except Exception as e:
+            print("Notice: No discovery settings found in database:", e)
+
     if PORTALS_YML.exists():
         try:
             with open(PORTALS_YML, "r", encoding="utf-8") as f:
@@ -60,7 +72,6 @@ async def get_discovery_settings() -> DiscoverySettings:
             title_filter = doc.get("title_filter") or {}
             pos = title_filter.get("positive")
             if pos and isinstance(pos, list):
-                # prioritize candidate relevant roles
                 roles = [p for p in pos if isinstance(p, str) and not p.startswith("KI") and not p.startswith("Dozent")]
                 if roles:
                     current.target_roles = roles[:15]
@@ -76,43 +87,57 @@ async def get_discovery_settings() -> DiscoverySettings:
 @router.post("/discovery")
 async def save_discovery_settings(payload: DiscoverySettings):
     """Safely update discovery settings without manual YAML editing or risk of corruption."""
-    if not PORTALS_YML.exists():
-        raise HTTPException(status_code=404, detail="portals.yml not found")
-
     try:
-        content = PORTALS_YML.read_text(encoding="utf-8")
+        doc = {}
+        if PORTALS_YML.exists():
+            try:
+                with open(PORTALS_YML, "r", encoding="utf-8") as f:
+                    doc = yaml.safe_load(f) or {}
+            except Exception as read_err:
+                print("Warning: Could not parse existing portals.yml, creating clean configuration:", read_err)
+                doc = {}
 
-        # Construct clean location_filter block
-        always_allow_yaml = "\n".join([f'    - "{loc}"' for loc in payload.always_allow_locations])
-        allow_yaml = "\n".join([f'    - "{loc}"' for loc in payload.allowed_locations])
-        block_hard_yaml = "\n".join([f'    - "{loc}"' for loc in payload.blocked_locations])
+        if not isinstance(doc, dict):
+            doc = {}
 
-        new_loc_block = (
-            "location_filter:\n"
-            f"  strict: {str(payload.uk_only).lower()}\n"
-            "  always_allow:\n"
-            f"{always_allow_yaml}\n"
-            "  allow:\n"
-            f"{allow_yaml}\n"
-            "  block_hard:\n"
-            f"{block_hard_yaml}"
-        )
+        # Update location_filter cleanly
+        doc["location_filter"] = {
+            "strict": payload.uk_only,
+            "always_allow": payload.always_allow_locations,
+            "allow": payload.allowed_locations,
+            "block_hard": payload.blocked_locations,
+        }
 
-        # Regex replace location_filter block safely
-        loc_pattern = re.compile(r"location_filter:\s*\n(?:[ \t]+[^\n]+\n)+", re.MULTILINE)
-        if loc_pattern.search(content):
-            content = loc_pattern.sub(new_loc_block + "\n", content, count=1)
+        # Update title_filter cleanly
+        if "title_filter" not in doc or not isinstance(doc["title_filter"], dict):
+            doc["title_filter"] = {}
+        doc["title_filter"]["positive"] = payload.target_roles
+        doc["title_filter"]["negative"] = payload.negative_keywords
 
-        # Update target roles in positive title filter
-        pos_roles_yaml = "\n".join([f'    - "{role}"' for role in payload.target_roles])
-        target_marker = re.compile(
-            r"(# -- Project & Delivery Management \(Candidate CV Target Roles\) --\n)(?:[ \t]+- [^\n]+\n)+",
-            re.MULTILINE,
-        )
-        if target_marker.search(content):
-            content = target_marker.sub(r"\1" + pos_roles_yaml + "\n", content, count=1)
+        # Preserve or initialize tracked_companies
+        if "tracked_companies" not in doc:
+            doc["tracked_companies"] = []
 
-        PORTALS_YML.write_text(content, encoding="utf-8")
+        yaml_content = yaml.dump(doc, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+        # 1. Save to database for persistence across container rebuilds
+        try:
+            with Session(engine) as session:
+                disc_prof = session.exec(select(Profile).where(Profile.name == "discovery").limit(1)).first()
+                if disc_prof:
+                    disc_prof.content = yaml_content
+                    disc_prof.updated_at = datetime.now(timezone.utc)
+                    session.add(disc_prof)
+                else:
+                    session.add(Profile(name="discovery", content=yaml_content))
+                session.commit()
+        except Exception as db_err:
+            print("Warning: Could not save discovery settings to database:", db_err)
+
+        # 2. Write to portals.yml
+        PORTALS_YML.parent.mkdir(parents=True, exist_ok=True)
+        PORTALS_YML.write_text(yaml_content, encoding="utf-8")
+
         return {"status": "success", "message": "Discovery settings updated cleanly!"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update discovery settings: {str(e)}")

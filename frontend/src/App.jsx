@@ -112,7 +112,7 @@ export default function App() {
         onOpenAuth={() => setIsAuthModalOpen(true)}
       />
 
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-4">
+      <main className="flex-1 max-w-7xl w-full mx-auto px-2.5 sm:px-6 lg:px-8 py-3 sm:py-6 space-y-3 sm:space-y-4">
         <GlobalActiveJobsBanner onJobCompleted={loadData} />
         <StatsOverview stats={stats} onSelectTab={setActiveTab} />
 

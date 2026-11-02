@@ -29,3 +29,20 @@ code, pre {
 ::-webkit-scrollbar-thumb:hover {
   background: #475569;
 }
+
+/* Hide scrollbar for mobile strips while keeping touch scrolling */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Prevent unwanted mobile horizontal overflow */
+html, body {
+  max-width: 100%;
+  overflow-x: hidden;
+}
+

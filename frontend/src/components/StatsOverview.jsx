@@ -14,7 +14,7 @@ export default function StatsOverview({ stats, onSelectTab }) {
   ];
 
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3 mb-6">
+    <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2 sm:gap-3 mb-4 sm:mb-6">
       {cards.map((c, i) => {
         const Icon = c.icon;
         const isClickable = Boolean(onSelectTab && c.tab);
@@ -22,16 +22,16 @@ export default function StatsOverview({ stats, onSelectTab }) {
           <div
             key={i}
             onClick={() => isClickable && onSelectTab(c.tab)}
-            className={`bg-slate-900/60 p-3.5 rounded-xl border ${c.border} flex flex-col justify-between backdrop-blur transition-all ${
+            className={`bg-slate-900/60 p-2.5 sm:p-3.5 rounded-xl border ${c.border} flex flex-col justify-between backdrop-blur transition-all ${
               isClickable ? 'cursor-pointer hover:border-slate-600 hover:scale-[1.02] active:scale-[0.98]' : ''
             }`}
             title={isClickable ? `Click to view ${c.label}` : undefined}
           >
-            <div className="flex items-center justify-between text-slate-400 mb-2">
-              <span className="text-xs font-medium truncate">{c.label}</span>
-              <Icon className={`w-4 h-4 ${c.color}`} />
+            <div className="flex items-center justify-between text-slate-400 mb-1 sm:mb-2">
+              <span className="text-[11px] sm:text-xs font-medium truncate">{c.label}</span>
+              <Icon className={`w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0 ${c.color}`} />
             </div>
-            <div className={`text-2xl font-bold font-mono ${c.color}`}>
+            <div className={`text-xl sm:text-2xl font-bold font-mono ${c.color}`}>
               {c.value}
             </div>
           </div>

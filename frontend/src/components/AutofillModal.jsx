@@ -19,6 +19,11 @@ import {
   RotateCcw,
   AlertTriangle,
   Zap,
+  Laptop,
+  Smartphone,
+  ChevronDown,
+  ChevronUp,
+  Info,
 } from 'lucide-react';
 import PipelineProgressCard from './PipelineProgressCard';
 
@@ -41,7 +46,7 @@ export const EXTRACT_BOOKMARKLET_RAW = `(function() {
       if (old) old.remove();
       const toast = document.createElement('div');
       toast.id = 'caesar-extract-toast';
-      toast.style.cssText = 'position:fixed!important;top:24px!important;right:24px!important;z-index:2147483647!important;background:#0f172a!important;color:#f8fafc!important;border:2px solid #10b981!important;border-radius:12px!important;padding:14px 18px!important;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif!important;font-size:13px!important;box-shadow:0 20px 40px rgba(0,0,0,0.6)!important;display:flex!important;flex-direction:column!important;gap:6px!important;max-width:350px!important;box-sizing:border-box!important;line-height:1.4!important;';
+      toast.style.cssText = 'position:fixed!important;top:16px!important;left:16px!important;right:16px!important;margin:0 auto!important;z-index:2147483647!important;background:#0f172a!important;color:#f8fafc!important;border:2px solid #10b981!important;border-radius:12px!important;padding:12px 16px!important;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif!important;font-size:13px!important;box-shadow:0 20px 40px rgba(0,0,0,0.7)!important;display:flex!important;flex-direction:column!important;gap:4px!important;max-width:380px!important;box-sizing:border-box!important;line-height:1.4!important;';
       toast.innerHTML = '<div style="font-weight:700!important;color:#10b981!important;font-size:14px!important;display:block!important;margin:0!important;padding:0!important;line-height:1.3!important;">' + title + '</div><div style="color:#cbd5e1!important;font-size:12px!important;display:block!important;margin:0!important;padding:0!important;line-height:1.4!important;">' + msg + '</div>';
       document.body.appendChild(toast);
       setTimeout(() => { if (toast.parentNode) toast.remove(); }, 5000);
@@ -49,7 +54,7 @@ export const EXTRACT_BOOKMARKLET_RAW = `(function() {
 
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(payload).then(() => {
-        showToast('📋 1️⃣ Form Questions Copied!', 'Switch to CaesarAI & click <b>"✨ Prepare Answers"</b>.');
+        showToast('📋 1️⃣ Form Questions Copied!', 'Switch to CaesarAI & tap <b>"✨ Prepare Answers"</b>.');
       }).catch(() => fallbackCopy(payload));
     } else {
       fallbackCopy(payload);
@@ -59,12 +64,25 @@ export const EXTRACT_BOOKMARKLET_RAW = `(function() {
       const ta = document.createElement('textarea');
       ta.value = text;
       ta.style.position = 'fixed';
-      ta.style.opacity = '0';
+      ta.style.left = '-9999px';
+      ta.style.top = '0';
+      ta.setAttribute('readonly', '');
       document.body.appendChild(ta);
-      ta.select();
-      document.execCommand('copy');
+      ta.contentEditable = true;
+      ta.readOnly = false;
+      const range = document.createRange();
+      range.selectNodeContents(ta);
+      const sel = window.getSelection();
+      if (sel) {
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+      ta.setSelectionRange(0, 999999);
+      try {
+        document.execCommand('copy');
+      } catch(e) {}
       ta.remove();
-      showToast('📋 1️⃣ Form Questions Copied!', 'Switch to CaesarAI & click <b>"✨ Prepare Answers"</b>.');
+      showToast('📋 1️⃣ Form Questions Copied!', 'Switch to CaesarAI & tap <b>"✨ Prepare Answers"</b>.');
     }
   } catch(err) {
     alert('CaesarAI Extract Error: ' + err.message);
@@ -79,15 +97,14 @@ export const FILL_BOOKMARKLET_RAW = `(async function() {
     try {
       clip = (await navigator.clipboard.readText()) || '';
     } catch(e) {
-      if (e && e.name === 'NotAllowedError') {
-        const manual = prompt('⚡ CaesarAI: Clipboard read permission was blocked.\\n\\nPaste the prepared data here (Ctrl+V):');
-        if (manual) clip = manual;
-      }
+      const manual = prompt('⚡ CaesarAI: Clipboard read permission was blocked by the browser.\\n\\nTap and hold here to Paste your copied answers:');
+      if (manual) clip = manual;
     }
 
     if (!clip || !clip.trim()) {
-      alert('⚠️ CaesarAI: Clipboard is empty! In CaesarAI, click "Prepare Answers" or "Copy to Clipboard" first, then click ⚡ 2️⃣ CaesarAI Fill.');
-      return;
+      const manual = prompt('⚠️ CaesarAI: Clipboard is empty or inaccessible.\\n\\nIn CaesarAI, click "Copy Answers to Clipboard", then paste it here:');
+      if (manual) clip = manual;
+      if (!clip || !clip.trim()) return;
     }
 
     let payload = null;
@@ -351,7 +368,7 @@ export const FILL_BOOKMARKLET_RAW = `(async function() {
     if (oldToast) oldToast.remove();
     const toast = document.createElement('div');
     toast.id = 'caesar-fill-toast';
-    toast.style.cssText = 'position:fixed!important;top:24px!important;right:24px!important;z-index:2147483647!important;background:#0f172a!important;color:#f8fafc!important;border:2px solid #10b981!important;border-radius:12px!important;padding:14px 18px!important;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif!important;font-size:13px!important;box-shadow:0 20px 40px rgba(0,0,0,0.7)!important;display:flex!important;flex-direction:column!important;gap:6px!important;max-width:360px!important;box-sizing:border-box!important;line-height:1.4!important;';
+    toast.style.cssText = 'position:fixed!important;top:16px!important;left:16px!important;right:16px!important;margin:0 auto!important;z-index:2147483647!important;background:#0f172a!important;color:#f8fafc!important;border:2px solid #10b981!important;border-radius:12px!important;padding:12px 16px!important;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif!important;font-size:13px!important;box-shadow:0 20px 40px rgba(0,0,0,0.7)!important;display:flex!important;flex-direction:column!important;gap:4px!important;max-width:380px!important;box-sizing:border-box!important;line-height:1.4!important;';
     toast.innerHTML = '<div style="font-weight:700!important;color:#10b981!important;font-size:14px!important;line-height:1.3!important;margin:0!important;display:block!important;">⚡ CaesarAI: Autofill Complete!</div><div style="color:#cbd5e1!important;font-size:12px!important;line-height:1.4!important;margin:0!important;display:block!important;">Filled ' + filledCount + ' fields & attached CV.<br><b style="color:#94a3b8;">Review your answers before clicking submit.</b></div>';
     document.body.appendChild(toast);
     setTimeout(() => { if (toast.parentNode) toast.remove(); }, 5000);
@@ -395,6 +412,18 @@ export default function AutofillModal({
   const [storedHtml, setStoredHtml] = useState('');
   const [showStoredHtml, setShowStoredHtml] = useState(false);
   const [activeTab, setActiveTab] = useState('bookmarklets'); // 'bookmarklets' | 'profile' | 'answers'
+  const [deviceGuide, setDeviceGuide] = useState(() => {
+    if (typeof navigator !== 'undefined') {
+      const ua = navigator.userAgent || '';
+      if (/iPad|iPhone|iPod/.test(ua)) return 'ios';
+      if (/Android/.test(ua)) return 'android';
+    }
+    return 'desktop';
+  });
+  const [copiedAppleExtract, setCopiedAppleExtract] = useState(false);
+  const [copiedAppleFill, setCopiedAppleFill] = useState(false);
+  const [copiedAndroidExtract, setCopiedAndroidExtract] = useState(false);
+  const [copiedAndroidFill, setCopiedAndroidFill] = useState(false);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [clearingAgy, setClearingAgy] = useState(false);
 
@@ -1305,137 +1334,370 @@ export default function AutofillModal({
                 </div>
               )}
 
-              {/* Primary: Two Companion Bookmarklets */}
-              <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800 space-y-3.5">
-                <div className="flex items-center justify-between">
-                  <div className="font-bold text-white text-sm flex items-center gap-2">
-                    <span className="text-amber-400 text-base">📌</span>
-                    <span>Browser Setup (Do This Once)</span>
+              {/* Primary: Companion Bookmarklets with Multi-Device Guide */}
+              <div className="p-3.5 sm:p-5 rounded-2xl bg-slate-950/80 border border-slate-800 space-y-4 shadow-xl">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pb-2.5 border-b border-slate-800/80">
+                  <div className="font-bold text-white text-sm sm:text-base flex items-center gap-2">
+                    <span className="text-amber-400 text-base sm:text-lg">📌</span>
+                    <span>Bookmarklet Setup</span>
+                    <span className="hidden sm:inline-block px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-800 text-slate-300 border border-slate-700">
+                      Zero Extension Needed
+                    </span>
                   </div>
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-800 text-slate-300 border border-slate-700">
-                    No Extension Needed
-                  </span>
+
+                  {/* Platform Segmented Switcher */}
+                  <div className="inline-flex p-1 bg-slate-900 rounded-xl border border-slate-800 text-xs font-semibold self-start sm:self-auto overflow-x-auto max-w-full">
+                    <button
+                      type="button"
+                      onClick={() => setDeviceGuide('desktop')}
+                      className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all min-h-[32px] shrink-0 ${
+                        deviceGuide === 'desktop'
+                          ? 'bg-indigo-600 text-white shadow-sm'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      <Laptop className="w-3.5 h-3.5" />
+                      <span>Laptop</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDeviceGuide('ios')}
+                      className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all min-h-[32px] shrink-0 ${
+                        deviceGuide === 'ios'
+                          ? 'bg-indigo-600 text-white shadow-sm'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      <span className="text-xs">🍏</span>
+                      <span>iPhone / iPad</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDeviceGuide('android')}
+                      className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all min-h-[32px] shrink-0 ${
+                        deviceGuide === 'android'
+                          ? 'bg-indigo-600 text-white shadow-sm'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      <Smartphone className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Android</span>
+                    </button>
+                  </div>
                 </div>
 
-                <p className="text-slate-300 text-xs leading-relaxed">
-                  Drag these two buttons up into your browser's <strong className="text-white">Bookmarks Bar</strong>. You will use them to read and fill any job application.
-                </p>
+                {/* 1. DESKTOP / LAPTOP GUIDE */}
+                {deviceGuide === 'desktop' && (
+                  <div className="space-y-3.5 animate-in fade-in duration-150">
+                    <p className="text-slate-300 text-xs leading-relaxed">
+                      Drag these two buttons directly up into your browser's <strong className="text-white">Bookmarks Bar</strong> (<kbd className="bg-slate-800 text-slate-300 px-1.5 py-0.5 rounded text-[10px] font-mono border border-slate-700">Ctrl+Shift+B</kbd> or <kbd className="bg-slate-800 text-slate-300 px-1.5 py-0.5 rounded text-[10px] font-mono border border-slate-700">Cmd+Shift+B</kbd>).
+                    </p>
 
-                {/* The Two Draggable Buttons */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-                  {/* Button 1: Extract */}
-                  <div className="p-3.5 bg-slate-900/90 border border-emerald-500/30 rounded-xl space-y-2.5 flex flex-col justify-between shadow-inner">
-                    <div className="space-y-1">
-                      <div className="text-[12px] font-bold text-emerald-400 flex items-center gap-1.5">
-                        <span>📋 1️⃣ Read Job Form</span>
+                    {/* The Two Draggable Buttons */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                      {/* Button 1: Extract */}
+                      <div className="p-3.5 bg-slate-900/90 border border-emerald-500/30 rounded-xl space-y-2.5 flex flex-col justify-between shadow-inner">
+                        <div className="space-y-1">
+                          <div className="text-xs font-bold text-emerald-400 flex items-center gap-1.5">
+                            <span>📋 1️⃣ Read Job Form</span>
+                          </div>
+                          <p className="text-[11px] text-slate-400 leading-normal">
+                            Click on any job page so CaesarAI extracts the questions.
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2 pt-1">
+                          <a
+                            href={EXTRACT_BOOKMARKLET_HREF}
+                            draggable="true"
+                            onDragStart={(e) => {
+                              e.dataTransfer.setData('text/plain', EXTRACT_BOOKMARKLET_HREF);
+                            }}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              handleCopyExtractCode();
+                            }}
+                            className="flex-1 inline-flex items-center justify-center gap-2 px-3.5 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-extrabold text-xs rounded-xl shadow-md cursor-grab active:cursor-grabbing border border-emerald-400/40 transition-all hover:scale-[1.02] select-none"
+                            title="Drag this button to your Bookmarks Bar (or click to copy code)"
+                          >
+                            <Copy className="w-3.5 h-3.5 text-white" />
+                            <span>📋 1️⃣ CaesarAI Extract</span>
+                          </a>
+                          <button
+                            type="button"
+                            onClick={handleCopyExtractCode}
+                            className="px-3 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl border border-slate-700 text-xs font-semibold transition-colors shrink-0"
+                            title="Copy Extract Bookmarklet code"
+                          >
+                            {copiedExtractCode ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                          </button>
+                        </div>
                       </div>
-                      <p className="text-[11px] text-slate-400 leading-normal">
-                        Click on any job page so CaesarAI can see the questions.
-                      </p>
+
+                      {/* Button 2: Fill */}
+                      <div className="p-3.5 bg-slate-900/90 border border-indigo-500/30 rounded-xl space-y-2.5 flex flex-col justify-between shadow-inner">
+                        <div className="space-y-1">
+                          <div className="text-xs font-bold text-indigo-400 flex items-center gap-1.5">
+                            <span>⚡ 2️⃣ Fill Form & Attach CV</span>
+                          </div>
+                          <p className="text-[11px] text-slate-400 leading-normal">
+                            Click on the job page to fill in the boxes and attach your CV PDF.
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2 pt-1">
+                          <a
+                            href={FILL_BOOKMARKLET_HREF}
+                            draggable="true"
+                            onDragStart={(e) => {
+                              e.dataTransfer.setData('text/plain', FILL_BOOKMARKLET_HREF);
+                            }}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              handleCopyFillCode();
+                            }}
+                            className="flex-1 inline-flex items-center justify-center gap-2 px-3.5 py-2.5 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-extrabold text-xs rounded-xl shadow-md cursor-grab active:cursor-grabbing border border-indigo-400/40 transition-all hover:scale-[1.02] select-none"
+                            title="Drag this button to your Bookmarks Bar (or click to copy code)"
+                          >
+                            <Zap className="w-3.5 h-3.5 text-amber-300 fill-amber-300" />
+                            <span>⚡ 2️⃣ CaesarAI Fill</span>
+                          </a>
+                          <button
+                            type="button"
+                            onClick={handleCopyFillCode}
+                            className="px-3 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl border border-slate-700 text-xs font-semibold transition-colors shrink-0"
+                            title="Copy Fill Bookmarklet code"
+                          >
+                            {copiedFillCode ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                          </button>
+                        </div>
+                      </div>
                     </div>
 
-                    <div className="flex items-center gap-2 pt-1">
-                      <a
-                        href={EXTRACT_BOOKMARKLET_HREF}
-                        draggable="true"
-                        onDragStart={(e) => {
-                          e.dataTransfer.setData('text/plain', EXTRACT_BOOKMARKLET_HREF);
-                        }}
-                        onClick={(e) => {
-                          e.preventDefault();
+                    {/* 3-Step Simple Instructions */}
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1 text-[11px]">
+                      <div className="p-3 bg-slate-900/90 border border-slate-800 rounded-lg space-y-1">
+                        <div className="font-bold text-emerald-400 flex items-center gap-1">
+                          <span>1️⃣</span> <span>Read Form</span>
+                        </div>
+                        <p className="text-slate-400 leading-normal">
+                          On the job page, click <strong className="text-slate-200">📋 1️⃣ CaesarAI Extract</strong> in your browser bar.
+                        </p>
+                      </div>
+
+                      <div className="p-3 bg-slate-900/90 border border-slate-800 rounded-lg space-y-1">
+                        <div className="font-bold text-indigo-400 flex items-center gap-1">
+                          <span>2️⃣</span> <span>Prepare Answers</span>
+                        </div>
+                        <p className="text-slate-400 leading-normal">
+                          Click <strong className="text-slate-200">Prepare Answers</strong> below. CaesarAI drafts answers from your CV.
+                        </p>
+                      </div>
+
+                      <div className="p-3 bg-slate-900/90 border border-slate-800 rounded-lg space-y-1">
+                        <div className="font-bold text-amber-400 flex items-center gap-1">
+                          <span>3️⃣</span> <span>Fill & Submit</span>
+                        </div>
+                        <p className="text-slate-400 leading-normal">
+                          Return to the job page and click <strong className="text-slate-200">⚡ 2️⃣ CaesarAI Fill</strong>. All fields are filled!
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* 2. APPLE iPHONE / iPAD (SAFARI) GUIDE */}
+                {deviceGuide === 'ios' && (
+                  <div className="space-y-3.5 animate-in fade-in duration-150">
+                    <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/25 text-amber-200 text-xs leading-relaxed flex items-start gap-2">
+                      <span className="text-base">💡</span>
+                      <div>
+                        <strong className="text-white">Mobile Safari does not support drag-and-drop.</strong><br />
+                        Follow these simple 3 steps to save your 1-tap phone bookmarklets:
+                      </div>
+                    </div>
+
+                    {/* 2 Big Touch Buttons for iPhone */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      <button
+                        type="button"
+                        onClick={() => {
                           handleCopyExtractCode();
+                          setCopiedAppleExtract(true);
+                          setTimeout(() => setCopiedAppleExtract(false), 3000);
                         }}
-                        className="flex-1 inline-flex items-center justify-center gap-2 px-3.5 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-extrabold text-xs rounded-xl shadow-md shadow-emerald-950/50 cursor-grab active:cursor-grabbing border border-emerald-400/40 transition-all hover:scale-[1.02] select-none"
-                        title="Drag this button to your Bookmarks Bar (or click to copy code)"
+                        className="w-full p-3.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-xs flex items-center justify-between shadow-lg shadow-emerald-950/50 border border-emerald-400/30 active:scale-95 transition-all min-h-[50px]"
                       >
-                        <Copy className="w-3.5 h-3.5 text-white" />
-                        <span>📋 1️⃣ CaesarAI Extract</span>
-                      </a>
+                        <div className="flex items-center gap-2">
+                          <Copy className="w-4 h-4 text-emerald-200 shrink-0" />
+                          <span className="text-left">
+                            <span className="block text-[10px] text-emerald-200 font-normal">Step 1 Code:</span>
+                            <span className="text-xs font-extrabold">📋 Copy 1️⃣ Extract Code</span>
+                          </span>
+                        </div>
+                        <span className="px-2.5 py-1 rounded-lg bg-black/25 text-[11px] font-mono shrink-0">
+                          {copiedAppleExtract ? '✓ Copied!' : 'Tap to Copy'}
+                        </span>
+                      </button>
 
                       <button
                         type="button"
-                        onClick={handleCopyExtractCode}
-                        className="px-2.5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl border border-slate-700 text-xs font-semibold transition-colors shrink-0"
-                        title="Copy Extract Bookmarklet code"
-                      >
-                        {copiedExtractCode ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Button 2: Fill */}
-                  <div className="p-3.5 bg-slate-900/90 border border-indigo-500/30 rounded-xl space-y-2.5 flex flex-col justify-between shadow-inner">
-                    <div className="space-y-1">
-                      <div className="text-[12px] font-bold text-indigo-400 flex items-center gap-1.5">
-                        <span>⚡ 2️⃣ Fill Form & Attach CV</span>
-                      </div>
-                      <p className="text-[11px] text-slate-400 leading-normal">
-                        Click on the job page to fill in the boxes and attach your CV PDF.
-                      </p>
-                    </div>
-
-                    <div className="flex items-center gap-2 pt-1">
-                      <a
-                        href={FILL_BOOKMARKLET_HREF}
-                        draggable="true"
-                        onDragStart={(e) => {
-                          e.dataTransfer.setData('text/plain', FILL_BOOKMARKLET_HREF);
-                        }}
-                        onClick={(e) => {
-                          e.preventDefault();
+                        onClick={() => {
                           handleCopyFillCode();
+                          setCopiedAppleFill(true);
+                          setTimeout(() => setCopiedAppleFill(false), 3000);
                         }}
-                        className="flex-1 inline-flex items-center justify-center gap-2 px-3.5 py-2.5 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-extrabold text-xs rounded-xl shadow-md shadow-indigo-950/50 cursor-grab active:cursor-grabbing border border-indigo-400/40 transition-all hover:scale-[1.02] select-none"
-                        title="Drag this button to your Bookmarks Bar (or click to copy code)"
+                        className="w-full p-3.5 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-bold text-xs flex items-center justify-between shadow-lg shadow-indigo-950/50 border border-indigo-400/30 active:scale-95 transition-all min-h-[50px]"
                       >
-                        <Zap className="w-3.5 h-3.5 text-amber-300 fill-amber-300" />
-                        <span>⚡ 2️⃣ CaesarAI Fill</span>
-                      </a>
+                        <div className="flex items-center gap-2">
+                          <Zap className="w-4 h-4 text-amber-300 fill-amber-300 shrink-0" />
+                          <span className="text-left">
+                            <span className="block text-[10px] text-indigo-200 font-normal">Step 2 Code:</span>
+                            <span className="text-xs font-extrabold">⚡ Copy 2️⃣ Fill Code</span>
+                          </span>
+                        </div>
+                        <span className="px-2.5 py-1 rounded-lg bg-black/25 text-[11px] font-mono shrink-0">
+                          {copiedAppleFill ? '✓ Copied!' : 'Tap to Copy'}
+                        </span>
+                      </button>
+                    </div>
+
+                    {/* Step by step for iOS */}
+                    <div className="p-3.5 bg-slate-900/90 border border-slate-800 rounded-xl space-y-2 text-xs">
+                      <div className="font-bold text-white text-xs flex items-center gap-1.5">
+                        <span>📲 One-Time iPhone Safari Setup:</span>
+                      </div>
+                      <ol className="list-decimal list-inside space-y-2 text-slate-300 text-[11px] leading-relaxed">
+                        <li>In Safari, tap the <strong>Share button</strong> (square with up-arrow) $\rightarrow$ Tap <strong>Add Bookmark</strong>.</li>
+                        <li>Name it <code className="bg-slate-800 px-1.5 py-0.5 rounded text-emerald-400 font-mono">1️⃣ Extract Form</code> and tap <strong>Save</strong>.</li>
+                        <li>Tap the <strong>Bookmarks icon (open book)</strong> at the bottom $\rightarrow$ tap <strong>Edit</strong> (bottom right) $\rightarrow$ tap your bookmark.</li>
+                        <li>Delete the URL, tap <strong>Paste</strong> (using the button above), and tap <strong>Done</strong>.</li>
+                        <li><em>Repeat the same quick steps for <code className="bg-slate-800 px-1.5 py-0.5 rounded text-indigo-400 font-mono">2️⃣ Fill Form</code>.</em></li>
+                      </ol>
+
+                      <div className="p-2.5 bg-slate-950 border border-emerald-500/30 rounded-lg text-[11px] text-slate-300 space-y-1 mt-2">
+                        <span className="font-bold text-emerald-400">🚀 How to run on your iPhone:</span>
+                        <p className="text-slate-400">
+                          On any job posting in Safari, <strong>tap the address bar</strong>, type <strong className="text-white">Extract</strong>, and tap the bookmark from the search list! Return here to prepare answers, then run <strong className="text-white">Fill</strong>.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* 3. ANDROID (GOOGLE CHROME) GUIDE */}
+                {deviceGuide === 'android' && (
+                  <div className="space-y-3.5 animate-in fade-in duration-150">
+                    <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/25 text-emerald-200 text-xs leading-relaxed flex items-start gap-2">
+                      <span className="text-base">🤖</span>
+                      <div>
+                        <strong className="text-white">Chrome on Android runs bookmarklets from the address bar (omnibox).</strong><br />
+                        Follow these simple 3 steps to save your 1-tap phone bookmarklets:
+                      </div>
+                    </div>
+
+                    {/* 2 Big Touch Buttons for Android */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          handleCopyExtractCode();
+                          setCopiedAndroidExtract(true);
+                          setTimeout(() => setCopiedAndroidExtract(false), 3000);
+                        }}
+                        className="w-full p-3.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-xs flex items-center justify-between shadow-lg shadow-emerald-950/50 border border-emerald-400/30 active:scale-95 transition-all min-h-[50px]"
+                      >
+                        <div className="flex items-center gap-2">
+                          <Copy className="w-4 h-4 text-emerald-200 shrink-0" />
+                          <span className="text-left">
+                            <span className="block text-[10px] text-emerald-200 font-normal">Step 1 Code:</span>
+                            <span className="text-xs font-extrabold">📋 Copy 1️⃣ Extract Code</span>
+                          </span>
+                        </div>
+                        <span className="px-2.5 py-1 rounded-lg bg-black/25 text-[11px] font-mono shrink-0">
+                          {copiedAndroidExtract ? '✓ Copied!' : 'Tap to Copy'}
+                        </span>
+                      </button>
 
                       <button
                         type="button"
-                        onClick={handleCopyFillCode}
-                        className="px-2.5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl border border-slate-700 text-xs font-semibold transition-colors shrink-0"
-                        title="Copy Fill Bookmarklet code"
+                        onClick={() => {
+                          handleCopyFillCode();
+                          setCopiedAndroidFill(true);
+                          setTimeout(() => setCopiedAndroidFill(false), 3000);
+                        }}
+                        className="w-full p-3.5 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-bold text-xs flex items-center justify-between shadow-lg shadow-indigo-950/50 border border-indigo-400/30 active:scale-95 transition-all min-h-[50px]"
                       >
-                        {copiedFillCode ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                        <div className="flex items-center gap-2">
+                          <Zap className="w-4 h-4 text-amber-300 fill-amber-300 shrink-0" />
+                          <span className="text-left">
+                            <span className="block text-[10px] text-indigo-200 font-normal">Step 2 Code:</span>
+                            <span className="text-xs font-extrabold">⚡ Copy 2️⃣ Fill Code</span>
+                          </span>
+                        </div>
+                        <span className="px-2.5 py-1 rounded-lg bg-black/25 text-[11px] font-mono shrink-0">
+                          {copiedAndroidFill ? '✓ Copied!' : 'Tap to Copy'}
+                        </span>
                       </button>
                     </div>
-                  </div>
-                </div>
 
-                <div className="text-[11px] text-slate-500 text-center pt-0.5">
-                  💡 Don't see your bookmarks bar? Press <kbd className="bg-slate-800 text-slate-300 px-1.5 py-0.5 rounded border border-slate-700 font-mono">Ctrl+Shift+B</kbd> (or <kbd className="bg-slate-800 text-slate-300 px-1.5 py-0.5 rounded border border-slate-700 font-mono">Cmd+Shift+B</kbd> on Mac).
-                </div>
+                    {/* Step by step for Android */}
+                    <div className="p-3.5 bg-slate-900/90 border border-slate-800 rounded-xl space-y-2 text-xs">
+                      <div className="font-bold text-white text-xs flex items-center gap-1.5">
+                        <span>📲 One-Time Android Chrome Setup:</span>
+                      </div>
+                      <ol className="list-decimal list-inside space-y-2 text-slate-300 text-[11px] leading-relaxed">
+                        <li>In Chrome, tap the <strong>3 vertical dots (⋮)</strong> top-right $\rightarrow$ Tap the <strong>Star (★)</strong> to bookmark this page.</li>
+                        <li>Tap <strong>Edit</strong> on the bottom confirmation toast (or open 3 dots $\rightarrow$ Bookmarks $\rightarrow$ tap 3 dots next to the bookmark $\rightarrow$ Edit).</li>
+                        <li>Set Name to <code className="bg-slate-800 px-1.5 py-0.5 rounded text-emerald-400 font-mono">1️⃣ Extract Form</code>.</li>
+                        <li>Delete the URL, tap <strong>Paste</strong> (using the button above), and tap back to save.</li>
+                        <li><em>Repeat the same quick steps for <code className="bg-slate-800 px-1.5 py-0.5 rounded text-indigo-400 font-mono">2️⃣ Fill Form</code>.</em></li>
+                      </ol>
 
-                {/* 3-Step Simple Instructions */}
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1 text-[11px]">
-                  <div className="p-3 bg-slate-900/90 border border-slate-800 rounded-lg space-y-1">
-                    <div className="font-bold text-emerald-400 flex items-center gap-1">
-                      <span>1️⃣</span> <span>Read Form</span>
+                      <div className="p-2.5 bg-slate-950 border border-emerald-500/30 rounded-lg text-[11px] text-slate-300 space-y-1 mt-2">
+                        <span className="font-bold text-emerald-400">🚀 How to run on your Android:</span>
+                        <p className="text-slate-400">
+                          On any job posting in Chrome, <strong>tap the address bar</strong>, type <strong className="text-white">Extract</strong>, and tap the bookmark with the star icon! Return here to prepare answers, then run <strong className="text-white">Fill</strong>.
+                        </p>
+                      </div>
                     </div>
-                    <p className="text-slate-400 leading-normal">
-                      On the job page, click <strong className="text-slate-200">📋 1️⃣ CaesarAI Extract</strong> in your browser bar.
-                    </p>
                   </div>
+                )}
 
-                  <div className="p-3 bg-slate-900/90 border border-slate-800 rounded-lg space-y-1">
-                    <div className="font-bold text-indigo-400 flex items-center gap-1">
-                      <span>2️⃣</span> <span>Prepare Answers</span>
+                {/* Quick Mobile Manual Paste Alternative */}
+                <div className="pt-2 border-t border-slate-800/60">
+                  <button
+                    type="button"
+                    onClick={() => setShowManualPaste(!showManualPaste)}
+                    className="w-full py-2.5 px-3 rounded-xl bg-slate-900/80 hover:bg-slate-850 border border-slate-800 text-slate-300 text-xs font-semibold flex items-center justify-between transition-colors min-h-[40px]"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm">📱</span>
+                      <span>Quick Mobile Alternative: Paste Form HTML or URL Directly</span>
                     </div>
-                    <p className="text-slate-400 leading-normal">
-                      Click <strong className="text-slate-200">Prepare Answers</strong> below. CaesarAI drafts answers from your CV.
-                    </p>
-                  </div>
+                    {showManualPaste ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
+                  </button>
 
-                  <div className="p-3 bg-slate-900/90 border border-slate-800 rounded-lg space-y-1">
-                    <div className="font-bold text-amber-400 flex items-center gap-1">
-                      <span>3️⃣</span> <span>Fill & Submit</span>
+                  {showManualPaste && (
+                    <div className="mt-2.5 p-3.5 bg-slate-950 border border-indigo-500/30 rounded-xl space-y-2.5 animate-in fade-in">
+                      <div className="text-[11px] text-slate-400">
+                        Paste the job posting link or form text below if you don't want to use bookmarks right now:
+                      </div>
+                      <textarea
+                        rows={3}
+                        value={manualHtml}
+                        onChange={(e) => setManualHtml(e.target.value)}
+                        placeholder="Paste job application URL or questions text here..."
+                        className="w-full p-2.5 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-200 font-mono focus:outline-none focus:border-indigo-500 resize-y"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleCompileFromClipboard(manualHtml)}
+                        disabled={!manualHtml.trim() || compilingHtml}
+                        className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-bold transition-all disabled:opacity-40"
+                      >
+                        {compilingHtml ? 'Preparing Answers...' : '✨ Prepare Answers from Pasted Text'}
+                      </button>
                     </div>
-                    <p className="text-slate-400 leading-normal">
-                      Return to the job page and click <strong className="text-slate-200">⚡ 2️⃣ CaesarAI Fill</strong>. All fields are filled!
-                    </p>
-                  </div>
+                  )}
                 </div>
               </div>
 

@@ -1260,7 +1260,7 @@ export default function PipelineInbox({ items, onSendToEvaluator, onRefresh }) {
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+                  <div className="flex flex-wrap items-center justify-end gap-1.5 sm:gap-2 shrink-0 w-full sm:w-auto pt-2 sm:pt-0 border-t border-slate-800/60 sm:border-0">
                     {url && (
                       <a
                         href={url}
