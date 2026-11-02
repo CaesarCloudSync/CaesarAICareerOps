@@ -25,7 +25,7 @@ export default function DiscoverySettingsView() {
     uk_only: true,
     country: 'United Kingdom',
     always_allow_locations: ['London', 'Greater London', 'United Kingdom', 'UK', 'Great Britain', 'England'],
-    allowed_locations: ['London', 'Greater London', 'United Kingdom', 'UK', 'England', 'Remote - UK', 'UK - Remote'],
+    allowed_locations: ['London', 'Greater London', 'United Kingdom', 'UK', 'England', 'UK Remote', 'Remote - UK', 'Remote, UK', 'London (Remote)', 'Remote / London'],
     blocked_locations: ['China', 'Beijing', 'Shanghai', 'Shenzhen', 'Hangzhou', 'United States', 'USA', 'India'],
     target_roles: ['Project Manager', 'Delivery Specialist', 'Project Coordinator', 'Technical Project Manager'],
     negative_keywords: ['Intern', 'Graduate', 'Student', 'Junior'],
